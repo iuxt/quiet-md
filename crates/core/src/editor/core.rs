@@ -2078,6 +2078,76 @@ impl Core {
         true
     }
 
+    /// A lone image in a column can share its grid with another image.
+    fn image_column(&self, id: BlockId) -> Option<(BlockId, BlockId)> {
+        let c = self.parent_of(id)?;
+        if !matches!(c.kind, BlockKind::Column { .. }) || c.children.len() != 1 {
+            return None;
+        }
+        let g = self.parent_of(c.id)?;
+        matches!(g.kind, BlockKind::Grid).then_some((g.id, c.id))
+    }
+
+    pub fn can_move_image_beside(&self, id: BlockId, target: BlockId) -> bool {
+        if id == target || ![id, target].iter().all(|id| matches!(self.kind_of(*id), Some(BlockKind::Image { .. }))) {
+            return false;
+        }
+        if let Some((grid, _)) = self.image_column(target) {
+            let moving_column = self.image_column(id).is_some_and(|(g, _)| g == grid);
+            return moving_column || self.block(grid).is_some_and(|g| g.children.len() < MAX_COLUMNS);
+        }
+        self.path(target).is_some_and(|p| nest_depth(&p) + 2 <= MAX_NEST_DEPTH)
+    }
+
+    /// Place an image to either side, reusing a row of columns or splitting
+    /// just the target into two columns. Existing sizes/crops stay intact.
+    pub fn move_image_beside(&mut self, id: BlockId, target: BlockId, after: bool) -> bool {
+        if !self.can_move_image_beside(id, target) {
+            return false;
+        }
+        let before = self.doc.blocks.clone();
+        let column = self.image_column(target);
+        let moving = self.image_column(id).filter(|(g, _)| column.is_some_and(|(grid, _)| *g == grid));
+        if let (Some((_, col)), Some((_, source))) = (column, moving) {
+            let b = self.remove_subtree(source).unwrap();
+            if after { self.insert_after(col, b) } else { self.insert_before(col, b) }
+        } else {
+            let image = self.remove_subtree(id).unwrap();
+            if let Some((grid, col)) = column {
+                let g = self.block_mut(grid).unwrap();
+                drop_empty_columns(&mut g.children);
+                let ratio = 1. / (g.children.len() + 1) as f32;
+                for c in &mut g.children {
+                    if let BlockKind::Column { ratio: r } = &mut c.kind {
+                        *r *= 1. - ratio;
+                    }
+                }
+                let at = g.children.iter().position(|c| c.id == col).unwrap() + usize::from(after);
+                let c = Block::new(BlockKind::Column { ratio }, RichText::default()).with_children(vec![image]);
+                g.children.insert(at, c);
+            } else {
+                let p = self.path(target).unwrap();
+                let (list, at) = container_mut(&mut self.doc.blocks, &p).unwrap();
+                let target = list.remove(at);
+                let pair = if after { vec![target, image] } else { vec![image, target] };
+                let cols = pair.into_iter().map(|b| Block::new(BlockKind::Column { ratio: 0.5 }, RichText::default()).with_children(vec![b])).collect();
+                list.insert(at, Block::new(BlockKind::Grid, RichText::default()).with_children(cols));
+            }
+        }
+        if self.doc.blocks == before {
+            return false;
+        }
+        let after = std::mem::replace(&mut self.doc.blocks, before);
+        self.checkpoint(EditKind::Other);
+        self.doc.blocks = after;
+        self.normalize();
+        self.clear_block_sel();
+        self.cell_sel = None;
+        self.sel = Selection::caret(Pos::new(id, 0));
+        self.fix_selection();
+        true
+    }
+
     /// New blocks (dropped files) placed relative to `target`, as one edit.
     pub fn insert_blocks_at(&mut self, blocks: Vec<Block>, target: BlockId, place: DropPlace) {
         if blocks.is_empty() || self.path(target).is_none() {
@@ -3388,6 +3458,70 @@ mod tests {
         c.undo();
         c.undo();
         assert!(xml(&c).starts_with("<title>T</title>\n<p>a</p>\n<p>b</p>"), "{}", xml(&c));
+    }
+
+    #[test]
+    fn move_images_builds_reorders_and_dissolves_a_row() {
+        let mut c = doc("<title>T</title><img src=\"a.png\" width=\"240\" height=\"120\" caption=\"A\"/><img src=\"b.png\"/><img src=\"c.png\"/><p>end</p>");
+        let original = c.doc.clone();
+        let (a, b, third) = (id(&c, 1), id(&c, 2), id(&c, 3));
+        let image = c.block(a).unwrap().clone();
+        assert!(c.move_image_beside(b, a, true));
+        assert_eq!(c.block(a), Some(&image));
+        let grid = c.doc.blocks[0].id;
+        assert_eq!(c.column_ratios(grid), vec![0.5, 0.5]);
+        assert!(c.move_image_beside(third, b, true));
+        let order = |c: &Core| c.block(grid).unwrap().children.iter().map(|col| col.children[0].id).collect::<Vec<_>>();
+        assert_eq!(order(&c), vec![a, b, third]);
+        assert!((c.column_ratios(grid).iter().sum::<f32>() - 1.).abs() < 1e-6);
+        assert!(c.move_image_beside(third, a, false));
+        assert_eq!(order(&c), vec![third, a, b]);
+        let n = c.undo.len();
+        assert!(!c.move_image_beside(third, a, false));
+        assert_eq!(c.undo.len(), n);
+        let arranged = c.doc.clone();
+        assert_eq!(crate::docxml::serialize(&crate::docxml::parse(&xml(&c)).unwrap()), xml(&c));
+        assert!(c.undo());
+        assert_eq!(order(&c), vec![a, b, third]);
+        assert!(c.redo());
+        assert_eq!(c.doc, arranged);
+        assert!(c.move_blocks(&[third], a, DropPlace::After));
+        assert!(c.move_blocks(&[b], third, DropPlace::After));
+        assert!(c.doc.blocks.iter().all(|b| !matches!(b.kind, BlockKind::Grid)));
+        for _ in 0..5 { assert!(c.undo()); }
+        assert_eq!(c.doc, original);
+    }
+
+    #[test]
+    fn move_images_splits_only_the_target_in_a_stacked_column() {
+        let mut c = doc(concat!("<title>T</title><grid><column width-ratio=\"0.5\"><img src=\"a.png\"/><img src=\"b.png\"/></column>",
+            "<column width-ratio=\"0.5\"><img src=\"c.png\"/></column></grid><p>end</p>"));
+        let (a, b, third) = (id(&c, 1), id(&c, 2), id(&c, 3));
+        assert!(matches!(c.kind_of(a), Some(BlockKind::Image { .. })));
+        assert!(matches!(c.kind_of(b), Some(BlockKind::Image { .. })));
+        assert!(matches!(c.kind_of(third), Some(BlockKind::Image { .. })));
+        assert!(c.move_image_beside(third, b, true));
+        // The emptied outer column dissolves; the first image stays above the pair.
+        assert_eq!(c.doc.blocks[0].id, a);
+        let row = &c.doc.blocks[1];
+        assert!(matches!(row.kind, BlockKind::Grid));
+        assert_eq!(row.children.iter().map(|col| col.children[0].id).collect::<Vec<_>>(), vec![b, third]);
+        assert!(c.move_blocks(&[third], b, DropPlace::Before));
+        assert_eq!(c.doc.blocks.iter().take(3).map(|b| b.id).collect::<Vec<_>>(), vec![a, third, b]);
+    }
+
+    #[test]
+    fn move_images_between_scopes_and_reject_invalid_targets() {
+        let mut c = doc("<title>T</title><img src=\"a.png\"/><table><tbody><tr><td><img src=\"b.png\"/></td></tr></tbody></table><p>end</p>");
+        let (a, b) = (id(&c, 1), id(&c, 2));
+        assert!(c.move_image_beside(a, b, false));
+        assert_eq!(c.sel, Selection::caret(Pos::new(a, 0)));
+        assert!(c.units().iter().find(|u| u.id == a).unwrap().scope.is_some());
+        let n = c.undo.len();
+        assert!(!c.move_image_beside(a, a, true));
+        assert!(!c.move_image_beside(a, TITLE, true));
+        assert!(!c.move_image_beside(TITLE, b, true));
+        assert_eq!(c.undo.len(), n);
     }
 
     #[test]

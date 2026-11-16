@@ -99,7 +99,7 @@ pub(super) fn get(url: &str, limit: u64, seconds: u64, testing: bool, out: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::TcpListener;
+    use std::net::{Shutdown, TcpListener};
 
     fn serve(response: Vec<u8>, testing: bool, limit: u64) -> (Result<(), Failure>, Vec<u8>) {
         let server = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -109,8 +109,16 @@ mod tests {
             for _ in 0..100 {
                 if let Ok((mut stream, _)) = server.accept() {
                     stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
-                    let _ = stream.read(&mut [0; 4096]);
+                    let mut request = BufReader::new(&mut stream);
+                    loop {
+                        let mut line = String::new();
+                        if request.read_line(&mut line).unwrap() == 0 { return }
+                        if line == "\r\n" { break }
+                    }
                     let _ = stream.write_all(&response);
+                    // Let curl read the response before closing the receive side.
+                    let _ = stream.shutdown(Shutdown::Write);
+                    let _ = io::copy(&mut stream, &mut io::sink());
                     return
                 }
                 std::thread::sleep(Duration::from_millis(10));
@@ -125,15 +133,15 @@ mod tests {
     #[test]
     fn bounds_real_bodies_and_classifies_http_failures() {
         let (result, body) = serve(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nquiet.md".to_vec(), true, 8);
-        assert!(result.is_ok()); assert_eq!(body, b"quiet.md");
+        assert!(result.is_ok(), "{result:?}"); assert_eq!(body, b"quiet.md");
         let (result, body) = serve(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\ntoo many bytes".to_vec(), true, 8);
         assert!(result.is_err()); assert!(body.len() <= 8);
         let (result, _) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nshort".to_vec(), true, 100);
         assert!(result.is_err());
         for status in [404, 403, 429, 500] {
-            let (result, _) = serve(format!("HTTP/1.1 {status} Error\r\nRetry-After: 120\r\nContent-Length: 0\r\n\r\n").into_bytes(), true, 64);
+            let (result, _) = serve(format!("HTTP/1.1 {status} Error\r\nConnection: close\r\nRetry-After: 120\r\nContent-Length: 0\r\n\r\n").into_bytes(), true, 64);
             let err = result.unwrap_err();
-            assert!(err.message.contains(&format!("HTTP {status}")));
+            assert!(err.message.contains(&format!("HTTP {status}")), "{err:?}");
             assert_eq!(err.retry_after, matches!(status, 403 | 429).then_some(Duration::from_secs(120)));
         }
         assert!(serve(b"HTTP/1.1 200 OK\r\n\r\n".to_vec(), false, 64).0.is_err());

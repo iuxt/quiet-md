@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   check:
-    name: test + clippy
+    name: macOS build + checks
     # Exercise AppKit and Metal on macOS; Windows checks run separately.
     runs-on: macos-15
     timeout-minutes: 90

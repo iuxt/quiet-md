@@ -858,6 +858,23 @@ impl R<'_> {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |e, ev: &MouseDownEvent, window, cx| {
+                    if !e.read_only && !e.markdown && ev.click_count == 1 && !ev.modifiers.shift && e.img.crop.is_none() {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                        let open = e.image_active(id, e.focus.is_focused(window)).then_some(id);
+                        e.press_handle(id, ev.position);
+                        if let Some(d) = &mut e.block_drag {
+                            d.open_image = open;
+                        }
+                        e.core.clear_block_sel();
+                        e.core.cell_sel = None;
+                        e.core.sel = Selection::caret(Pos::new(id, 0));
+                        e.dragging = false;
+                        e.menu = None;
+                        window.focus(&e.focus);
+                        cx.notify();
+                        return;
+                    }
                     // A click on the selected image opens the viewer.
                     if ev.click_count == 1 && !ev.modifiers.shift && e.img.crop.is_none() && e.image_active(id, e.focus.is_focused(window)) {
                         cx.stop_propagation();
@@ -1508,7 +1525,7 @@ impl Editor {
 
     // ---- lightbox
 
-    fn open_lightbox(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_lightbox(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let mut ids = vec![];
         self.core.doc.for_each_block(&mut |b: &Block| {
             if matches!(b.kind, BlockKind::Image { .. }) {

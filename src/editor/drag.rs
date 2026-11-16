@@ -34,6 +34,8 @@ pub struct BlockDrag {
     size: Size<Pixels>,
     /// The window was active at the press (losing focus cancels).
     active: Option<bool>,
+    /// A click on an already-selected image opens its viewer on release.
+    pub(super) open_image: Option<BlockId>,
 }
 
 #[derive(Clone, Debug)]
@@ -48,6 +50,8 @@ struct BlockDrop {
     nest: bool,
     /// The container the blocks land in, tinted.
     area: Option<Bounds<Pixels>>,
+    /// A vertical indicator places an image beside another image.
+    side: Option<bool>,
 }
 
 /// A drop found by walking the page under the pointer.
@@ -208,7 +212,7 @@ impl Editor {
         let index = super::core::block_index(&self.core.doc);
         let size = ids_union(&w, &index, &ids).map_or(size(px(0.), px(0.)), |b| b.size);
         drop(bb);
-        self.block_drag = Some(BlockDrag { ids, sel, from: at, at, started: false, drop: None, scrolled: None, size, active: None });
+        self.block_drag = Some(BlockDrag { ids, sel, from: at, at, started: false, drop: None, scrolled: None, size, active: None, open_image: None });
     }
 
     pub(super) fn block_drag_move(&mut self, at: Point<Pixels>, pressed: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -237,6 +241,10 @@ impl Editor {
     pub(super) fn end_block_drag(&mut self, at: Option<Point<Pixels>>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = self.block_drag.take() else { return };
         if !d.started {
+            if at.is_some() && let Some(id) = d.open_image {
+                self.open_lightbox(id, window, cx);
+            }
+            cx.notify();
             return;
         }
         self.toolbar_hidden = false;
@@ -244,7 +252,10 @@ impl Editor {
         // A press that hardly moved is a click.
         if f32::from(m.x).hypot(f32::from(m.y)) > 10.
             && let Some(drop) = d.drop
-            && self.core.move_blocks(&d.ids, drop.target, drop.place)
+            && match drop.side {
+                Some(after) => self.core.move_image_beside(d.ids[0], drop.target, after),
+                None => self.core.move_blocks(&d.ids, drop.target, drop.place),
+            }
         {
             self.core.clear_block_sel();
             self.drop_flash = Some((d.ids, Instant::now()));
@@ -274,6 +285,9 @@ impl Editor {
     fn find_drop(&self, p: Point<Pixels>, ids: &[BlockId]) -> Option<BlockDrop> {
         if !self.list.viewport_bounds().contains(&p) {
             return None;
+        }
+        if !self.markdown && let [id] = ids && let Some(drop) = self.image_side_drop(p, *id) {
+            return Some(drop);
         }
         let bb = self.block_bounds.borrow();
         let set: HashSet<BlockId> = ids.iter().copied().collect();
@@ -342,7 +356,27 @@ impl Editor {
             .last()
             .filter(|b| !matches!(b.kind, BlockKind::Column { .. } | BlockKind::Callout { .. } | BlockKind::Grid))
             .and_then(|b| w.span(b));
-        Some(BlockDrop { target: hit.target, place: hit.place, line, hints, nest: hit.place == DropPlace::FirstChild, area })
+        Some(BlockDrop { target: hit.target, place: hit.place, line, hints, nest: hit.place == DropPlace::FirstChild, area, side: None })
+    }
+
+    fn image_side_drop(&self, p: Point<Pixels>, id: BlockId) -> Option<BlockDrop> {
+        let bb = self.block_bounds.borrow();
+        let images = self.img.boxes.borrow();
+        let (&target, rect) = images.iter().filter(|(target, rect)| {
+            **target != id && bb.get(target).is_some_and(|b| {
+                p.x >= b.left() - px(24.) && p.x <= b.right() + px(24.)
+                    && p.y > rect.top() + (rect.size.height * 0.2).min(px(24.))
+                    && p.y < rect.bottom() - (rect.size.height * 0.2).min(px(24.))
+            })
+        }).min_by(|a, b| dist_x(p.x, a.1).total_cmp(&dist_x(p.x, b.1)))?;
+        let edge = (rect.size.width * 0.25).min(px(48.));
+        let after = if p.x < rect.left() + edge { false } else if p.x > rect.right() - edge { true } else { return None };
+        if !self.core.can_move_image_beside(id, target) {
+            return None;
+        }
+        let x = if after { rect.right() + px(4.) } else { rect.left() - px(6.) };
+        let line = Bounds::new(point(x, rect.top()), size(px(2.), rect.size.height));
+        Some(BlockDrop { target, place: DropPlace::After, line, hints: 0, nest: false, area: None, side: Some(after) })
     }
 
     /// Within 20px of the page's top or bottom edge the page scrolls 6px
@@ -424,7 +458,7 @@ impl Editor {
             }
             let l = drop.line;
             // The drop indicator: a 2pt accent line, its ends rounded.
-            layer = layer.child(div().absolute().left(l.left() - o.x).top(l.top() - o.y).w(l.size.width).h(px(2.)).rounded(px(1.)).bg(Theme::primary()));
+            layer = layer.child(div().absolute().left(l.left() - o.x).top(l.top() - o.y).w(l.size.width).h(l.size.height).rounded(px(1.)).bg(Theme::primary()));
             // The hint: bg-body segments covering the line, each with a
             // lighter inner bar and a 2px gap at its right end.
             let n = drop.hints;

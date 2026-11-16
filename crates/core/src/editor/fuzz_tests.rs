@@ -27,6 +27,8 @@ const SEED_DOC: &str = r#"<title>随机 <b>编辑</b></title>
 <table><colgroup><col width="120"/><col width="80"/><col width="80"/></colgroup><thead><tr><th><p>A</p></th><th><p>B</p></th><th><p>C</p></th></tr></thead><tbody><tr><td colspan="2" rowspan="2"><p>合并</p><ul><li>格内列表</li></ul></td><td><p>3</p></td></tr><tr><td><p>6</p></td></tr><tr><td><p>7</p></td><td><p>8</p></td><td><pre lang="text"><code>a
 b</code></pre></td></tr></tbody></table>
 <p>公式 <latex>E=mc^2</latex> 结束</p>
+<img src="a.png" width="240" height="120"/>
+<img src="b.png" width="120" height="240"/>
 <p></p>
 "#;
 
@@ -116,7 +118,7 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
     }
     let us = c.units();
     let any = |rng: &mut Rng| rng.pick(&us).id;
-    match rng.below(24) {
+    match rng.below(25) {
         0..=2 => {
             let s = *rng.pick(TEXTS);
             c.insert_text(s);
@@ -217,6 +219,15 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
                 c.paste_blocks(images.blocks);
             }
             "paste_image".into()
+        }
+        23 => {
+            let images: Vec<_> = us.iter().filter(|u| matches!(c.kind_of(u.id), Some(BlockKind::Image { .. }))).map(|u| u.id).collect();
+            if images.len() < 2 {
+                return "move_image_beside: no pair".into();
+            }
+            let (a, b, after) = (*rng.pick(&images), *rng.pick(&images), rng.chance(50));
+            c.move_image_beside(a, b, after);
+            format!("move_image_beside({a:?}, {b:?}, {after})")
         }
         _ => {
             c.trailing_line();

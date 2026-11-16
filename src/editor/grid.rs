@@ -37,6 +37,14 @@ fn contains(b: &Block, id: BlockId) -> bool {
     b.id == id || b.children.iter().any(|c| contains(c, id))
 }
 
+fn image_row(b: &Block) -> bool {
+    match b.kind {
+        BlockKind::Image { .. } => true,
+        BlockKind::Grid | BlockKind::Column { .. } => !b.children.is_empty() && b.children.iter().all(image_row),
+        _ => false,
+    }
+}
+
 /// The list item showing `id` (the deepest row on its path).
 pub(super) fn item_containing(items: &[Item], blocks: &[Block], id: BlockId) -> Option<usize> {
     let p = super::core::find_path(blocks, id)?;
@@ -168,7 +176,7 @@ impl R<'_> {
         let n = b.children.len().max(1);
         let ratios = ed.grid_ratios(b);
         let sum = ratios.iter().sum::<f32>().max(1e-6);
-        let horizontal = env.width >= HORIZONTAL_MIN;
+        let horizontal = env.width >= HORIZONTAL_MIN || image_row(b);
         let dragging = ed.col_drag.as_ref().is_some_and(|d| d.grid == b.id);
         // Hovering a gap's circle (above the grid) still counts as hovering the grid.
         let focused = !ed.read_only
