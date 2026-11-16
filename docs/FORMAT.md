@@ -1,22 +1,22 @@
 # 存储格式
 
-当前最高支持 FORMAT 5。未启用 Git 的文档库继续使用下述标题文件名布局；启用 Git 后改为 UUID 文件名、根目录 `quiet.json` 共享元数据，并在转换前保留备份，详见 [GIT.md](GIT.md)。新版本创建的格式标记为 5，旧的 FORMAT 4 文档库仍可读取。
+当前最高支持 FORMAT 5。应用内新建、导入和复制的文章统一使用固定 UUID 文件名，与 Git 是否启用无关；默认元数据在 `.quiet/index.json`，启用 Git 后使用根目录 `quiet.json`，详见 [GIT.md](GIT.md)。旧的 FORMAT 4 文档库仍可读取，在写入第一篇 UUID 文档前提升格式标记为 5。
 
-## 文档库目录（FORMAT 4）
+## 文档库目录（FORMAT 4/5）
 
 默认位置：`~/Documents/Quiet.md`（「文稿」里的独立文件夹，用户能直接看到和备份）。首次启动可以改到别处，选定的位置记在本机应用数据目录的 `quiet-md/library.json`（`store::Location`，只有 `path` 一个字段；以后加字段一律 `#[serde(default)]`）。环境变量 `QUIET_MD_HOME` 可以临时指定别处，测试一律用它。
 
-磁盘就是侧栏：文件夹是真实目录，每篇文档一个文件，以标题命名（转义规则见 `layout::file_name_for`，同名加 ` 2`）。设计见 `docs/design/real-folders.md`。
+磁盘就是侧栏：文件夹是真实目录，应用内新建文章使用 `<id>.xml` / `<id>.md`，标题变化不改文件名，同名文章使用不同 UUID。旧库和手工放入的标题文件名仍兼容；启用 Git 时备份并统一转换。文件夹仍按标题命名（转义规则见 `layout::file_name_for`）。
 
 ```
 Quiet.md/
 ├── 工作/                文件夹
-│   ├── 周报.xml          DocxXML 文档
-│   └── 方案.md           Markdown 文档
-├── 随手记.xml
+│   ├── <uuid-1>.xml     DocxXML 文档
+│   └── <uuid-2>.md      Markdown 文档
+├── <uuid-3>.xml
 ├── .assets/             粘贴或插入的图片、附件；.assets/thumbs 是文件预览缩略图
 └── .quiet/              应用自己的数据
-    ├── format.json      {"format": 4}：目录布局版本（store::FORMAT）
+    ├── format.json      {"format": 5}：目录布局版本（store::FORMAT）
     ├── index.json       相对路径 → 附加信息（见下）
     ├── index.json.bak   上一版 index.json
     ├── settings.json    窗口级 UI 设置（侧栏宽度等）
@@ -41,7 +41,7 @@ Quiet.md/
 
 | 字段 | 含义 | 省略时 |
 |---|---|---|
-| `id` | 运行期 id，编辑器、窗口、撤销用；不是链接的依据 | 必填 |
+| `id` | 文档 id；UUID 命名的文章与文件名相同，链接仍使用相对路径 | 必填 |
 | `created` / `modified` | unix 秒 | 必填 |
 | `pinned` | 置顶 | false |
 | `starred` | 收藏时间，0 表示未收藏 | 0 |
@@ -53,7 +53,7 @@ Quiet.md/
 | `info` | 文档信息行：`{hidden, created, modified}` | 只显示修改时间 |
 | `refs_hidden` | 隐藏引用列表 | false |
 
-文件夹归属、名字、是否 Markdown 都由路径决定，不进索引。删掉 `.quiet/index.json` 不丢正文、结构和链接，只丢置顶、收藏、手动排序这些附加信息。新字段一律带 `#[serde(default)]`，值为默认时不写出。
+UUID 文章额外保存 `stable_name: true` 与显示标题 `title`，文件夹归属和是否 Markdown 仍由路径决定。JSON 元数据应与正文一起备份：删掉 `.quiet/index.json` 不丢正文、结构和相对链接，但会丢附加信息及 UUID Markdown 文章的显示标题。启用 Git 后以 `quiet.json` 为元数据源。新字段一律带 `#[serde(default)]`，值为默认时不写出。
 
 ### 从旧布局迁移（FORMAT 3 → 4）
 

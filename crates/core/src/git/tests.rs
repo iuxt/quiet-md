@@ -20,11 +20,21 @@ fn configure(repo: &LibraryRepo, remote: &Path) {
 fn uuid_names_metadata_titles_links_and_trash_survive_reopen() {
     let lib = Library::new(); let mut store = lib.store();
     let folder = store.create_folder("笔记", None).unwrap();
-    let first = store.create_from_in(&doc("同名"), Some(&folder)).unwrap();
-    let md = store.create_markdown(&doc("Markdown 标题"), "---\nkey: keep\n---\n").unwrap();
-    let old = store.file_path(&first).unwrap();
-    let md_path = store.file_path(&md).unwrap();
+    // A pre-UUID library, to exercise conversion rather than new-document creation.
+    let first = uuid::Uuid::new_v4().to_string();
+    let md = uuid::Uuid::new_v4().to_string();
+    let old = lib.0.join("笔记/同名.xml");
+    let md_path = lib.0.join("Markdown 标题.md");
+    std::fs::write(&old, crate::docxml::serialize(&doc("同名"))).unwrap();
+    let path = lib.0.join(".quiet/index.json");
+    let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    for (path, id) in [("笔记/同名.xml", &first), ("Markdown 标题.md", &md)] {
+        metadata[path] = serde_json::json!({"id": id, "created": 1, "modified": 1});
+    }
+    std::fs::write(path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
     std::fs::write(&md_path, "[文章](笔记/同名.xml#段落)\n\n`[代码](笔记/同名.xml)`\n\n[引用][ref]\n\n[ref]: 笔记/同名.xml\n").unwrap();
+    drop(store);
+    let mut store = lib.store();
     store.enable_git().unwrap();
     assert!(lib.0.join(".quiet/before-git-5/index.json").is_file());
     assert!(!old.exists());

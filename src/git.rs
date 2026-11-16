@@ -128,7 +128,7 @@ impl Workspace {
             .child(div().text_size(px(theme::ui_font_small())).line_height(px(19.)).text_color(Theme::text_caption()).child(if enabled {
                 tr("文章使用唯一文件名，标题与分类保存在 quiet.json，图片使用 Git LFS。", "Notes use unique filenames, metadata lives in quiet.json, and assets use Git LFS.")
             } else {
-                tr("启用后使用 UUID 文件名并保留原文件备份。Git 备份不会自动推送。", "Enable UUID filenames with a backup of the originals. Backups are only pushed when you choose.")
+                tr("启用 Git 备份；旧标题文件名会先备份再转换。不会自动推送。", "Enable Git backup; older title-based files are backed up before conversion. Pushes are manual.")
             }));
         if let Some(panel) = &self.git {
             let field = |label: &'static str, entity: Entity<TextField>| div().w_full().flex().flex_col().gap(px(5.))

@@ -1,7 +1,7 @@
 //! On-disk library (FORMAT 4/5): the folders on disk are the library's folders
-//! and each document is a file named after its title (`工作/周报.xml`,
-//! `随手记.md`). What the files cannot say (pinned, order …) is kept per
-//! relative path in `.quiet/index.json`, a cache that can be lost; state that
+//! and new documents keep UUID file names. Display titles and other metadata
+//! (pinned, order …) are kept per relative path in `.quiet/index.json`, or
+//! `quiet.json` with Git enabled; state that
 //! belongs to this computer only (recently opened, window sizes, 本机文件)
 //! is kept outside the library.
 
@@ -69,14 +69,14 @@ pub struct Meta {
     /// The library never moves, trashes or deletes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// The title of a Markdown file in the library: its file name.
+    /// A library document's display title; separate from a UUID file name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Where it is in the library, `/`-separated (empty for a 本机文件). In
     /// the 回收站: where it was.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rel: String,
-    /// Git libraries keep the UUID file name when the display title changes.
+    /// Library documents keep the UUID file name when the display title changes.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stable_name: bool,
 }
@@ -1053,6 +1053,23 @@ impl Store {
         unreachable!()
     }
 
+    fn uuid_rel(&self, dir: &str, id: &str, ext: &str) -> Result<String> {
+        anyhow::ensure!(uuid::Uuid::parse_str(id).is_ok(), "新文档必须使用 UUID");
+        let rel = join_rel(dir, &format!("{id}.{ext}"));
+        match self.abs(&rel).symlink_metadata() {
+            Ok(_) => anyhow::bail!("已存在相同 UUID 的文件，未覆盖：{rel}"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(rel),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn require_uuid_format(&self) -> Result<()> {
+        let path = self.internal().join("format.json");
+        let marker: FormatMarker = serde_json::from_slice(&std::fs::read(&path)?)?;
+        if marker.format < FORMAT { write_atomic(&path, &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?; }
+        Ok(())
+    }
+
     /// The old layout's marker raised to 3 before its first Markdown document
     /// or 本机文件: older builds would drop their `markdown` / `path` / `name`.
     fn require_markdown_format(&self) -> Result<()> {
@@ -1244,7 +1261,8 @@ impl Store {
         if self.flat { return self.list_flat(_lock.is_some()); }
         let found = layout::scan(&self.root);
         let mut disk = self.to_disk();
-        let old_ids: HashMap<_, _> = if self.git_enabled() { disk.values().map(|meta| (meta.id.clone(), meta.clone())).collect() } else { HashMap::new() };
+        let stable_names = self.git_enabled() || self.index.values().any(|meta| meta.stable_name);
+        let old_ids: HashMap<_, _> = if stable_names { disk.values().map(|meta| (meta.id.clone(), meta.clone())).collect() } else { HashMap::new() };
         let mut keys: HashSet<String> = found.dirs.iter().map(|d| format!("{d}/")).collect();
         keys.extend(found.docs.iter().cloned());
         keys.extend(found.pending.iter().cloned());
@@ -1256,7 +1274,7 @@ impl Store {
             let t = std::fs::metadata(self.abs(key.trim_end_matches('/'))).ok().and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or_else(now);
             let mut attached = Attached { id: String::new(), created: t, modified: t, ..Attached::of("", &Meta::default()) };
-            if self.git_enabled() && !key.ends_with('/') && let Some(id) = Path::new(key).file_stem().and_then(|s| s.to_str())
+            if stable_names && !key.ends_with('/') && let Some(id) = Path::new(key).file_stem().and_then(|s| s.to_str())
                 && uuid::Uuid::parse_str(id).is_ok() {
                 attached = old_ids.get(id).cloned().unwrap_or(attached); attached.id = id.to_string();
             }
@@ -1377,7 +1395,7 @@ impl Store {
     }
 
     /// `save` for callers that already hold the write lock. A new id becomes a
-    /// DocxXML file at the top of the library, named after its title.
+    /// DocxXML file at the top of the library, named by its UUID.
     fn save_now(&mut self, id: &str, doc: &Document) -> Result<Meta> { self.save_in(id, doc, None) }
 
     /// `save_now`, a new id going into folder `parent`.
@@ -1386,9 +1404,8 @@ impl Store {
         if new {
             let t = now();
             let dir = self.folder_rel(parent);
-            let stable_name = self.git_enabled();
-            let base = if stable_name { id.to_string() } else { file_name_for(&doc.title.text) };
-            let rel = if self.flat { String::new() } else { join_rel(&dir, &self.free_name(&dir, &base, Some("xml"), None)) };
+            let stable_name = !self.flat;
+            let rel = if self.flat { String::new() } else { self.require_uuid_format()?; self.uuid_rel(&dir, id, "xml")? };
             self.index.insert(id.to_string(), Meta { created: t, modified: t, rel, stable_name, name: stable_name.then(|| doc.title.text.clone()), ..Default::default() });
             if !dir.is_empty() { derive_tree(&mut self.index); }
         }
@@ -1472,7 +1489,7 @@ impl Store {
     }
 
     /// A new Markdown document in the library (导入, 创建副本): `front`
-    /// matter, then `doc`; named after `doc`'s title.
+    /// matter, then `doc`; a UUID file name and a separate display title.
     pub fn create_markdown(&mut self, doc: &Document, front: &str) -> Result<String> { self.create_markdown_in(doc, front, None) }
 
     /// `create_markdown` into folder `parent`, like `create_from_in`.
@@ -1486,10 +1503,9 @@ impl Store {
             self.index.insert(id.clone(), Meta { created: t, modified: t, markdown: true, name: Some(doc.title.text.trim().to_string()), ..Default::default() });
         } else {
             let dir = self.folder_rel(parent);
-            let stable_name = self.git_enabled();
-            let base = if stable_name { id.clone() } else { file_name_for(&doc.title.text) };
-            let rel = join_rel(&dir, &self.free_name(&dir, &base, Some("md"), None));
-            self.index.insert(id.clone(), Meta { created: t, modified: t, rel, stable_name, name: stable_name.then(|| doc.title.text.clone()), ..Default::default() });
+            self.require_uuid_format()?;
+            let rel = self.uuid_rel(&dir, &id, "md")?;
+            self.index.insert(id.clone(), Meta { created: t, modified: t, rel, stable_name: true, name: Some(doc.title.text.clone()), ..Default::default() });
             derive_tree(&mut self.index);
         }
         let text = format!("{front}{}", crate::markdown::write_file(doc, "", None));
@@ -2186,12 +2202,58 @@ mod tests {
     }
 
     #[test]
+    fn new_documents_keep_uuid_names_without_git() {
+        let lib = Lib::new("uuid-without-git");
+        let mut s = lib.open();
+        std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":4}").unwrap();
+        assert!(!s.git_enabled());
+        let collision = uuid::Uuid::new_v4().to_string();
+        let collision_path = lib.0.join(format!("{collision}.xml"));
+        std::fs::write(&collision_path, "keep existing bytes").unwrap();
+        assert!(s.save(&collision, &doc("不能覆盖")).is_err());
+        assert_eq!(std::fs::read_to_string(collision_path).unwrap(), "keep existing bytes");
+        let (xml, mut d) = s.create().unwrap();
+        let xml_path = s.file_path(&xml).unwrap();
+        assert_eq!(xml_path.file_name().unwrap().to_str(), Some(format!("{xml}.xml").as_str()));
+        d.title = crate::model::RichText::plain("第一次输入标题");
+        s.save(&xml, &d).unwrap();
+        s.rename(&xml, "标题再次改变").unwrap();
+        assert_eq!(s.file_path(&xml).unwrap(), xml_path);
+        let other = s.create_from(&doc("标题再次改变")).unwrap();
+        assert_ne!(s.file_path(&other).unwrap().file_name(), xml_path.file_name());
+        let folder = s.create_folder("Folder", None).unwrap();
+        let md = s.create_markdown_in(&doc("Markdown 标题"), "---\nkeep: true\n---\n", Some(&folder)).unwrap();
+        let md_path = s.file_path(&md).unwrap();
+        assert_eq!(md_path.file_name().unwrap().to_str(), Some(format!("{md}.md").as_str()));
+        s.rename(&md, "另一个显示标题").unwrap();
+        assert_eq!(s.file_path(&md).unwrap(), md_path);
+        let index: serde_json::Value = serde_json::from_slice(&std::fs::read(lib.0.join(".quiet/index.json")).unwrap()).unwrap();
+        assert_eq!(index[format!("Folder/{md}.md")]["title"], "另一个显示标题");
+        assert!(index[format!("{xml}.xml")]["stable_name"].as_bool().unwrap());
+        assert_eq!(serde_json::from_slice::<FormatMarker>(&std::fs::read(lib.0.join(".quiet/format.json")).unwrap()).unwrap().format, FORMAT);
+        assert!(!lib.0.join(".git").exists());
+        drop(s);
+        let mut s = lib.open();
+        assert_eq!(s.load(&xml).unwrap().title.text, "标题再次改变");
+        assert_eq!(s.load(&md).unwrap().title.text, "另一个显示标题");
+        assert!(std::fs::read_to_string(&md_path).unwrap().starts_with("---\nkeep: true\n---\n"));
+        std::fs::rename(lib.0.join("Folder"), lib.0.join("Moved outside")).unwrap();
+        assert_eq!(s.list().iter().find(|e| e.id == md).unwrap().title, "另一个显示标题");
+        s.set_parent(&md, None).unwrap();
+        assert_eq!(s.file_path(&md).unwrap().file_name(), md_path.file_name());
+        s.delete(&md, None).unwrap(); s.restore(&md).unwrap();
+        assert_eq!(s.file_path(&md).unwrap().file_name(), md_path.file_name());
+        assert_eq!(s.load(&md).unwrap().title.text, "另一个显示标题");
+        assert!(!s.git_enabled());
+    }
+
+    #[test]
     fn markdown_documents_stay_markdown() {
         let lib = Lib::new("markdown");
         let mut s = lib.open();
         let mut d = crate::markdown::parse_file("Hello *there*\n", "Note", None);
         let id = s.create_markdown(&d, "---\na: 1\n---\n").unwrap();
-        let file = lib.0.join("Note.md");
+        let file = lib.0.join(format!("{id}.md"));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "---\na: 1\n---\nHello *there*\n");
         let e = s.list().into_iter().find(|e| e.id == id).unwrap();
         assert!(e.meta.markdown);
@@ -2201,13 +2263,12 @@ mod tests {
         loaded.blocks.push(crate::model::Block::text("more"));
         s.save(&id, &loaded).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "---\na: 1\n---\nHello *there*\n\nmore\n");
-        // A title change is the file's name, not its contents.
+        // A title change updates metadata, keeping the UUID file and body.
         d = s.load(&id).unwrap();
         d.title = crate::model::RichText::plain("Renamed");
         s.save(&id, &d).unwrap();
         assert_eq!(s.load(&id).unwrap().title.text, "Renamed");
-        let file = lib.0.join("Renamed.md");
-        assert!(!lib.0.join("Note.md").exists());
+        assert_eq!(s.file_path(&id).unwrap(), file);
         assert!(!std::fs::read_to_string(&file).unwrap().contains("Renamed"));
         // Through the 回收站 and back as Markdown.
         s.delete(&id, None).unwrap();
@@ -2426,7 +2487,7 @@ mod tests {
         assert!(lib.0.join(".quiet/format.json").is_file());
         // The library holds the note and its own hidden folder, nothing else.
         let names: Vec<String> = std::fs::read_dir(&lib.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
-        assert_eq!({ let mut n = names; n.sort(); n }, [".quiet", "一.xml"]);
+        assert_eq!({ let mut n = names; n.sort(); n }, [".quiet".to_string(), format!("{id}.xml")]);
     }
 
     #[test]
@@ -2903,8 +2964,8 @@ mod tests {
         assert_eq!(s.list().len(), 1);
     }
 
-    /// Moving and renaming change the files, and the links pointing at them
-    /// (and out of them) follow; an open editor's baseline follows too.
+    /// Folder moves rewrite relative links; titles keep the UUID file name.
+    /// An open editor's baseline follows the rewritten links too.
     #[test]
     fn moves_and_renames_keep_links() {
         let lib = Lib::new("relink");
@@ -2913,36 +2974,37 @@ mod tests {
         let b = s.create_from(&linking("乙", &[(&a, "甲")])).unwrap();
         let a_doc = linking("甲", &[(&b, "乙")]);
         s.save(&a, &a_doc).unwrap();
-        assert!(std::fs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"乙.xml\""));
+        assert!(std::fs::read_to_string(s.abs(&format!("{a}.xml"))).unwrap().contains(&format!("href=\"{b}.xml\"")));
         s.load_for_edit(&a, false).unwrap();
         let f = s.create_folder("夹", None).unwrap();
         assert!(lib.0.join("夹").is_dir());
         s.set_parent(&b, Some(&f)).unwrap();
-        assert!(s.abs("夹/乙.xml").is_file() && !s.abs("乙.xml").exists());
-        assert!(std::fs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"夹/乙.xml\""));
-        assert!(std::fs::read_to_string(s.abs("夹/乙.xml")).unwrap().contains("href=\"../甲.xml\""));
+        assert!(s.abs(&format!("夹/{b}.xml")).is_file() && !s.abs(&format!("{b}.xml")).exists());
+        assert!(std::fs::read_to_string(s.abs(&format!("{a}.xml"))).unwrap().contains(&format!("href=\"夹/{b}.xml\"")));
+        assert!(std::fs::read_to_string(s.abs(&format!("夹/{b}.xml"))).unwrap().contains(&format!("href=\"../{a}.xml\"")));
         // The open editor of 甲 saves without a conflict.
         s.save(&a, &a_doc).unwrap();
         s.rename(&f, "新夹").unwrap();
-        assert!(std::fs::read_to_string(s.abs("甲.xml")).unwrap().contains("href=\"新夹/乙.xml\""));
-        // A title typed in the editor renames the file; a taken name is numbered.
+        assert!(std::fs::read_to_string(s.abs(&format!("{a}.xml"))).unwrap().contains(&format!("href=\"新夹/{b}.xml\"")));
+        // A title typed in the editor keeps the file; equal titles have distinct UUIDs.
         s.save(&a, &linking("丙", &[(&b, "乙")])).unwrap();
-        assert!(s.abs("丙.xml").is_file() && !s.abs("甲.xml").exists());
-        assert!(std::fs::read_to_string(s.abs("新夹/乙.xml")).unwrap().contains("href=\"../丙.xml\""));
+        assert_eq!(s.file_path(&a).unwrap(), s.abs(&format!("{a}.xml")));
+        assert_eq!(s.load(&a).unwrap().title.text, "丙");
+        assert!(std::fs::read_to_string(s.abs(&format!("新夹/{b}.xml"))).unwrap().contains(&format!("href=\"../{a}.xml\"")));
         let c = s.create_from(&doc("丙")).unwrap();
-        assert_eq!(s.file_path(&c).unwrap(), s.abs("丙 2.xml"));
+        assert_eq!(s.file_path(&c).unwrap(), s.abs(&format!("{c}.xml")));
         s.save(&c, &doc("丙")).unwrap();
-        assert_eq!(s.file_path(&c).unwrap(), s.abs("丙 2.xml"), "a numbered name fits its title");
+        assert_eq!(s.file_path(&c).unwrap(), s.abs(&format!("{c}.xml")), "the UUID stays fixed");
         let list = s.list();
         assert_eq!(targets(list.iter().find(|e| e.id == b).unwrap()), std::slice::from_ref(&a));
         // Undo of the move puts the file back, links too.
         let journal = s.track_file_changes();
         s.set_parent(&b, None).unwrap();
         let changes = journal.take();
-        assert!(s.abs("乙.xml").is_file());
+        assert!(s.abs(&format!("{b}.xml")).is_file());
         s.apply_file_history(&changes, false).unwrap();
-        assert!(s.abs("新夹/乙.xml").is_file() && !s.abs("乙.xml").exists());
-        assert!(std::fs::read_to_string(s.abs("丙.xml")).unwrap().contains("href=\"新夹/乙.xml\""));
+        assert!(s.abs(&format!("新夹/{b}.xml")).is_file() && !s.abs(&format!("{b}.xml")).exists());
+        assert!(std::fs::read_to_string(s.abs(&format!("{a}.xml"))).unwrap().contains(&format!("href=\"新夹/{b}.xml\"")));
     }
 
     /// What is done in the Finder shows: new folders and files, removed ones,
@@ -3007,12 +3069,12 @@ mod tests {
         assert!(s.list().is_empty());
         assert_eq!(s.list_trash().len(), 1);
         s.restore(&f).unwrap();
-        assert!(s.abs("夹/里/甲.xml").is_file() && s.abs("夹/里/附件.pdf").is_file());
+        assert!(s.abs(&format!("夹/里/{a}.xml")).is_file() && s.abs("夹/里/附件.pdf").is_file());
         let list = s.list();
         assert_eq!(folders_of(&list, &a), ["夹", "里"]);
         s.delete(&f, None).unwrap();
         s.apply_file_history(&changes, false).unwrap();
-        assert!(s.abs("夹/里/甲.xml").is_file() && s.abs("夹/里/附件.pdf").is_file());
+        assert!(s.abs(&format!("夹/里/{a}.xml")).is_file() && s.abs("夹/里/附件.pdf").is_file());
         assert_eq!(s.list().len(), 3);
     }
 
@@ -3121,7 +3183,7 @@ mod tests {
         // systems stamp a little behind the clock, so leave a gap.
         std::thread::sleep(std::time::Duration::from_millis(50));
         s.save(&a, &doc("甲改")).unwrap();
-        s.create_from(&doc("新的")).unwrap();
+        let new = s.create_from(&doc("新的")).unwrap();
         std::fs::write(lib.0.join(".quiet/preferences.json"), b"{\"new\":1}").unwrap();
         drop(s);
         // Pruning: not before both 30 days and three launches.
@@ -3130,7 +3192,7 @@ mod tests {
         assert!(Store::backup_dir(&lib.0).is_some());
         let report = Store::restore_backup(&lib.0).unwrap();
         assert_eq!(report.changed, 2);
-        assert!(report.kept.join("夹/甲改.xml").is_file() && report.kept.join("新的.xml").is_file());
+        assert!(report.kept.join("夹/甲改.xml").is_file() && report.kept.join(format!("{new}.xml")).is_file());
         assert_eq!(std::fs::read(lib.0.join("docs").join(format!("{a}.xml"))).unwrap(), original);
         assert!(lib.0.join("assets/p.png").is_file() && !lib.0.join(".assets").exists());
         assert_eq!(std::fs::read(lib.0.join("preferences.json")).unwrap(), b"{\"new\":1}");
@@ -3194,7 +3256,7 @@ mod tests {
             }).unwrap();
             assert!(std::fs::read_to_string(&index).unwrap().contains(&ids[0]));
             if !flat {
-                assert!(lib.0.join("导入/笔记 4.md").is_file() && lib.0.join("导入/子/深处.xml").is_file());
+                assert!(lib.0.join(format!("导入/{}.md", ids[4])).is_file() && lib.0.join(format!("导入/子/{}.xml", ids[5])).is_file());
             }
             assert_eq!(journal.take().iter().filter(|d| d.before.is_none()).count(), 9);
             let mut again = lib.open();
