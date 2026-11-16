@@ -170,6 +170,35 @@ fn historical_images_and_markdown_titles_are_independent_of_current_files() {
 }
 
 #[test]
+fn historical_images_with_windows_paths_use_committed_assets() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    std::fs::create_dir_all(lib.0.join(".assets/nested")).unwrap();
+    std::fs::write(lib.0.join(".assets/nested/image.png"), b"old picture").unwrap();
+    let mut ids = Vec::new();
+    for source in [r".assets\nested\image.png", r"C:\Notes\.assets\nested\image.png"] {
+        let mut document = doc("Windows image");
+        document.blocks = vec![crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "path".into(), src: source.into(),
+            width: None, height: None, caption: None, crop: None }, RichText::default())];
+        ids.push(store.create_from(&document).unwrap());
+    }
+    let repo = lib.git(); configure(&repo, &Library::new().0);
+    let commit = repo.commit("old").unwrap().unwrap();
+    std::fs::write(lib.0.join(".assets/nested/image.png"), b"current picture").unwrap();
+    for id in ids {
+        let version = store.git_versions(&id).unwrap().into_iter().find(|v| v.name.ends_with(&commit)).unwrap();
+        let preview = store.version_document(&id, &version.name).unwrap();
+        let source = &preview.asset_sources()[0];
+        assert!(source.starts_with(".quiet/git-preview/"), "{source}");
+        assert_eq!(std::fs::read(lib.0.join(source)).unwrap(), b"old picture");
+        let restored = store.restore_version(&id, &version.name).unwrap();
+        let source = &restored.asset_sources()[0];
+        assert!(source.starts_with(".assets/"), "{source}");
+        assert_eq!(std::fs::read(lib.0.join(source)).unwrap(), b"old picture");
+    }
+    assert_eq!(std::fs::read(lib.0.join(".assets/nested/image.png")).unwrap(), b"current picture");
+}
+
+#[test]
 fn failed_fast_forward_restores_files_head_and_index() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("saved")).unwrap();

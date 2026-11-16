@@ -70,7 +70,7 @@
 - **Windows**: 설치 프로그램을 실행합니다. 기본적으로 현재 사용자에게만 설치되며, 제거해도 노트는 지워지지 않습니다. 처음 실행할 때 SmartScreen 창이 뜨면 **추가 정보 → 실행**을 누르세요.
 - **Linux**(실험적): `chmod +x quiet-md-*.AppImage` 후 실행합니다. FUSE가 없으면 `--appimage-extract-and-run`을 붙이세요. AppImage 0.1.10부터는 앱 안에서 업데이트할 수 있고, 그 이전 Linux 버전은 한 번 직접 설치해야 합니다. 직접 써 보는 테스트는 지금까지 Wayland의 Omarchy에서만 했습니다. 자세한 내용은 [Linux 안내](CONTRIBUTING.md#linux-experimental)를 참고하세요.
 
-이 포크는 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases)에서만 다운로드와 업데이트를 제공합니다. 첫 포크 버전은 직접 설치하고, 이후에는 앱에서 서명된 업데이트를 내려받아 문서를 저장한 뒤 다시 시작하여 설치합니다. 자동 확인은 설정 › 일반에서 끌 수 있습니다. 배포 전에 독립 Minisign 키와 플랫폼 서명이 필요합니다. [업데이트 및 배포 안내](docs/UPDATES.md)를 참고하세요.
+이 포크는 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases)에서만 다운로드와 업데이트를 제공합니다. 첫 포크 버전은 직접 설치하고, 이후에는 업데이트 버튼을 한 번 누르면 다운로드, 서명 확인, 모든 문서 저장, 다시 시작과 설치가 자동으로 진행됩니다. 자동 확인은 설정 › 일반에서 끌 수 있습니다. 배포 전에 독립 Minisign 키와 플랫폼 서명이 필요합니다. [업데이트 및 배포 안내](docs/UPDATES.md)를 참고하세요.
 
 처음 실행하면 인터페이스 언어, 라이브러리 위치, 빠른 메모 단축키를 고르고, Obsidian, Logseq, iA Writer, Typora의 노트를 복사해 가져올 수 있습니다. 빈 라이브러리에는 **Getting started** 가이드가 들어갑니다. 주요 기능을 10분 만에 둘러보는 안내입니다. 이미 있는 노트는 덮어쓰지 않습니다.
 

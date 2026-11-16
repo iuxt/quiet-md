@@ -97,7 +97,7 @@ On every platform, never commit credentials, private keys or certificate files.
 
 ### Uploads and in-app updates
 
-The app reads `https://github.com/iuxt/quiet-md/releases/latest/download/update-<platform>.json`. It checks 10 seconds after launch, every 12 hours, and when a window becomes active more than an hour after the last check. Automatic checks can be disabled in Settings › General. Downloads and restarts require a click; every open document goes through the normal save path before the installer starts. Packages are bound to an exact repository, version, platform and Minisign signature; macOS additionally requires the same code-signature team. See [the update and release guide](docs/UPDATES.md).
+The app reads `https://github.com/iuxt/quiet-md/releases/latest/download/update-<platform>.json`. It checks 10 seconds after launch, every 12 hours, and when a window becomes active more than an hour after the last check. Automatic checks can be disabled in Settings › General. Click **Update** once to download, verify, save every open document and restart to install. Automatic checks only discover versions. Failed or cancelled saves leave the verified package ready for a manual retry, without scheduling an installation on a later ordinary quit. Packages are bound to an exact repository, version, platform and Minisign signature; macOS additionally requires the same code-signature team. See [the update and release guide](docs/UPDATES.md).
 
 Before the first fork release, generate an independent update key on your secure release machine (`brew install minisign`), outside the checkout. This fork already has its public key configured. Only initialize a new key when establishing a new trust chain; keep the matching private key for future releases:
 

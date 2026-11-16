@@ -70,7 +70,7 @@
 - **Windows**: run the installer. By default it installs for the current user only, and uninstalling never deletes your notes. If SmartScreen appears on first launch, click **More info → Run anyway**.
 - **Linux** (experimental): `chmod +x quiet-md-*.AppImage` and run it; without FUSE, add `--appimage-extract-and-run`. AppImage 0.1.10 and later support in-app updates; older Linux versions need a one-time manual install. Interactive testing so far covers Omarchy on Wayland; see the [Linux notes](CONTRIBUTING.md#linux-experimental).
 
-This fork downloads and checks updates only from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). Install the first fork release manually; subsequent signed releases can be downloaded in the app and installed after saving and restarting. Automatic checks can be disabled in Settings › General. Publishing requires an independent Minisign key and signed release packages; see [the update and release guide](docs/UPDATES.md).
+This fork downloads and checks updates only from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). Install the first fork release manually; click **Update** once for subsequent signed releases to download, verify, save all open documents and restart to install. Automatic checks can be disabled in Settings › General. Publishing requires an independent Minisign key and signed release packages; see [the update and release guide](docs/UPDATES.md).
 
 On first launch, Quiet.md asks for the interface language, where to keep your library and the quick-note shortcut, and offers to copy in notes from Obsidian, Logseq, iA Writer or Typora. An empty library gets a **Getting started** guide — a ten-minute tour of the main features. Existing notes are never overwritten.
 

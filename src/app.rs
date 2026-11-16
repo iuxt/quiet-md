@@ -1781,8 +1781,9 @@ impl Global for SaveSafetyQa {}
 
 #[cfg(feature = "devtools")]
 pub(crate) fn check_save_safety(phase: &str, cx: &mut App) {
-    use crate::model::{Document, RichText};
-    let doc = |title: &str| Document { title: RichText::plain(title), ..Default::default() };
+    use crate::model::{Block, Document, RichText};
+    // Shared titles come from metadata; inject conflicts into the body as well.
+    let doc = |title: &str| Document { title: RichText::plain(title), blocks: vec![Block::text(title)], ..Default::default() };
     if phase == "setup" {
         let mut store = cx.global::<SharedStore>().clone();
         let mut windows = vec![];
@@ -1805,14 +1806,14 @@ pub(crate) fn check_save_safety(phase: &str, cx: &mut App) {
         for (handle, _) in &windows[..2] {
             handle.update(cx, |ws, _, _| assert!(ws.unsaved && matches!(ws.confirm, Some(Confirm::SaveFailed)))).unwrap();
         }
-        assert_eq!(store.load(&windows[2].1).unwrap().title.text, "local-C");
+        assert_eq!(store.load(&windows[2].1).unwrap().blocks[0].text.text, "local-C");
         windows[0].0.update(cx, |ws, window, cx| {
             ws.resolve_save_failed(true, window, cx);
             assert!(ws.unsaved);
             ws.confirm = None;
             ws.resolve_save_failed(false, window, cx);
             assert!(!ws.unsaved);
-            assert_eq!(ws.editor.as_ref().unwrap().read(cx).core.doc.title.text, "disk-A");
+            assert_eq!(ws.editor.as_ref().unwrap().read(cx).core.doc.blocks[0].text.text, "disk-A");
         }).unwrap();
         cx.set_global(SaveSafetyQa(windows));
         eprintln!("save-safety: all windows checked; successful sibling saved; retry and reload checked");
@@ -1823,14 +1824,14 @@ pub(crate) fn check_save_safety(phase: &str, cx: &mut App) {
             ws.after_save = None;
             ws.save_failed_copy(window, cx);
             assert!(!ws.unsaved);
-            assert_eq!(ws.editor.as_ref().unwrap().read(cx).core.doc.title.text, "disk-B");
-            assert!(ws.store.list().iter().any(|e| e.title.starts_with("local-B")));
+            assert_eq!(ws.editor.as_ref().unwrap().read(cx).core.doc.blocks[0].text.text, "disk-B");
+            assert!(ws.store.list().iter().any(|e| Some(&e.id) != ws.current.as_ref() && ws.store.load(&e.id).is_ok_and(|d| d.blocks[0].text.text == "local-B")));
         }).unwrap();
         windows[0].0.update(cx, |ws, _, cx| {
             ws.editor.as_ref().unwrap().update(cx, |e, cx| e.receive_document(&crate::editor::core::Core::new(doc("after-reload")), cx));
             ws.unsaved = true;
             assert!(ws.flush(cx));
-            assert_eq!(ws.store.load(ws.current.as_ref().unwrap()).unwrap().title.text, "after-reload");
+            assert_eq!(ws.store.load(ws.current.as_ref().unwrap()).unwrap().blocks[0].text.text, "after-reload");
         }).unwrap();
         eprintln!("save-safety: PASS; remaining conflict blocked quit; copy preserved; edit after reload saved cleanly");
         for (handle, _) in windows { handle.update(cx, |_, window, _| window.remove_window()).unwrap(); }

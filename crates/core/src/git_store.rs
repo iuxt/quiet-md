@@ -55,8 +55,9 @@ impl Store {
         if let Some(cover) = &doc.cover { sources.push(cover.src.clone()); }
         let mut paths = HashMap::new();
         for source in sources {
-            let relative = source.strip_prefix(".assets/").map(|s| format!(".assets/{s}"))
-                .or_else(|| source.split_once("/.assets/").map(|(_, s)| format!(".assets/{s}")));
+            let normalized = source.replace('\\', "/");
+            let relative = normalized.strip_prefix(".assets/").map(|s| format!(".assets/{s}"))
+                .or_else(|| normalized.split_once("/.assets/").map(|(_, s)| format!(".assets/{s}")));
             if let Some(relative) = relative { paths.insert(source, repo.revision_asset(commit, &relative, preview)?); }
         }
         rewrite_asset_sources(&mut doc.blocks, &paths);

@@ -271,6 +271,10 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.update(|cx| crate::app::check_save_safety(rest.trim(), cx)).unwrap();
                 continue;
             }
+            if cmd == "check-update-state" {
+                cx.update(|cx| crate::update::check_script_state(rest.trim(), cx)).unwrap();
+                continue;
+            }
             #[cfg(target_os = "macos")]
             let handled = mouse_step(ns_view, cmd, &nums(rest));
             #[cfg(not(target_os = "macos"))]

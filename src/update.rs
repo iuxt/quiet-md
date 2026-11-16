@@ -80,9 +80,33 @@ impl Updater {
             },
         })
     }
+
+    /// Only the download the user started may continue into saving/restarting.
+    fn downloaded(&mut self, m: Manifest, result: Result<PathBuf, http::Failure>) -> bool {
+        if !matches!(&self.state, State::Downloading(active) if active == &m) { return false }
+        self.state = match result {
+            Ok(path) => State::Ready(m, path),
+            Err(e) => {
+                self.retry = e.retry_after.and_then(|d| std::time::Instant::now().checked_add(d));
+                State::Failed(e.message)
+            },
+        };
+        matches!(self.state, State::Ready(..))
+    }
 }
 
 pub fn state(cx: &App) -> State { cx.try_global::<Updater>().map_or(State::Idle, |u| u.state.clone()) }
+
+#[cfg(feature = "devtools")]
+pub(crate) fn check_script_state(expected: &str, cx: &App) {
+    let state = match state(cx) {
+        State::Idle => "idle", State::Unsupported => "unsupported", State::Checking => "checking", State::Current => "current",
+        State::Available(_) => "available", State::Downloading(_) => "downloading", State::Ready(..) => "ready",
+        State::Installing(_) => "installing", State::Failed(_) => "failed",
+    };
+    assert_eq!(state, expected);
+    eprintln!("update-state: {state}");
+}
 
 fn set(state: State, cx: &mut App) {
     cx.global_mut::<Updater>().state = state;
@@ -153,8 +177,8 @@ pub fn progress(m: &Manifest) -> f32 {
     if m.size == 0 { 0. } else { (DOWNLOADED.load(Ordering::Relaxed) as f32 / m.size as f32).clamp(0., 1.) }
 }
 
-/// Downloads and verifies the version on offer.
-pub fn download(cx: &mut App) {
+/// One click downloads, verifies, saves all windows and restarts to install.
+pub fn start_update(cx: &mut App) {
     let State::Available(m) = state(cx) else { return };
     if cx.global::<Updater>().checking { return }
     DOWNLOADED.store(0, Ordering::Relaxed);
@@ -168,14 +192,9 @@ pub fn download(cx: &mut App) {
     cx.spawn(async move |cx| {
         let result = task.await;
         let _ = cx.update(|cx| {
-            let state = match result {
-                Ok(path) => State::Ready(m, path),
-                Err(e) => {
-                    cx.global_mut::<Updater>().retry = e.retry_after.and_then(|d| std::time::Instant::now().checked_add(d));
-                    State::Failed(e.message)
-                },
-            };
-            set(state, cx);
+            let restart = cx.global_mut::<Updater>().downloaded(m, result);
+            cx.refresh_windows();
+            if restart { install(cx); }
         });
     }).detach();
 }
@@ -376,6 +395,31 @@ fn team(app: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{newer, signed, validate, Manifest};
+
+    #[test]
+    fn only_verified_downloads_started_by_the_user_continue_to_install() {
+        use super::{State, Updater};
+        let m = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
+        let mut u = Updater { state: State::Idle, told: None, last: None, checking: false, manual: false, retry: None };
+        let path = std::path::PathBuf::from("verified-package");
+        // Discovering a release never installs or downloads it on its own.
+        assert_eq!(u.complete(Ok(Some(m.clone()))), Some(State::Available(m.clone())));
+        u.state = State::Available(m.clone());
+        assert!(!u.downloaded(m.clone(), Ok(path.clone())));
+        assert_eq!(u.state, State::Available(m.clone()));
+        u.state = State::Downloading(m.clone());
+        assert!(u.downloaded(m.clone(), Ok(path.clone())));
+        assert_eq!(u.state, State::Ready(m.clone(), path));
+        // A repeated completion cannot queue a second restart.
+        assert!(!u.downloaded(m.clone(), Ok("duplicate".into())));
+        u.state = State::Downloading(m.clone());
+        assert!(!u.downloaded(m.clone(), Err(super::http::Failure::message("signature"))));
+        assert_eq!(u.state, State::Failed("signature".into()));
+        u.state = State::Downloading(m.clone());
+        let mut stale = m.clone(); stale.version = "0.1.0".into();
+        assert!(!u.downloaded(stale, Ok("stale".into())));
+        assert_eq!(u.state, State::Downloading(m));
+    }
 
     #[test]
     fn checks_join_preserve_available_updates_and_respect_retry_after() {

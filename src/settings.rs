@@ -698,6 +698,7 @@ impl Workspace {
         if p.quick_hotkey != old.quick_hotkey {
             if p.quick_hotkey { crate::quick_note::register(cx); } else { crate::quick_note::suspend_hotkey(); }
         }
+        if p.auto_update && !old.auto_update { cx.defer(|cx| crate::update::check(false, cx)); }
         if p.appearance != old.appearance { apply_appearance(&p.appearance); }
         if p.theme_id() != old.theme_id() || p.lang() != old.lang() || sync_dark(cx) {
             refresh_all(self, cx);
@@ -1027,14 +1028,14 @@ impl Workspace {
 }
 
 /// The sidebar bar's 更新 pill, only while a new version is on offer:
-/// 更新 downloads it (the pill then fills with its progress), 重启更新
-/// installs it. Labels stay short: the bar keeps 72pt for it at the
-/// narrowest sidebar, and a longer one ellipsizes rather than clips.
+/// 更新 downloads, verifies and restarts after saving. 重启更新 retries
+/// when saving or installation could not finish. Labels stay short: the bar
+/// keeps 72pt for it at the narrowest sidebar; a longer one ellipsizes.
 pub(crate) fn update_pill(cx: &mut Context<Workspace>) -> Option<AnyElement> {
     use crate::update::State;
     let state = crate::update::state(cx);
     let (label, tip) = match &state {
-        State::Available(m) => (tr("更新", "Update").to_string(), crate::localized_format!("下载 Quiet.md {}", "Download Quiet.md {}", m.version)),
+        State::Available(m) => (tr("更新", "Update").to_string(), crate::localized_format!("更新到 {}：下载后会保存文档并自动重启", "Update to {}: save documents and restart automatically after downloading", m.version)),
         State::Downloading(m) => (format!("{:.0}%", crate::update::progress(m) * 100.), crate::localized_format!("正在下载 {}…", "Downloading {}…", m.version)),
         State::Ready(m, _) => (tr("重启更新", "Restart").to_string(), crate::localized_format!("重启后更新到 {}，打开的文档会先保存", "Restart into {}; open documents are saved first", m.version)),
         State::Installing(m) => (tr("即将更新", "Updating").to_string(), crate::localized_format!("Quiet.md 退出后安装 {}", "{} installs when Quiet.md quits", m.version)),
@@ -1051,7 +1052,7 @@ pub(crate) fn update_pill(cx: &mut Context<Workspace>) -> Option<AnyElement> {
         .when_some(fill, |d, f| d.w(px(56.)).child(ui::wave_fill(f, Theme::primary().opacity(0.18))))
         .child(div().relative().min_w_0().truncate().child(label))
         .tip(&tip, None)
-        .on_click(move |_, _, cx| match &state { State::Available(_) => crate::update::download(cx), State::Ready(..) => crate::update::install(cx), _ => {} })
+        .on_click(move |_, _, cx| match &state { State::Available(_) => crate::update::start_update(cx), State::Ready(..) => crate::update::install(cx), _ => {} })
         .into_any_element())
 }
 
@@ -1064,7 +1065,7 @@ fn update_row(cx: &mut Context<Workspace>) -> Div {
         State::Unsupported => (tr("软件更新", "Software update").into(), desc(tr("这个版本不能自动更新，请从 github.com/iuxt/quiet-md/releases 下载新版本。", "This copy cannot update itself. Download from github.com/iuxt/quiet-md/releases."))),
         State::Checking => (tr("正在检查更新…", "Checking for updates…").into(), None),
         State::Current => (tr("已是最新版本", "Quiet.md is up to date").into(), None),
-        State::Available(m) => (crate::localized_format!("新版本 {} 可用", "Version {} is available", m.version).into(), None),
+        State::Available(m) => (crate::localized_format!("新版本 {} 可用", "Version {} is available", m.version).into(), desc(tr("下载完成后会先保存所有文档，再自动重启安装。", "After downloading, Quiet.md saves all documents and restarts to install."))),
         State::Downloading(m) => (crate::localized_format!("正在下载 {}… {:.0}%", "Downloading {}… {:.0}%", m.version, crate::update::progress(m) * 100.).into(), None),
         State::Ready(m, _) => (crate::localized_format!("{} 已准备好", "{} is ready to install", m.version).into(), desc(tr("重启后完成更新，打开的文档会先保存。", "Quiet.md restarts to finish; open documents are saved first."))),
         State::Installing(m) => (crate::localized_format!("{} 将在退出后安装", "{} installs when Quiet.md quits", m.version).into(), None),
@@ -1072,7 +1073,7 @@ fn update_row(cx: &mut Context<Workspace>) -> Div {
     };
     let control = match &state {
         State::Checking | State::Downloading(_) | State::Installing(_) => None,
-        State::Available(_) => Some(button("update-download", tr("下载更新", "Download")).on_click(|_, _, cx| crate::update::download(cx))),
+        State::Available(_) => Some(button("update-download", tr("更新", "Update")).on_click(|_, _, cx| crate::update::start_update(cx))),
         State::Ready(..) => Some(button("update-install", tr("重启以更新", "Restart to Update")).on_click(|_, _, cx| crate::update::install(cx))),
         _ => Some(button("update-check", tr("检查更新", "Check Now")).on_click(|_, _, cx| crate::update::check(true, cx))),
     };

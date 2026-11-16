@@ -70,7 +70,7 @@
 - **Windows**：运行安装程序，默认只装到当前用户目录，卸载不会删除笔记。如果首次运行出现 SmartScreen 提示，点「更多信息 → 仍要运行」即可。
 - **Linux**（实验性）：`chmod +x quiet-md-*.AppImage` 后直接运行；没有 FUSE 时加 `--appimage-extract-and-run`。AppImage 从 0.1.10 起支持应用内更新；更早的 Linux 版本需先手动安装本版。目前只在 Omarchy（Wayland）上做过交互测试，详见 [Linux 说明](CONTRIBUTING.md#linux-experimental)。
 
-本分叉只从 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) 下载并检查更新。首个分叉版本需手动安装，之后可在应用内下载签名更新，保存文档并重启后安装。自动检查可在「设置 › 通用」关闭。正式发布前需配置独立 Minisign 密钥和平台签名，详见[更新与发布说明](docs/UPDATES.md)。
+本分叉只从 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) 下载并检查更新。首个分叉版本需手动安装，之后发现新版本会显示「更新」按钮，点击一次即可自动下载、验签、保存所有文档并重启安装；保存失败或取消时可重试。自动检查可在「设置 › 通用」关闭。正式发布前需配置独立 Minisign 密钥和平台签名，详见[更新与发布说明](docs/UPDATES.md)。
 
 首次启动时可以选择界面语言、文档库位置和随手记快捷键，并可从 Obsidian、Logseq、iA Writer、Typora 复制已有笔记进来。空文档库里会放一套「开始指南」，十分钟带你过一遍主要功能；已有的笔记不会被覆盖。
 
