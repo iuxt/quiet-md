@@ -49,7 +49,8 @@ function run(argv) {
   }
   for (var tick = 0; tick < 240; tick++) {
     if (targets.every(function (app) { return Boolean(app.terminated); })) return;
-    delay(0.25);
+    // NSRunningApplication refreshes its cached state only as the run loop runs.
+    $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.25));
   }
   throw new Error('Quiet.md 尚未退出，请处理保存提示或取消退出后重试；安装已停止。');
 }
