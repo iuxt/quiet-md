@@ -1,10 +1,10 @@
 //! Git LFS pointers, verified object cache and the basic HTTP transfer protocol.
-use super::Auth;
+use super::{Auth, Config, transport};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::{Path, PathBuf}, time::Duration};
+use std::{collections::BTreeMap, path::{Path, PathBuf}};
 
 const VERSION: &str = "version https://git-lfs.github.com/spec/v1\n";
 const LIMIT: u64 = crate::store::EXPORT_FILE_LIMIT;
@@ -50,9 +50,9 @@ impl Lfs {
         Ok(bytes)
     }
 
-    pub fn transfer(&self, remote: &str, endpoint: Option<&str>, pointers: &[Pointer], upload: bool, auth: &Auth, branch: &str) -> Result<()> {
+    pub fn transfer(&self, config: &Config, git_config: &git2::Config, pointers: &[Pointer], upload: bool, auth: &Auth) -> Result<()> {
         if pointers.is_empty() { return Ok(()) }
-        if let Some(path) = super::local_remote(remote) {
+        if let Some(path) = super::local_remote(&config.remote) {
             let repo = git2::Repository::open(path)?;
             let other = Self::new(repo.path());
             for p in pointers {
@@ -61,20 +61,20 @@ impl Lfs {
             }
             return Ok(());
         }
-        let base = match endpoint { Some(url) => url.to_string(), None => format!("{}.git/info/lfs", remote.trim_end_matches('/').trim_end_matches(".git")) };
+        let ssh_auth = transport::lfs_auth(config, auth, upload)?;
+        let base = ssh_auth.href.unwrap_or(transport::lfs_endpoint(config)?);
         let batch_url = format!("{}/objects/batch", base.trim_end_matches('/'));
-        super::http_url(&batch_url)?;
-        let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120)))
-            .max_redirects(0).build().into();
+        let agent = transport::http_agent(git_config, &batch_url)?;
         for chunk in pointers.chunks(100) {
             let mut request = agent.post(&batch_url).header("Accept", "application/vnd.git-lfs+json");
-            if !auth.token.is_empty() {
+            if !auth.token.is_empty() && !ssh_auth.header.keys().any(|k| k.eq_ignore_ascii_case("authorization")) {
                 let value = STANDARD.encode(format!("{}:{}", auth.username, auth.token));
                 request = request.header("Authorization", format!("Basic {value}"));
             }
+            for (key, value) in &ssh_auth.header { request = request.header(key, value); }
             let mut response = request.send_json(serde_json::json!({
                 "operation": if upload { "upload" } else { "download" }, "transfers": ["basic"],
-                "ref": { "name": format!("refs/heads/{branch}") }, "objects": chunk,
+                "ref": { "name": format!("refs/heads/{}", config.branch) }, "objects": chunk,
             })).context("LFS batch 请求失败")?;
             let batch: Batch = response.body_mut().with_config().limit(4 << 20).read_json()?;
             ensure!(batch.transfer.as_deref().is_none_or(|s| s == "basic"), "LFS 服务器不支持 basic 传输");
@@ -87,12 +87,12 @@ impl Lfs {
                 if upload {
                     if let Some(action) = object.actions.get("upload") {
                         let bytes = self.read(pointer)?;
-                        super::http_url(&action.href)?;
+                        let agent = transport::http_agent(git_config, &action.href)?;
                         let mut request = agent.put(&action.href).header("Content-Type", "application/octet-stream");
                         for (key, value) in &action.header { request = request.header(key, value); }
                         request.send(&bytes[..]).context("上传 LFS 对象失败")?;
                         if let Some(verify) = object.actions.get("verify") {
-                            super::http_url(&verify.href)?;
+                            let agent = transport::http_agent(git_config, &verify.href)?;
                             let mut request = agent.post(&verify.href).header("Accept", "application/vnd.git-lfs+json");
                             for (key, value) in &verify.header { request = request.header(key, value); }
                             request.send_json(pointer).context("LFS 上传确认失败")?;
@@ -100,7 +100,7 @@ impl Lfs {
                     }
                 } else if self.read(pointer).is_err() {
                     let action = object.actions.get("download").context("LFS 服务器未提供下载地址")?;
-                    super::http_url(&action.href)?;
+                    let agent = transport::http_agent(git_config, &action.href)?;
                     let mut request = agent.get(&action.href);
                     for (key, value) in &action.header { request = request.header(key, value); }
                     let bytes = request.call()?.body_mut().with_config().limit(pointer.size + 1).read_to_vec()?;
@@ -129,7 +129,7 @@ struct ObjectError { code: u32, message: String }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{io::{Read, Write}, net::TcpListener};
+    use std::{io::{Read, Write}, net::TcpListener, time::Duration};
 
     #[test]
     fn basic_http_upload_verify_download_and_authentication() {
@@ -179,11 +179,13 @@ mod tests {
                 stream.write_all(&response).unwrap();
             }
         });
-        let auth = Auth { username: "user".into(), token: "token".into() };
+        let auth = Auth { username: "user".into(), token: "token".into(), ..Default::default() };
         let endpoint = format!("{base}/info/lfs");
-        upload.transfer("https://example.invalid/notes.git", Some(&endpoint), std::slice::from_ref(&pointer), true, &auth, "main").unwrap();
+        let config = Config { remote: "https://example.invalid/notes.git".into(), lfs_url: endpoint, branch: "main".into(), ..Default::default() };
+        let git_config = git2::Config::new().unwrap();
+        upload.transfer(&config, &git_config, std::slice::from_ref(&pointer), true, &auth).unwrap();
         let download = Lfs::new(&root.join("receiver"));
-        download.transfer("https://example.invalid/notes.git", Some(&endpoint), std::slice::from_ref(&pointer), false, &auth, "main").unwrap();
+        download.transfer(&config, &git_config, std::slice::from_ref(&pointer), false, &auth).unwrap();
         assert_eq!(download.read(&pointer).unwrap(), b"versioned picture");
         worker.join().unwrap();
         std::fs::remove_dir_all(root).unwrap();

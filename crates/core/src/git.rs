@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}};
 
 mod lfs;
+mod transport;
 mod changes;
 pub use changes::ChangePreview;
 pub use lfs::Pointer;
@@ -16,16 +17,17 @@ const IGNORES: &str = ".DS_Store\n.quiet/*\n!.quiet/format.json\n!.quiet/trash/\
 
 /// Passwords stay in memory; repository configuration contains no access token.
 #[derive(Clone, Default)]
-pub struct Auth { pub username: String, pub token: String }
+pub struct Auth { pub username: String, pub token: String, pub ssh_passphrase: String }
 impl Auth {
     pub fn environment() -> Self { Self {
         username: std::env::var("QUIET_MD_GIT_USERNAME").unwrap_or_else(|_| "git".into()),
         token: std::env::var("QUIET_MD_GIT_TOKEN").unwrap_or_default(),
+        ssh_passphrase: std::env::var("QUIET_MD_GIT_SSH_PASSPHRASE").unwrap_or_default(),
     } }
 }
 
 #[derive(Clone, Default)]
-pub struct Config { pub name: String, pub email: String, pub remote: String, pub branch: String, pub lfs_url: String }
+pub struct Config { pub name: String, pub email: String, pub remote: String, pub branch: String, pub lfs_url: String, pub ssh_key: String, pub lfs_ca_info: String }
 #[derive(Clone, Debug)]
 pub struct Change { pub path: String, pub kind: char }
 #[derive(Clone, Debug, Default)]
@@ -65,17 +67,21 @@ impl LibraryRepo {
     }
 
     pub fn clone_into(remote: &str, root: &Path, auth: &Auth) -> Result<Self> {
-        validate_remote(remote)?;
+        Self::clone_configured(&Config { remote: remote.to_string(), ..Default::default() }, root, auth)
+    }
+
+    pub fn clone_configured(config: &Config, root: &Path, auth: &Auth) -> Result<Self> {
+        validate_remote(&config.remote)?;
         std::fs::create_dir_all(root)?;
         ensure!(std::fs::read_dir(root)?.next().is_none(), "克隆目标必须是空文件夹");
         std::fs::create_dir_all(root.join(".quiet"))?;
         crate::store::write_atomic(&root.join(".quiet/format.json"), b"{\"format\":5}")?;
         crate::store::write_atomic(&root.join(MANIFEST), b"{}")?;
         let repo = Self::init(root)?;
-        repo.configure(&Config { remote: remote.to_string(), ..Default::default() })?;
+        repo.configure(config)?;
         {
             let mut origin = repo.repo.find_remote("origin")?;
-            let connection = origin.connect_auth(git2::Direction::Fetch, Some(callbacks(auth)), None)?;
+            let connection = origin.connect_auth(git2::Direction::Fetch, Some(callbacks(auth, config)), None)?;
             if let Ok(branch) = connection.default_branch() && let Ok(branch) = branch.as_str() { repo.repo.set_head(branch)?; }
         }
         repo.pull(auth)?;
@@ -92,20 +98,36 @@ impl LibraryRepo {
 
     pub fn config(&self) -> Result<Config> {
         let config = self.repo.config()?;
-        Ok(Config {
+        let mut result = Config {
             name: config.get_string("user.name").unwrap_or_default(), email: config.get_string("user.email").unwrap_or_default(),
             remote: self.repo.find_remote("origin").ok().and_then(|r| r.url().ok().map(str::to_string)).unwrap_or_default(),
             branch: self.repo.head().ok().and_then(|h| h.shorthand().ok().map(str::to_string))
                 .or_else(|| self.repo.find_reference("HEAD").ok().and_then(|h| h.symbolic_target().ok().flatten().and_then(|s| s.strip_prefix("refs/heads/")).map(str::to_string)))
                 .unwrap_or_else(|| "main".into()),
             lfs_url: config.get_string("lfs.url").unwrap_or_default(),
-        })
+            ssh_key: config.get_string("quiet.sshKey").unwrap_or_default(),
+            lfs_ca_info: String::new(),
+        };
+        if let Ok(endpoint) = transport::lfs_endpoint(&result) {
+            result.lfs_ca_info = transport::ca_info(&config, &endpoint)?.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        }
+        Ok(result)
     }
 
     pub fn configure(&self, config: &Config) -> Result<()> {
         if !config.remote.is_empty() { validate_remote(&config.remote)?; }
         if !config.lfs_url.is_empty() { http_url(&config.lfs_url)?; }
+        let previous = self.config()?;
         let mut local = self.repo.config()?.open_level(git2::ConfigLevel::Local)?;
+        if config.ssh_key.is_empty() { let _ = local.remove("quiet.sshKey"); } else { local.set_str("quiet.sshKey", &config.ssh_key)?; }
+        if (config.lfs_ca_info != previous.lfs_ca_info || config.remote != previous.remote || config.lfs_url != previous.lfs_url)
+            && let Ok(endpoint) = transport::lfs_endpoint(config) {
+            let url = url::Url::parse(&endpoint)?;
+            let key = if config.remote == previous.remote && config.lfs_url == previous.lfs_url {
+                transport::ca_info_key(&self.repo.config()?, &endpoint)?
+            } else { None }.unwrap_or_else(|| format!("http.{}.sslCAInfo", url.origin().ascii_serialization()));
+            if config.lfs_ca_info.is_empty() { let _ = local.remove(&key); } else { local.set_str(&key, &config.lfs_ca_info)?; }
+        }
         local.set_str("user.name", config.name.trim())?;
         local.set_str("user.email", config.email.trim())?;
         if config.lfs_url.is_empty() { let _ = local.remove("lfs.url"); } else { local.set_str("lfs.url", &config.lfs_url)?; }
@@ -233,9 +255,9 @@ impl LibraryRepo {
         let commit = self.repo.head()?.peel_to_commit()?;
         let head = commit.tree()?;
         let pointers = self.pointers(Some(commit.id()), &head)?;
-        lfs::Lfs::new(self.repo.path()).transfer(&config.remote, (!config.lfs_url.is_empty()).then_some(config.lfs_url.as_str()), &pointers, true, auth, &config.branch)?;
+        lfs::Lfs::new(self.repo.path()).transfer(&config, &self.repo.config()?, &pointers, true, auth)?;
         let mut remote = self.repo.find_remote("origin")?;
-        let mut options = git2::PushOptions::new(); options.remote_callbacks(callbacks(auth));
+        let mut options = git2::PushOptions::new(); options.remote_callbacks(callbacks(auth, &config));
         remote.push(&[&format!("{}:refs/heads/{}", commit.id(), config.branch)], Some(&mut options))?;
         Ok(())
     }
@@ -245,7 +267,7 @@ impl LibraryRepo {
         ensure!(self.ready_to_pull()?, "请先提交本地变更，再拉取远端版本");
         let config = self.config()?; validate_remote(&config.remote)?;
         let mut remote = self.repo.find_remote("origin")?;
-        let mut options = git2::FetchOptions::new(); options.remote_callbacks(callbacks(auth));
+        let mut options = git2::FetchOptions::new(); options.remote_callbacks(callbacks(auth, &config));
         remote.fetch(&[&format!("refs/heads/{}:refs/remotes/origin/{}", config.branch, config.branch)], Some(&mut options), None)?;
         let target = self.repo.find_reference(&format!("refs/remotes/origin/{}", config.branch))?.peel_to_commit()?;
         let head = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
@@ -259,7 +281,7 @@ impl LibraryRepo {
         validate_tree(&self.repo, &files)?;
         let pointers = self.pointers(Some(target.id()), &tree)?;
         let lfs = lfs::Lfs::new(self.repo.path());
-        lfs.transfer(&config.remote, (!config.lfs_url.is_empty()).then_some(config.lfs_url.as_str()), &pointers, false, auth, &config.branch)?;
+        lfs.transfer(&config, &self.repo.config()?, &pointers, false, auth)?;
         let mut content = BTreeMap::new();
         for (path, oid) in files {
             let blob = self.repo.find_blob(oid)?;
@@ -371,15 +393,36 @@ impl LibraryRepo {
     }
 }
 
-fn callbacks(auth: &Auth) -> git2::RemoteCallbacks<'_> {
+fn callbacks<'a>(auth: &'a Auth, config: &'a Config) -> git2::RemoteCallbacks<'a> {
     let mut callbacks = git2::RemoteCallbacks::new();
+    let key = transport::ssh_key(&config.ssh_key);
+    let ssh = transport::SshRemote::parse(&config.remote).ok().flatten();
+    let ssh_username = ssh.as_ref().map(|s| s.username.clone());
+    callbacks.certificate_check(move |cert, host| {
+        if let Some(ssh) = &ssh && let Some(cert) = cert.as_hostkey() {
+            let session = ssh2::Session::new().map_err(|e| git2::Error::from_str(&e.to_string()))?;
+            let key = cert.hostkey().ok_or_else(|| git2::Error::from_str("SSH 服务器未提供主机密钥"))?;
+            transport::check_host(&session, host, ssh.port, key).map_err(|e| git2::Error::from_str(&e.to_string()))?;
+            return Ok(git2::CertificateCheckStatus::CertificateOk);
+        }
+        Ok(git2::CertificateCheckStatus::CertificatePassthrough)
+    });
     let mut attempts = 0;
     callbacks.credentials(move |_, username, allowed| {
+        let username = username.or(ssh_username.as_deref()).unwrap_or(&auth.username);
+        if allowed.contains(git2::CredentialType::USERNAME) { return git2::Cred::username(username) }
         attempts += 1;
-        if attempts > 3 || auth.token.is_empty() || !allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
-            return Err(git2::Error::from_str("Git 认证失败，请提供访问令牌"));
+        if attempts > 3 { return Err(git2::Error::from_str("Git 认证失败，请检查令牌或 SSH 私钥")) }
+        if allowed.contains(git2::CredentialType::SSH_KEY) {
+            return match &key {
+                Some(key) => git2::Cred::ssh_key(username, None, key, (!auth.ssh_passphrase.is_empty()).then_some(auth.ssh_passphrase.as_str())),
+                None => git2::Cred::ssh_key_from_agent(username),
+            };
         }
-        git2::Cred::userpass_plaintext(username.unwrap_or(&auth.username), &auth.token)
+        if !auth.token.is_empty() && allowed.contains(git2::CredentialType::USER_PASS_PLAINTEXT) {
+            return git2::Cred::userpass_plaintext(username, &auth.token);
+        }
+        Err(git2::Error::from_str("Git 认证失败，请提供访问令牌或 SSH 私钥"))
     });
     callbacks.push_update_reference(|_, status| match status { Some(error) => Err(git2::Error::from_str(error)), None => Ok(()) });
     callbacks
@@ -393,6 +436,7 @@ fn local_remote(remote: &str) -> Option<PathBuf> {
 fn validate_remote(remote: &str) -> Result<()> {
     ensure!(!remote.is_empty(), "请先配置远端仓库地址");
     if local_remote(remote).is_some() { return Ok(()) }
+    if transport::SshRemote::parse(remote)?.is_some() { return Ok(()) }
     http_url(remote)
 }
 

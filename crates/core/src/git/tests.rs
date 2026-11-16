@@ -321,3 +321,70 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     assert_eq!(removed.title, "Preview note");
     assert!(removed.lines.iter().all(|l| l.kind == Kind::Removed));
 }
+
+#[test]
+fn ssh_and_ca_configuration_round_trip_without_saving_secrets() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let repo = lib.git();
+    // The escaped colon is also accepted in existing Git config files.
+    let path = repo.repo.path().join("config");
+    let original = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, format!("{original}\n[http \"https\\://git.example.invalid\"]\n\tsslCAInfo = /tmp/quiet-test-ca.crt\n")).unwrap();
+    let mut config = Config { remote: "ssh://git@git.example.invalid:2222/iuxt/notebook.git".into(),
+        name: "Test".into(), email: "test@example.invalid".into(), ssh_key: "~/.ssh/notes_key".into(), lfs_ca_info: "/tmp/quiet-test-ca.crt".into(), ..Default::default() };
+    repo.configure(&config).unwrap();
+    let saved = repo.config().unwrap();
+    assert_eq!(saved.remote, config.remote); assert_eq!(saved.ssh_key, config.ssh_key); assert_eq!(saved.lfs_ca_info, config.lfs_ca_info);
+    config.lfs_ca_info = "/tmp/replacement-ca.crt".into(); repo.configure(&config).unwrap();
+    assert_eq!(repo.config().unwrap().lfs_ca_info, config.lfs_ca_info);
+    config.ssh_key.clear(); config.lfs_ca_info.clear(); repo.configure(&config).unwrap();
+    assert!(repo.config().unwrap().ssh_key.is_empty()); assert!(repo.config().unwrap().lfs_ca_info.is_empty());
+    let text = std::fs::read_to_string(path).unwrap();
+    assert!(!text.contains("passphrase") && !text.contains("token"));
+}
+
+#[test]
+#[ignore = "local SSH + TLS fixture: python3 tools/harness/git_ssh.py"]
+fn ssh_push_clone_pull_with_self_signed_lfs() {
+    // This ignored fixture runs alone in its own test process; redirect libgit2's global config to the temporary server directory.
+    let config_dir = std::env::var("QUIET_MD_TEST_CONFIG_DIR").unwrap();
+    unsafe { git2::opts::set_search_path(git2::ConfigLevel::Global, config_dir).unwrap(); }
+    let remote = std::env::var("QUIET_MD_TEST_REMOTE").unwrap();
+    let ca = std::env::var("QUIET_MD_TEST_CA").unwrap();
+    let key = std::env::var("QUIET_MD_TEST_KEY").unwrap();
+    let server = std::env::var("QUIET_MD_TEST_BARE").unwrap();
+    Repository::init_bare(server).unwrap();
+    let config = Config { name: "SSH Test".into(), email: "ssh@example.invalid".into(), remote, ssh_key: key, lfs_ca_info: ca, ..Default::default() };
+    let auth = Auth { ssh_passphrase: "test-key-password".into(), ..Default::default() };
+    let source = Library::new(); let mut store = source.store(); store.enable_git().unwrap();
+    let id = store.create_from(&doc("SSH + TLS")).unwrap();
+    std::fs::create_dir_all(source.0.join(".assets")).unwrap();
+    std::fs::write(source.0.join(".assets/photo.png"), b"first picture").unwrap();
+    let repo = source.git(); repo.configure(&config).unwrap(); repo.commit("first").unwrap();
+    let known_path = PathBuf::from(std::env::var("QUIET_MD_GIT_KNOWN_HOSTS").unwrap());
+    let known = std::fs::read(&known_path).unwrap(); std::fs::write(&known_path, "").unwrap();
+    assert!(repo.push(&auth).is_err());
+    let rejected = Library::new(); assert!(LibraryRepo::clone_configured(&config, &rejected.0, &auth).is_err());
+    std::fs::write(&known_path, known).unwrap();
+    let mut bad = config.clone(); bad.ssh_key = source.0.join("missing-key").to_string_lossy().into_owned();
+    repo.configure(&bad).unwrap(); assert!(repo.push(&auth).is_err());
+    repo.configure(&config).unwrap();
+    assert!(repo.push(&Auth { ssh_passphrase: "wrong-passphrase".into(), ..Default::default() }).is_err());
+    let endpoint = std::env::var("QUIET_MD_TEST_TLS").unwrap();
+    let empty_config = git2::Config::new().unwrap();
+    assert!(transport::http_agent(&empty_config, &endpoint).unwrap().get(&endpoint).call().is_err());
+    repo.configure(&config).unwrap();
+    assert_eq!(transport::ca_info(&repo.repo.config().unwrap(), &endpoint).unwrap(), Some(PathBuf::from(&config.lfs_ca_info)));
+    repo.push(&auth).unwrap();
+    let destination = Library::new();
+    let cloned = LibraryRepo::clone_configured(&config, &destination.0, &auth).unwrap();
+    assert_eq!(destination.store().load(&id).unwrap().title.text, "SSH + TLS");
+    assert_eq!(std::fs::read(destination.0.join(".assets/photo.png")).unwrap(), b"first picture");
+    store.rename(&id, "Updated over SSH").unwrap();
+    std::fs::write(source.0.join(".assets/photo.png"), b"second picture").unwrap();
+    repo.commit("second").unwrap(); repo.push(&auth).unwrap(); cloned.pull(&auth).unwrap();
+    assert_eq!(destination.store().load(&id).unwrap().title.text, "Updated over SSH");
+    assert_eq!(std::fs::read(destination.0.join(".assets/photo.png")).unwrap(), b"second picture");
+    let text = std::fs::read_to_string(cloned.repo.path().join("config")).unwrap();
+    assert!(!text.contains("test-key-password") && !text.contains("fixture-token"));
+}

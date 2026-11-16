@@ -4,11 +4,11 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 
 ## Rust 依赖
 
-由 `cargo metadata` 生成，共 769 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
+由 `cargo metadata` 生成，共 771 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
 
-Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 linking exception）与 OpenSSL（Apache-2.0）。随安装包附带的原始许可与作者信息在 [`assets/licenses/`](assets/licenses/)；libgit2 未修改，源代码随 `libgit2-sys` 的固定 Cargo 依赖取得。
+Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 linking exception）、libssh2（BSD-3-Clause）与 OpenSSL（Apache-2.0）。随安装包附带的原始许可与作者信息在 [`assets/licenses/`](assets/licenses/)；libgit2 与 libssh2 未修改，源代码随 `libgit2-sys` / `libssh2-sys` 的固定 Cargo 依赖取得。
 
 | 包 | 版本 | 许可 |
 |---|---|---|
@@ -307,6 +307,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | libloading | 0.8.9 | ISC |
 | libm | 0.2.16 | MIT |
 | libredox | 0.1.25 | MIT |
+| libssh2-sys | 0.3.4 | MIT OR Apache-2.0 |
 | libz-sys | 1.1.33 | MIT OR Apache-2.0 |
 | linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -535,6 +536,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spirv | 0.3.0+sdk-1.3.268.0 | Apache-2.0 |
+| ssh2 | 0.9.7 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | stacker | 0.1.25 | MIT OR Apache-2.0 |
 | stacksafe | 0.1.4 | Apache-2.0 |

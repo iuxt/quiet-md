@@ -24,7 +24,7 @@ body = "<title>Git regression</title>\n<p>Keep this body.</p>\n"
     "appearance": "light", "english": True, "seen_version": "0.1.12", "auto_update": False, "quick_hotkey": False,
 }))
 script = work / "steps.txt"
-script.write_text("""resize 1200 1000
+script.write_text("""resize 1200 1300
 wait 1700
 move 1150 950
 key cmd-,
@@ -37,16 +37,24 @@ click 880 411
 type ui@example.invalid
 click 880 617
 type ui-secret-token
+click 600 480
+type ssh://git@example.invalid:2222/notes.git
+click 600 685
+type /tmp/quiet-ui-test-key
+click 600 754
+type ui-secret-passphrase
+click 600 822
+type /tmp/quiet-ui-test-ca.crt
 shot masked-token
-click 470 660
+click 470 858
 wait 1200
 shot enabled
-click 580 728
+click 580 926
 type First UI commit
-click 525 770
+click 525 968
 wait 1500
 shot committed
-click 700 936
+click 700 1134
 wait 700
 shot git-history
 type SHOULD_NOT_WRITE
@@ -69,10 +77,13 @@ backups = list((lib / ".quiet").glob("before-virtual-6-*"))
 assert len(backups) == 1 and (backups[0] / "Git regression.xml").read_text() == body
 assert (lib / f"notes/{doc_id}.xml").read_text() == body
 repo = lib / ".git"
-assert "ui-secret-token" not in (repo / "config").read_text()
+config = (repo / "config").read_text()
+assert "ui-secret-token" not in config and "ui-secret-passphrase" not in config
+assert "ssh://git@example.invalid:2222/notes.git" in config
+assert "/tmp/quiet-ui-test-key" in config and "/tmp/quiet-ui-test-ca.crt" in config
 commit = (repo / "refs/heads/main").read_text().strip()
 contents = zlib.decompress((repo / "objects" / commit[:2] / commit[2:]).read_bytes())
 assert b"First UI commit" in contents and b"Git UI Tester <ui@example.invalid>" in contents
 for name in ("masked-token", "enabled", "committed", "git-history", "returned"):
     assert (run / f"{name}.png").is_file(), name
-print(f"Git UI: UUID migration, author, commit, token privacy and readonly history verified; screenshots: {run}")
+print(f"Git UI: UUID migration, author, commit, SSH key/CA settings, secret privacy and readonly history verified; screenshots: {run}")

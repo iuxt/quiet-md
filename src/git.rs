@@ -5,6 +5,7 @@ use gpui::{prelude::FluentBuilder, *};
 
 pub(crate) struct GitPanel {
     name: Entity<TextField>, email: Entity<TextField>, remote: Entity<TextField>, lfs: Entity<TextField>,
+    ssh_key: Entity<TextField>, ssh_passphrase: Entity<TextField>, lfs_ca_info: Entity<TextField>,
     username: Entity<TextField>, token: Entity<TextField>, pub(super) message: Entity<TextField>,
     pub(super) status: Option<Status>, commits: Vec<Commit>, pub(super) error: Option<String>, pub(super) notice: Option<String>,
     pub(super) selected: Option<String>, pub(super) preview: Option<ChangePreview>, pub(super) loading: bool,
@@ -27,6 +28,9 @@ impl Workspace {
             remote: field("https://github.com/you/notes.git", &config.remote, false),
             lfs: field(tr("留空使用仓库默认地址", "Leave blank for the repository default"), &config.lfs_url, false),
             username: field(tr("用户名", "Username"), &auth.username, false), token: field(tr("访问令牌（仅本次会话）", "Access token (this session only)"), &auth.token, true),
+            ssh_key: field(tr("留空使用 SSH agent", "Leave blank to use SSH agent"), &config.ssh_key, false),
+            ssh_passphrase: field(tr("私钥密码（仅本次会话）", "Key passphrase (this session only)"), &auth.ssh_passphrase, true),
+            lfs_ca_info: field(tr("PEM CA 证书路径（可选）", "PEM CA certificate path (optional)"), &config.lfs_ca_info, false),
             message: field(tr("提交说明", "Commit message"), "", false),
             status: None, commits: vec![], error: None, notice: None,
             selected: None, preview: None, loading: false, source: false, request: 0,
@@ -47,8 +51,9 @@ impl Workspace {
         let panel = self.git.as_mut().unwrap(); panel.error = None; panel.notice = None;
         panel.request += 1; panel.preview = None; panel.loading = false;
         let config = Config { name: panel.name.read(cx).text.clone(), email: panel.email.read(cx).text.clone(), remote: panel.remote.read(cx).text.trim().to_string(),
-            branch: String::new(), lfs_url: panel.lfs.read(cx).text.trim().to_string() };
-        let auth = Auth { username: panel.username.read(cx).text.clone(), token: panel.token.read(cx).text.clone() };
+            branch: String::new(), lfs_url: panel.lfs.read(cx).text.trim().to_string(),
+            ssh_key: panel.ssh_key.read(cx).text.trim().to_string(), lfs_ca_info: panel.lfs_ca_info.read(cx).text.trim().to_string() };
+        let auth = Auth { username: panel.username.read(cx).text.clone(), token: panel.token.read(cx).text.clone(), ssh_passphrase: panel.ssh_passphrase.read(cx).text.clone() };
         let message = panel.message.read(cx).text.clone();
         let Some(guard) = self.store.begin_file_task() else { return };
         let mut writer = self.store.tree_writer();
@@ -56,7 +61,7 @@ impl Workspace {
         let task = cx.background_executor().spawn(async move {
             let result = (|| -> anyhow::Result<_> {
                 if let Action::Clone(path) = &action {
-                    let repo = LibraryRepo::clone_into(&config.remote, path, &auth)?; repo.configure(&config)?;
+                    LibraryRepo::clone_configured(&config, path, &auth)?;
                     return Ok((None, vec![], String::new(), Some(path.clone())));
                 }
                 if matches!(action, Action::Enable) { writer.enable_git()?; }
@@ -148,9 +153,12 @@ impl Workspace {
                 .child(div().w_full().min_h(px(32.)).px(px(9.)).py(px(5.)).flex().items_center().border_1().border_color(Theme::line_border()).rounded(px(6.)).child(entity));
             section = section
                 .child(div().flex().gap(px(12.)).child(field(tr("作者名称", "Author name"), panel.name.clone())).child(field(tr("邮箱", "Email"), panel.email.clone())))
-                .child(field(tr("远端仓库（HTTPS）", "Remote repository (HTTPS)"), panel.remote.clone()))
+                .child(field(tr("远端仓库（HTTPS / SSH）", "Remote repository (HTTPS / SSH)"), panel.remote.clone()))
                 .child(field(tr("LFS 地址（可选）", "LFS endpoint (optional)"), panel.lfs.clone()))
                 .child(div().flex().gap(px(12.)).child(field(tr("用户名", "Username"), panel.username.clone())).child(field(tr("访问令牌（仅本次会话）", "Access token (this session only)"), panel.token.clone())))
+                .child(field(tr("SSH 私钥路径（可选）", "SSH private key path (optional)"), panel.ssh_key.clone()))
+                .child(field(tr("私钥密码（仅本次会话）", "Key passphrase (this session only)"), panel.ssh_passphrase.clone()))
+                .child(field(tr("LFS CA 证书（可选）", "LFS CA certificate (optional)"), panel.lfs_ca_info.clone()))
                 .child(div().flex().flex_wrap().gap(px(8.))
                     .when(!enabled, |d| d.child(ui::primary_button("git-enable", tr("启用 Git", "Enable Git")).on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Enable, window, cx)))))
                     .when(enabled, |d| d

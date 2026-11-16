@@ -573,6 +573,8 @@ impl Render for TextField {
             .key_context("TextField")
             .cursor(CursorStyle::IBeam)
             .relative()
+            .flex()
+            .flex_col()
             .flex_1()
             .min_w_0()
             .overflow_hidden()

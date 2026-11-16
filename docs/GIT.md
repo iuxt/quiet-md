@@ -7,12 +7,36 @@ Git 由 `git2` 和编入应用的 libgit2 实现；图片和附件由应用实�
 ## 使用
 
 1. 填写提交作者名称、邮箱和远端仓库地址，点击「启用 Git」。未配置远端时也可以提交本地版本。
-2. 远端认证填写用户名和访问令牌。令牌显示为掩码，仅在本次窗口会话中保留，不写进笔记库、JSON 元数据或 Git 配置。也可通过 `QUIET_MD_GIT_USERNAME` / `QUIET_MD_GIT_TOKEN` 提供。
+2. HTTPS 远端认证填写用户名和访问令牌。令牌显示为掩码，仅在本次窗口会话中保留，不写进笔记库、JSON 元数据或 Git 配置。也可通过 `QUIET_MD_GIT_USERNAME` / `QUIET_MD_GIT_TOKEN` 提供。
 3. 写完文章后，填写提交说明并点击「提交本地变更」。操作前保存所有窗口中的文章。
 4. 「推送」先上传所提交历史引用的 LFS 对象，成功后再推送 Git 引用。「拉取」只允许快进；本地有未提交改动或历史已经分叉时停止，不自动丢弃或合并文章。
 5. 在另一台电脑填写远端后使用「克隆到空文件夹…」，完成后按应用原有的切换文档库流程打开。克隆会读取远端默认分支，并下载文章历史引用的 LFS 对象。
 
-远端支持 HTTPS 和独立本地仓库路径（也支持 `file://`）；回环地址的 HTTP 可用于本地服务。当前不支持 SSH 远端、系统凭据助手、自动提交、定时拉取或分叉历史合并。可选 LFS 地址用于服务商单独部署的 LFS 端点。没有上传动作的 LFS 对象表示服务器已持有；提供 verify 动作时，上传后执行确认。
+远端支持 HTTPS、SSH（`ssh://git@host:2222/team/notes.git` 或 `git@host:team/notes.git`）和独立本地仓库路径（也支持 `file://`）；回环地址的 HTTP 可用于本地服务。当前不支持系统凭据助手、自动提交、定时拉取或分叉历史合并。可选 LFS 地址用于服务商单独部署的 LFS 端点。没有上传动作的 LFS 对象表示服务器已持有；提供 verify 动作时，上传后执行确认。
+
+## SSH 私钥与 LFS CA
+
+设置中的「SSH 私钥路径」可填写自定义私钥（支持 `~/`），路径保存在本机仓库的 `quiet.sshKey` 中；也可通过 `QUIET_MD_GIT_SSH_KEY` 提供。留空时使用 SSH agent。加密私钥的密码在「私钥密码」中填写，或通过 `QUIET_MD_GIT_SSH_PASSPHRASE` 提供；密码与访问令牌一样只在内存中保留。SSH URL 中的用户名优先，未指定时使用 `git`。
+
+Git 与 LFS 的 SSH 连接都会核对 `~/.ssh/known_hosts`，不自动接受未知或已变更的主机密钥。使用非标准端口时，记录为 `[host]:2222`。可用 `QUIET_MD_GIT_KNOWN_HOSTS` 指定其他已核对的 known_hosts 文件。目前不读取 `~/.ssh/config` 的 Host 别名、IdentityFile 或代理配置，请在远端地址中填写实际主机与端口。
+
+SSH 仓库的 LFS 默认通过 SSH 执行远端 `git-lfs-authenticate <仓库路径> upload|download`，再使用服务器返回的 HTTPS 地址与临时认证头进行 Batch 请求；SSH 端口不会当成 HTTPS 端口。服务器明确表示命令不存在时，回退到推导的 HTTPS LFS 地址，可填写访问令牌。设置显式 LFS 地址时，使用该地址与访问令牌认证。
+
+LFS 的自签证书使用 PEM CA 文件，保持证书链与主机名校验。可以在设置中填写「LFS CA 证书」，也可直接沿用 `.git/config` 或全局 Git 配置中的 `http.sslCAInfo` / `http.<URL>.sslCAInfo`。设置页首次保存 CA 时按 LFS 主机（含 HTTPS 端口）写入标准 HTTP 配置。每个 Batch、上传、下载与 verify 地址分别匹配 CA，地址限定配置优先于全局默认，更具体的主机、路径优先。不同存储域名需分别配置自己的 CA。
+
+例如下面的本机配置可使用 SSH 2222 端口同步 Git，并让 LFS 信任该服务的 CA：
+
+```gitconfig
+[remote "origin"]
+    url = ssh://git@git.example.com:2222/you/notebook.git
+    fetch = +refs/heads/*:refs/remotes/origin/*
+[quiet]
+    sshKey = /path/to/your/private_key
+[http "https://git.example.com"]
+    sslCAInfo = /path/to/ca.crt
+```
+
+私钥、密码和 CA 文件本身不会复制进文档库或提交；`.git/config` 只保存路径。原有的 LFS filter 配置保留，应用仍使用内置 LFS，不运行这些命令。
 
 ## 查看工作区变更
 
@@ -62,6 +86,6 @@ Git 只版本化 `.assets/` 中的图片 / 附件；外链、任意外部文件�
 
 ## 实现与验证
 
-文档引擎的 `manifest.rs`、`virtual_store.rs`、`virtual_migrate.rs`、`git.rs`、`git/lfs.rs`、`git_store.rs` 不依赖 GPUI；应用层 `src/git.rs` 负责配置和后台任务，`history.rs` 复用原有历史抽屉。临时目录测试覆盖转换 / 重开 / 链接 / 回收站、提交历史、LFS 指针与校验、HTTP batch 上传下载确认、推送克隆拉取、分叉拒绝以及写入失败回滚，不使用真实文档库。
+文档引擎的 `manifest.rs`、`virtual_store.rs`、`virtual_migrate.rs`、`git.rs`、`git/lfs.rs`、`git_store.rs` 不依赖 GPUI；应用层 `src/git.rs` 负责配置和后台任务，`history.rs` 复用原有历史抽屉。临时目录测试覆盖转换 / 重开 / 链接 / 回收站、提交历史、LFS 指针与校验、HTTP batch 上传下载确认、推送克隆拉取、分叉拒绝以及写入失败回滚，不使用真实文档库。`python3 tools/harness/git_ssh.py`（需要 Python `paramiko`）另用临时 SSH / 自签 TLS 服务器验证自定义端口、加密私钥、主机密钥拒绝、LFS CA、上传确认及推送 / 克隆 / 拉取。
 
 协议参考：[git2 文档](https://docs.rs/git2/0.21.0/git2/)、[Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)、[Basic Transfer API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/basic-transfers.md)。

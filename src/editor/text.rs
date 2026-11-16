@@ -195,7 +195,7 @@ impl TextLayout {
 /// visible box, so a long URL opens on its tail and moving the caret reveals
 /// the part of the text around it. `prev` keeps the view steady while typing.
 pub fn hscroll(text_w: Pixels, caret_x: Pixels, view_w: Pixels, prev: Pixels) -> Pixels {
-    let pad = px(8.);
+    let pad = px(8.).min(view_w / 2.).max(px(0.));
     let max = (text_w + pad - view_w).max(px(0.));
     let mut s = prev.min(max);
     if caret_x - s > view_w - pad {
@@ -1554,6 +1554,12 @@ mod tests {
         // Moving the caret back reveals the text around it.
         assert_eq!(hscroll(px(300.), px(0.), w, px(208.)), px(0.));
         assert_eq!(hscroll(px(300.), px(150.), w, px(0.)), px(58.));
+        // Narrow fields cannot reserve 8pt on both sides of the caret.
+        for width in [px(0.), px(4.), px(12.)] {
+            let s = hscroll(px(300.), px(0.), width, px(0.));
+            assert_eq!(s, px(0.));
+            assert_eq!(hscroll(px(300.), px(0.), width, s), s);
+        }
         // Shorter text clamps the old offset.
         assert_eq!(hscroll(px(120.), px(120.), w, px(208.)), px(28.));
     }
