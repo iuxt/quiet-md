@@ -388,6 +388,9 @@ impl Theme {
     pub fn table_line() -> Hsla { ca(craft::N1000, 0.09) }
     pub fn table_bar_hover() -> Hsla { c(craft::N350) }
     pub fn table_bar_selected() -> Hsla { c(craft::B200) }
+    pub fn diff_added() -> Hsla { text_color("green").unwrap() }
+    pub fn diff_added_bg() -> Hsla { block_bg("light-green").unwrap() }
+    pub fn diff_removed_bg() -> Hsla { block_bg("light-red").unwrap() }
     pub fn danger_bar() -> Hsla { c(craft::R350) }
     pub fn danger_cell() -> Hsla { c(craft::R50) }
     pub fn danger() -> Hsla { c(craft::R500) }

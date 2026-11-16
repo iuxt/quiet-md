@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}};
 
 mod lfs;
+mod changes;
+pub use changes::ChangePreview;
 pub use lfs::Pointer;
 #[cfg(test)] mod tests;
 
@@ -38,7 +40,7 @@ impl LibraryRepo {
         let root = root.canonicalize()?;
         if let Ok(repo) = Repository::discover(&root) {
             ensure!(repo.workdir().and_then(|p| p.canonicalize().ok()).as_ref() == Some(&root), "文档库不能位于另一个 Git 仓库中");
-            ensure!(repo.head().is_err() || root.join(MANIFEST).is_file(), "已有 Git 仓库没有 quiet.json，请选择独立文档库");
+            ensure!(repo.head().is_err() || repo.head().ok().and_then(|h| h.peel_to_tree().ok()).is_some_and(|t| t.get_name(MANIFEST).is_some()), "已有 Git 仓库没有 quiet.json，请选择独立文档库");
         }
         if let Ok(meta) = root.join(".git").symlink_metadata() { ensure!(meta.is_dir() && !meta.file_type().is_symlink(), "文档库需要独立的 .git 目录"); }
         Ok(())
@@ -119,7 +121,8 @@ impl LibraryRepo {
         let entries = manifest(&bytes)?;
         let mut files: BTreeSet<_> = [MANIFEST, ".quiet/format.json", ".gitattributes", ".gitignore"].into_iter().map(str::to_string).collect();
         files.extend(entries.keys().filter(|p| !p.ends_with('/')).cloned());
-        for dir in [".assets", ".quiet/trash"] { collect(&self.root, dir, &mut files)?; }
+        collect(&self.root, ".assets", &mut files)?;
+        if serde_json::from_slice::<serde_json::Value>(&bytes)?.get("version").is_none() { collect(&self.root, ".quiet/trash", &mut files)?; }
         Ok(files)
     }
 
@@ -196,7 +199,7 @@ impl LibraryRepo {
         let meta = self.repo.find_blob(entry.id())?;
         let entries = manifest(meta.content())?;
         let Some((path, meta)) = entries.iter().find(|(path, meta)| !path.ends_with('/') && meta.id == document) else { return Ok(None) };
-        let title = meta.extra.get("title").and_then(|v| v.as_str()).map(str::to_string);
+        let title = Some(serde_json::to_string(meta)?);
         Ok(tree.get_path(Path::new(path)).ok().map(|entry| (entry.id(), path.clone(), title)))
     }
 
@@ -273,8 +276,20 @@ impl LibraryRepo {
         let status = self.status()?;
         if status.changes.is_empty() { return Ok(true) }
         // A fresh empty clone has only bootstrap metadata, not an initial commit.
-        Ok(status.head.is_none() && manifest(&std::fs::read(self.root.join(MANIFEST))?)?.is_empty()
+        let bytes = std::fs::read(self.root.join(MANIFEST))?;
+        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let empty = if value.get("version").is_some() {
+            let shared = crate::manifest::Manifest::parse(&bytes)?;
+            shared.folders.is_empty() && shared.notes.is_empty() && shared.trash.is_empty()
+        } else { manifest(&bytes)?.is_empty() };
+        Ok(status.head.is_none() && empty
             && self.files()?.iter().all(|p| matches!(p.as_str(), MANIFEST | ".quiet/format.json" | ".gitattributes" | ".gitignore")))
+    }
+
+    pub fn revision_paths(&self, commit: &str) -> Result<BTreeMap<String, String>> {
+        let tree = self.repo.find_commit(Oid::from_str(commit)?)?.tree()?;
+        let blob = self.repo.find_blob(tree.get_name(MANIFEST).context("提交中缺少元数据")?.id())?;
+        Ok(manifest(blob.content())?.into_iter().filter(|(p, _)| !p.ends_with('/')).map(|(p, m)| (m.id, p)).collect())
     }
 
     pub fn revision_title(&self, commit: &str, document: &str) -> Result<Option<String>> {
@@ -390,7 +405,7 @@ fn http_url(text: &str) -> Result<()> {
 }
 
 /// Only normal components, with no symlink in any existing part of the path.
-fn safe_path(root: &Path, path: &str) -> Result<PathBuf> {
+pub(crate) fn safe_path(root: &Path, path: &str) -> Result<PathBuf> {
     ensure!(!path.is_empty() && !path.contains('\\') && Path::new(path).components().all(|c| matches!(c, Component::Normal(_))), "无效的文档库路径");
     let mut out = root.to_path_buf();
     for part in path.split('/') {
@@ -408,6 +423,23 @@ fn safe_path(root: &Path, path: &str) -> Result<PathBuf> {
 struct Metadata { id: String, #[serde(flatten)] extra: BTreeMap<String, serde_json::Value> }
 fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, Metadata>> {
     ensure!(bytes.len() <= 16 << 20, "文档库元数据过大");
+    let value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if value.get("version").is_some() {
+        let shared = crate::manifest::Manifest::parse(bytes)?;
+        let mut entries = BTreeMap::new();
+        for note in shared.notes {
+            let mut extra = note.extra; extra.insert("title".into(), note.title.into());
+            extra.insert("folderId".into(), note.folder.into());
+            entries.insert(format!("notes/{}", note.filename), Metadata { id: note.id, extra });
+        }
+        for deleted in shared.trash {
+            if let Some(filename) = deleted.filename {
+                let mut extra = deleted.extra; extra.insert("title".into(), deleted.title.into());
+                entries.insert(format!(".quiet/trash/{filename}"), Metadata { id: deleted.id, extra });
+            }
+        }
+        return Ok(entries);
+    }
     let entries: BTreeMap<String, Metadata> = serde_json::from_slice(bytes).context("quiet.json 元数据无效")?;
     let mut ids = BTreeSet::new();
     for (path, meta) in &entries {
@@ -455,9 +487,10 @@ fn tree_files(repo: &Repository, tree: &git2::Tree<'_>) -> Result<BTreeMap<Strin
 fn validate_tree(repo: &Repository, files: &BTreeMap<String, Oid>) -> Result<()> {
     let bytes = repo.find_blob(*files.get(MANIFEST).context("远端缺少 quiet.json")?)?;
     let entries = manifest(bytes.content())?;
+    let virtual_manifest = serde_json::from_slice::<serde_json::Value>(bytes.content())?.get("version").is_some();
     for path in files.keys() {
         let allowed = matches!(path.as_str(), MANIFEST | ".gitattributes" | ".gitignore" | ".quiet/format.json")
-            || entries.contains_key(path) || path.starts_with(".assets/") || path.starts_with(".quiet/trash/");
+            || entries.contains_key(path) || path.starts_with(".assets/") || (!virtual_manifest && path.starts_with(".quiet/trash/"));
         ensure!(allowed && !path.split('/').any(|p| p == ".." || p.eq_ignore_ascii_case(".git")), "远端包含不属于文档库的路径：{path}");
     }
     for path in entries.keys().filter(|p| !p.ends_with('/')) {
@@ -469,6 +502,7 @@ fn validate_tree(repo: &Repository, files: &BTreeMap<String, Oid>) -> Result<()>
     }
     let marker = repo.find_blob(*files.get(".quiet/format.json").context("远端缺少格式标记")?)?;
     let marker: serde_json::Value = serde_json::from_slice(marker.content())?;
-    ensure!(marker["format"].as_u64() == Some(crate::store::FORMAT as u64), "远端文档库格式不兼容");
+    let format = marker["format"].as_u64();
+    ensure!(format == Some(if virtual_manifest { 6 } else { 5 }), "远端文档库格式不兼容");
     Ok(())
 }

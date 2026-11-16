@@ -1,12 +1,14 @@
 //! Library Git settings. All repository and network work runs off the UI thread.
 use crate::{app::{Confirm, Workspace}, editor::core::Core, input::TextField, settings::tr, theme::{self, Theme}, ui};
-use fdl_core::{git::{Auth, Commit, Config, LibraryRepo, Status}, store::Store};
+use fdl_core::{git::{Auth, Commit, Config, LibraryRepo, Status, ChangePreview}, store::Store};
 use gpui::{prelude::FluentBuilder, *};
 
 pub(crate) struct GitPanel {
     name: Entity<TextField>, email: Entity<TextField>, remote: Entity<TextField>, lfs: Entity<TextField>,
-    username: Entity<TextField>, token: Entity<TextField>, message: Entity<TextField>,
-    status: Option<Status>, commits: Vec<Commit>, error: Option<String>, notice: Option<String>,
+    username: Entity<TextField>, token: Entity<TextField>, pub(super) message: Entity<TextField>,
+    pub(super) status: Option<Status>, commits: Vec<Commit>, pub(super) error: Option<String>, pub(super) notice: Option<String>,
+    pub(super) selected: Option<String>, pub(super) preview: Option<ChangePreview>, pub(super) loading: bool,
+    pub(super) source: bool, pub(super) request: u64,
 }
 
 #[derive(Clone)]
@@ -27,6 +29,7 @@ impl Workspace {
             username: field(tr("用户名", "Username"), &auth.username, false), token: field(tr("访问令牌（仅本次会话）", "Access token (this session only)"), &auth.token, true),
             message: field(tr("提交说明", "Commit message"), "", false),
             status: None, commits: vec![], error: None, notice: None,
+            selected: None, preview: None, loading: false, source: false, request: 0,
         });
     }
 
@@ -42,6 +45,7 @@ impl Workspace {
         }
         self.init_git_panel(cx);
         let panel = self.git.as_mut().unwrap(); panel.error = None; panel.notice = None;
+        panel.request += 1; panel.preview = None; panel.loading = false;
         let config = Config { name: panel.name.read(cx).text.clone(), email: panel.email.read(cx).text.clone(), remote: panel.remote.read(cx).text.trim().to_string(),
             branch: String::new(), lfs_url: panel.lfs.read(cx).text.trim().to_string() };
         let auth = Auth { username: panel.username.read(cx).text.clone(), token: panel.token.read(cx).text.clone() };
@@ -91,6 +95,14 @@ impl Workspace {
                     for handle in cx.windows().into_iter().filter(|h| h.window_id() != window.window_handle().window_id()).filter_map(|h| h.downcast::<Workspace>()) {
                         let _ = handle.update(cx, |other, _, cx| other.refresh_after_git(cx));
                     }
+                }
+                if w.view == crate::app::View::Git {
+                    let path = w.git.as_ref().and_then(|p| p.status.as_ref().and_then(|s| {
+                        p.selected.as_ref().filter(|path| s.changes.iter().any(|c| &c.path == *path)).cloned()
+                            .or_else(|| s.changes.iter().find(|c| c.path.ends_with(".xml") || c.path.ends_with(".md")).or(s.changes.first()).map(|c| c.path.clone()))
+                    }));
+                    if let Some(path) = path { w.select_git_change(path, window, cx); }
+                    else if let Some(p) = w.git.as_mut() { p.selected = None; }
                 }
                 cx.notify();
             });
@@ -155,7 +167,12 @@ impl Workspace {
                 if let Some(status) = &panel.status {
                     section = section.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(format!("{} · {} · {}", status.branch,
                         status.head.as_deref().map(|id| &id[..7]).unwrap_or("—"), crate::localized_format!("{} 项变更", "{} changes", status.changes.len()))));
-                    for change in &status.changes { section = section.child(div().text_size(px(12.)).text_color(Theme::text()).child(format!("{}  {}", change.kind, change.path))); }
+                    for (i, change) in status.changes.iter().enumerate() {
+                        let path = change.path.clone();
+                        section = section.child(div().id(("git-settings-change", i)).text_size(px(12.)).text_color(Theme::text()).cursor_pointer()
+                            .hover(|s| s.bg(Theme::fill_hover())).child(format!("{}  {}", change.kind, change.path))
+                            .on_click(cx.listener(move |w, _, window, cx| { w.show_view(crate::app::View::Git, cx); w.select_git_change(path.clone(), window, cx); })));
+                    }
                 }
                 if !panel.commits.is_empty() {
                     section = section.child(crate::settings::caption(tr("最近提交", "Recent commits")));
@@ -170,6 +187,10 @@ impl Workspace {
                             if let Some(id) = w.current.clone() { w.open_history(&id, window, cx); }
                         })));
                 }
+            }
+            if enabled {
+                section = section.child(ui::secondary_button("git-open-panel", tr("查看变更与对比", "View changes and diff"))
+                    .on_click(cx.listener(|w, _, window, cx| w.open_git(window, cx))));
             }
             if let Some(error) = &panel.error { section = section.child(div().text_size(px(12.)).text_color(Theme::danger()).child(error.clone())); }
             if let Some(notice) = &panel.notice { section = section.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(notice.clone())); }

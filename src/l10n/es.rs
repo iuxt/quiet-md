@@ -107,6 +107,7 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("在访达中显示", "Mostrar en el Finder"),
     ("在文件资源管理器中显示", "Mostrar en el Explorador de archivos"),
     ("在文件管理器中显示", "Mostrar en el gestor de archivos"),
+    ("打开正文目录", "Abrir carpeta de contenido"),
     ("在访达中打开", "Abrir en el Finder"),
     ("在文件资源管理器中打开", "Abrir en el Explorador de archivos"),
     ("在文件管理器中打开", "Abrir en el gestor de archivos"),

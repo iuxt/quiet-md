@@ -32,6 +32,7 @@ mod editor;
 mod highlight;
 mod history;
 mod git;
+mod git_panel;
 mod home;
 mod html;
 mod input;

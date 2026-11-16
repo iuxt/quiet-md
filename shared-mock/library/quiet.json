@@ -1,0 +1,160 @@
+{
+  "version": 2,
+  "folders": [
+    {
+      "id": "411cf767-cce4-5f7b-8006-6dcb8e3adeaa",
+      "name": "Writing and formatting",
+      "parentId": null,
+      "createdAt": "2026-11-16T01:43:43Z",
+      "updatedAt": "2026-11-16T02:43:43Z",
+      "options": {
+        "root_order": 2
+      }
+    },
+    {
+      "id": "cf8fdf37-6db2-5d74-8117-40a2db8d4cc1",
+      "name": "Examples",
+      "parentId": null,
+      "createdAt": "2026-11-16T01:43:43Z",
+      "updatedAt": "2026-11-16T02:43:43Z",
+      "options": {
+        "root_order": 3
+      }
+    }
+  ],
+  "notes": [
+    {
+      "id": "0c7532c1-edcc-534d-8efe-7bf6da8718ba",
+      "title": "Images, files and covers",
+      "filename": "0c7532c1-edcc-534d-8efe-7bf6da8718ba.xml",
+      "folderId": "411cf767-cce4-5f7b-8006-6dcb8e3adeaa",
+      "createdAt": "2026-11-16T01:43:48Z",
+      "updatedAt": "2026-11-16T02:38:43Z",
+      "options": {
+        "order": 5
+      }
+    },
+    {
+      "id": "0c81100a-a7bb-57c7-9d69-ed30d9b9025c",
+      "title": "Make it yours: themes and shortcuts",
+      "filename": "0c81100a-a7bb-57c7-9d69-ed30d9b9025c.xml",
+      "folderId": null,
+      "createdAt": "2026-11-16T01:43:53Z",
+      "updatedAt": "2026-11-16T02:33:43Z",
+      "options": {
+        "root_order": 6
+      }
+    },
+    {
+      "id": "33f7e56d-02b5-58f6-a842-e9f96c39a86a",
+      "title": "Playground",
+      "filename": "33f7e56d-02b5-58f6-a842-e9f96c39a86a.xml",
+      "folderId": null,
+      "createdAt": "2026-11-16T01:43:54Z",
+      "updatedAt": "2026-11-16T02:32:43Z",
+      "options": {
+        "root_order": 7
+      }
+    },
+    {
+      "id": "3e98a021-e013-5d8f-b41f-5c3fbf3dbfc3",
+      "title": "Writing: text, headings and paragraphs",
+      "filename": "3e98a021-e013-5d8f-b41f-5c3fbf3dbfc3.xml",
+      "folderId": "411cf767-cce4-5f7b-8006-6dcb8e3adeaa",
+      "createdAt": "2026-11-16T01:43:44Z",
+      "updatedAt": "2026-11-16T02:42:43Z",
+      "options": {
+        "order": 1
+      }
+    },
+    {
+      "id": "4ea21fc9-5061-5c03-a5a0-29465f895f0f",
+      "title": "Code and equations",
+      "filename": "4ea21fc9-5061-5c03-a5a0-29465f895f0f.xml",
+      "folderId": "411cf767-cce4-5f7b-8006-6dcb8e3adeaa",
+      "createdAt": "2026-11-16T01:43:47Z",
+      "updatedAt": "2026-11-16T02:39:43Z",
+      "options": {
+        "order": 4
+      }
+    },
+    {
+      "id": "4ea72c5a-82e0-54a4-88aa-3a9914755634",
+      "title": "Welcome to Quiet.md",
+      "filename": "4ea72c5a-82e0-54a4-88aa-3a9914755634.xml",
+      "folderId": null,
+      "createdAt": "2026-11-16T01:43:43Z",
+      "updatedAt": "2026-11-16T02:43:43Z",
+      "options": {
+        "root_order": 1
+      }
+    },
+    {
+      "id": "5239f11b-84a2-505b-9e9e-1c4b763c510b",
+      "title": "Example: reading list",
+      "filename": "5239f11b-84a2-505b-9e9e-1c4b763c510b.xml",
+      "folderId": "cf8fdf37-6db2-5d74-8117-40a2db8d4cc1",
+      "createdAt": "2026-11-16T01:43:50Z",
+      "updatedAt": "2026-11-16T02:36:43Z",
+      "options": {
+        "order": 1
+      }
+    },
+    {
+      "id": "7012a014-8f62-5ad2-a811-6a75ddbfce29",
+      "title": "Tables and columns",
+      "filename": "7012a014-8f62-5ad2-a811-6a75ddbfce29.xml",
+      "folderId": "411cf767-cce4-5f7b-8006-6dcb8e3adeaa",
+      "createdAt": "2026-11-16T01:43:46Z",
+      "updatedAt": "2026-11-16T02:40:43Z",
+      "options": {
+        "order": 3
+      }
+    },
+    {
+      "id": "a9990a8f-54d2-50bf-aa14-94226d01fb8e",
+      "title": "Organize and find your notes",
+      "filename": "a9990a8f-54d2-50bf-aa14-94226d01fb8e.xml",
+      "folderId": null,
+      "createdAt": "2026-11-16T01:43:49Z",
+      "updatedAt": "2026-11-16T02:37:43Z",
+      "options": {
+        "root_order": 4
+      }
+    },
+    {
+      "id": "c5f5a3e2-7bd6-5ad2-8b49-bc4e3f0e2c8f",
+      "title": "Example: weekly meeting",
+      "filename": "c5f5a3e2-7bd6-5ad2-8b49-bc4e3f0e2c8f.xml",
+      "folderId": "cf8fdf37-6db2-5d74-8117-40a2db8d4cc1",
+      "createdAt": "2026-11-16T01:43:51Z",
+      "updatedAt": "2026-11-16T02:35:43Z",
+      "options": {
+        "order": 2
+      }
+    },
+    {
+      "id": "f3a86f08-fa7b-5d70-bf15-82f7629bd818",
+      "title": "Import, export and back up",
+      "filename": "f3a86f08-fa7b-5d70-bf15-82f7629bd818.xml",
+      "folderId": null,
+      "createdAt": "2026-11-16T01:43:52Z",
+      "updatedAt": "2026-11-16T02:34:43Z",
+      "options": {
+        "root_order": 5
+      }
+    },
+    {
+      "id": "fef343a5-4478-5c2a-9c3b-efa884d71ddb",
+      "title": "Blocks: lists, quotes and callouts",
+      "filename": "fef343a5-4478-5c2a-9c3b-efa884d71ddb.xml",
+      "folderId": "411cf767-cce4-5f7b-8006-6dcb8e3adeaa",
+      "createdAt": "2026-11-16T01:43:45Z",
+      "updatedAt": "2026-11-16T02:41:43Z",
+      "options": {
+        "order": 2
+      }
+    }
+  ],
+  "trash": []
+}

@@ -14,7 +14,7 @@ pub struct Line {
 }
 
 /// Beyond this many lines the preview is truncated; the table is O(n·m).
-const MAX_LINES: usize = 1200;
+pub const MAX_LINES: usize = 1200;
 
 /// What a reader sees: block text in document order, one line per paragraph.
 pub fn readable(text: &str, markdown: bool) -> String {

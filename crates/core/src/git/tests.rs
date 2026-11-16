@@ -18,7 +18,10 @@ fn configure(repo: &LibraryRepo, remote: &Path) {
 
 #[test]
 fn uuid_names_metadata_titles_links_and_trash_survive_reopen() {
-    let lib = Library::new(); let mut store = lib.store();
+    let lib = Library::new();
+    std::fs::create_dir_all(lib.0.join(".quiet")).unwrap();
+    std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
+    let mut store = lib.store();
     let folder = store.create_folder("笔记", None).unwrap();
     // A pre-UUID library, to exercise conversion rather than new-document creation.
     let first = uuid::Uuid::new_v4().to_string();
@@ -36,13 +39,13 @@ fn uuid_names_metadata_titles_links_and_trash_survive_reopen() {
     drop(store);
     let mut store = lib.store();
     store.enable_git().unwrap();
-    assert!(lib.0.join(".quiet/before-git-5/index.json").is_file());
+    assert!(std::fs::read_dir(lib.0.join(".quiet")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("before-virtual-6-")));
     assert!(!old.exists());
     assert_eq!(store.file_path(&first).unwrap().file_stem().unwrap().to_str().unwrap(), first);
     let text = std::fs::read_to_string(store.file_path(&md).unwrap()).unwrap();
-    assert!(text.contains(&format!("[文章](笔记/{first}.xml#段落)")), "{text}");
+    assert!(text.contains(&format!("[文章]({first}.xml#段落)")), "{text}");
     assert!(text.contains("`[代码](笔记/同名.xml)`"));
-    assert!(text.contains(&format!("[ref]: 笔记/{first}.xml")), "{text}");
+    assert!(text.contains(&format!("[ref]: {first}.xml")), "{text}");
     store.rename(&md, "新的标题").unwrap();
     let mut store = lib.store();
     assert_eq!(store.load(&md).unwrap().title.text, "新的标题");
@@ -201,19 +204,22 @@ fn embedded_operations_run_with_an_empty_path() {
 }
 
 #[test]
-fn externally_moved_uuid_and_imported_files_keep_unique_names_and_titles() {
+fn virtual_library_adopts_notes_but_keeps_hierarchy_in_manifest() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let id = store.create_markdown(&doc("Display title"), "").unwrap();
     let old = store.file_path(&id).unwrap();
     std::fs::create_dir(lib.0.join("external")).unwrap();
     std::fs::rename(&old, lib.0.join("external").join(old.file_name().unwrap())).unwrap();
-    std::fs::write(lib.0.join("imported.md"), "# Body\n\nText\n").unwrap();
+    std::fs::write(lib.0.join("notes/imported.md"), "# Body\n\nText\n").unwrap();
     let entries = store.list();
     let existing = entries.iter().find(|e| e.id == id).unwrap();
     assert_eq!(existing.title, "Display title");
     let imported = entries.iter().find(|e| e.title == "imported").unwrap();
     assert_eq!(store.file_path(&imported.id).unwrap().file_stem().unwrap().to_str().unwrap(), imported.id);
-    assert!(!lib.0.join("imported.md").exists());
+    assert!(!lib.0.join("notes/imported.md").exists());
+    assert!(!entries.iter().any(|e| e.meta.folder.is_some()));
+    assert!(store.load(&id).is_err());
+    std::fs::rename(lib.0.join("external").join(old.file_name().unwrap()), old).unwrap();
     assert!(lib.git().status().is_ok());
 }
 
@@ -229,4 +235,89 @@ fn clone_uses_the_remote_default_branch() {
     let repo = LibraryRepo::clone_into(server.0.to_str().unwrap(), &destination.0, &Auth::default()).unwrap();
     assert_eq!(repo.config().unwrap().branch, "trunk");
     assert_eq!(destination.store().load(&id).unwrap().title.text, "Trunk note");
+}
+
+#[test]
+fn virtual_empty_folders_survive_clone_and_are_not_treated_as_pristine() {
+    let server = Library::new(); Repository::init_bare(&server.0).unwrap();
+    let first = Library::new(); let mut a = first.store();
+    let folder = a.create_folder("Empty", None).unwrap(); a.enable_git().unwrap();
+    configure(&first.git(), &server.0); first.git().commit("empty virtual folder").unwrap(); first.git().push(&Auth::default()).unwrap();
+    let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
+    let entries = second.store().list(); assert_eq!(entries.len(), 1); assert_eq!(entries[0].id, folder); assert_eq!(entries[0].title, "Empty");
+    assert!(!second.0.join("Empty").exists());
+    let local = Library::new(); let mut draft = local.store(); let own = draft.create_folder("Unsaved folder", None).unwrap();
+    draft.enable_git().unwrap(); configure(&local.git(), &server.0);
+    assert!(draft.git_pull(&Auth::default()).is_err()); assert!(draft.list().iter().any(|e| e.id == own));
+}
+
+#[test]
+fn physical_git_commits_remain_readable_after_virtual_conversion() {
+    let lib = Library::new(); std::fs::create_dir_all(lib.0.join(".quiet")).unwrap(); std::fs::create_dir_all(lib.0.join("Physical")).unwrap();
+    std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
+    let folder = uuid::Uuid::new_v4().to_string(); let a = uuid::Uuid::new_v4().to_string(); let b = uuid::Uuid::new_v4().to_string();
+    let path_a = format!("Physical/{a}.xml"); let path_b = format!("Physical/{b}.xml");
+    let body = format!("<title>Original</title>\n<p><cite type=\"doc\" href=\"{b}.xml\" file-type=\"docx\">Target</cite></p>\n");
+    std::fs::write(lib.0.join(&path_a), &body).unwrap(); std::fs::write(lib.0.join(&path_b), crate::docxml::serialize(&doc("Target"))).unwrap();
+    std::fs::write(lib.0.join(MANIFEST), serde_json::to_vec_pretty(&serde_json::json!({
+        "Physical/": {"id": folder, "created": 1, "modified": 1},
+        path_a: {"id": a, "created": 1, "modified": 1, "stable_name": true, "title": "Original"},
+        path_b: {"id": b, "created": 1, "modified": 1, "stable_name": true, "title": "Target"}
+    })).unwrap()).unwrap();
+    let repo = LibraryRepo::init(&lib.0).unwrap(); configure(&repo, &Library::new().0); let old = repo.commit("physical").unwrap().unwrap();
+    let mut store = lib.store(); store.use_virtual_folders().unwrap(); store.rename(&a, "Current title").unwrap(); repo.commit("virtual").unwrap();
+    let version = format!("git:0-{old}"); let historical = store.version_document(&a, &version).unwrap();
+    assert_eq!(historical.title.text, "Original"); assert_eq!(historical.doc_links()[0].target, b);
+    assert!(repo.revision(&old, &a).unwrap().contains("Original")); assert_eq!(store.git_versions(&a).unwrap().len(), 2);
+    assert_eq!(store.file_path(&a).unwrap(), lib.0.join(format!("notes/{a}.xml")));
+}
+
+#[test]
+fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
+    use crate::diff::{counts, Kind};
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let mut first = doc("Preview note");
+    first.blocks.push(crate::model::Block::text("Before"));
+    let id = store.create_from(&first).unwrap();
+    let path = format!("notes/{id}.xml");
+    let repo = lib.git(); configure(&repo, &Library::new().0);
+    let added = repo.change_preview(&path).unwrap();
+    assert_eq!(added.title, "Preview note");
+    assert!(added.lines.iter().all(|l| l.kind == Kind::Added));
+    assert!(added.source.is_some());
+    assert!(repo.change_preview("../outside").is_err());
+    std::fs::write(lib.0.join("unmanaged.txt"), "private").unwrap();
+    assert!(repo.change_preview("unmanaged.txt").is_err());
+    repo.commit("before").unwrap();
+    let original = std::fs::read_to_string(lib.0.join(&path)).unwrap();
+    std::fs::write(lib.0.join(&path), format!("\n{original}")).unwrap();
+    let formatting = repo.change_preview(&path).unwrap();
+    assert_eq!(counts(&formatting.lines), (0, 0));
+    assert_ne!(counts(formatting.source.as_ref().unwrap()), (0, 0));
+    let body = original.replace("Before", "After");
+    std::fs::write(lib.0.join(&path), body).unwrap();
+    let changed = repo.change_preview(&path).unwrap();
+    assert_eq!(counts(&changed.lines), (1, 1));
+    assert!(changed.lines.iter().any(|l| l.kind == Kind::Added && l.text == "After"));
+    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
+    std::fs::write(lib.0.join(".assets/image.png"), b"image content").unwrap();
+    let binary = repo.change_preview(".assets/image.png").unwrap();
+    assert!(binary.binary && binary.lines.is_empty());
+    let markdown = "cccccccc-0000-4000-8000-000000000003.md";
+    let mut meta: serde_json::Value = serde_json::from_slice(&std::fs::read(lib.0.join(MANIFEST)).unwrap()).unwrap();
+    meta["notes"].as_array_mut().unwrap().push(serde_json::json!({"id": "cccccccc-0000-4000-8000-000000000003", "filename": markdown, "title": "Long note", "folderId": null, "createdAt": "1970-01-01T00:00:01Z", "updatedAt": "1970-01-01T00:00:01Z"}));
+    std::fs::write(lib.0.join(MANIFEST), serde_json::to_vec(&meta).unwrap()).unwrap();
+    std::fs::write(lib.0.join("notes").join(markdown), "line\n".repeat(crate::diff::MAX_LINES + 1)).unwrap();
+    let long = repo.change_preview(&format!("notes/{markdown}")).unwrap();
+    assert!(long.truncated && long.source.is_none());
+    let metadata = repo.change_preview(MANIFEST).unwrap();
+    assert!(!metadata.binary && metadata.source.is_none());
+    // A permanently removed note is still readable from HEAD and its old metadata.
+    let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(lib.0.join(MANIFEST)).unwrap()).unwrap();
+    metadata["notes"] = serde_json::json!([]);
+    std::fs::write(lib.0.join(MANIFEST), serde_json::to_vec(&metadata).unwrap()).unwrap();
+    std::fs::remove_file(lib.0.join(&path)).unwrap();
+    let removed = repo.change_preview(&path).unwrap();
+    assert_eq!(removed.title, "Preview note");
+    assert!(removed.lines.iter().all(|l| l.kind == Kind::Removed));
 }

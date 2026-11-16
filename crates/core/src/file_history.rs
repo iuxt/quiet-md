@@ -70,6 +70,13 @@ impl Store {
 
 impl Store {
     pub fn accept_file_title(&self, id: &str, title: &str) -> Result<()> {
+        if self.virtual_folders() && self.index.get(id).and_then(|m| m.name.as_deref()) == Some(title) {
+            let loaded = self.loaded.borrow();
+            if let Some(previous) = loaded.get(id) && std::fs::read_to_string(self.path(id)).is_ok_and(|disk| disk == *previous) {
+                self.loaded_titles.borrow_mut().insert(id.to_string(), title.to_string());
+            }
+            return Ok(());
+        }
         let mut loaded = self.loaded.borrow_mut();
         let Some(previous) = loaded.get(id) else { return Ok(()) };
         // A Markdown file's title is not in the file.
@@ -136,7 +143,7 @@ impl Store {
                 parent = m.parent.as_deref();
             }
         }
-        let depth = |index: &HashMap<String, Meta>, id: &str| { let mut n = 0; let mut p = index.get(id).and_then(|m| m.parent.clone()); while let Some(q) = p.filter(|_| n < 64) { n += 1; p = index.get(&q).and_then(|m| m.parent.clone()); } n };
+        let depth = |index: &HashMap<String, Meta>, id: &str| { let mut seen = HashSet::new(); let mut p = index.get(id).and_then(|m| m.parent.clone()); while let Some(q) = p { if !seen.insert(q.clone()) { break } p = index.get(&q).and_then(|m| m.parent.clone()); } seen.len() };
         let result = (|| -> Result<()> {
             // What goes to the 回收站, deepest first; the root is the outermost
             // folder going with it.
@@ -158,12 +165,12 @@ impl Store {
             // Moves and renames.
             for (c, (from, to)) in &pairs {
                 let (Some(from), Some(to)) = (from, to) else { continue };
-                if from.parent != to.parent && !self.index[&c.id].local() && !self.flat {
+                if from.parent != to.parent && !self.index[&c.id].local() && !self.flat && !self.virtual_folders() {
                     let rel = self.rel_in(&c.id, to.parent.as_deref());
                     self.relocate(&[(c.id.clone(), rel)])?;
                 }
                 if from.title != to.title {
-                    if !to.folder && !self.index[&c.id].markdown && !self.index[&c.id].local() {
+                    if !self.virtual_folders() && !to.folder && !self.index[&c.id].markdown && !self.index[&c.id].local() {
                         let path = self.path(&c.id);
                         let text = std::fs::read_to_string(&path)?;
                         let mut doc = docxml::parse(&text)?;
@@ -182,7 +189,7 @@ impl Store {
             self.save_index()?;
             self.save_trash()
         })();
-        for c in changes { self.parsed.remove(&c.id); self.loaded.borrow_mut().remove(&c.id); }
+        for c in changes { self.parsed.remove(&c.id); self.forget_loaded(&c.id); }
         result.map_err(|e| anyhow::anyhow!("{e}；已完成的部分保留在文档库"))
     }
 }

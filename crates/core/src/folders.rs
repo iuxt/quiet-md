@@ -3,8 +3,8 @@ use super::*;
 impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
     pub fn tree_writer(&self) -> Self {
-        Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat,
-            loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default() }
+        Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat, manifest: self.manifest.clone(),
+            loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default() }
     }
 
     pub fn take_warnings(&mut self) -> Vec<String> { std::mem::take(&mut self.warnings) }
@@ -36,7 +36,7 @@ impl Store {
         self.validate_folder(None, parent)?;
         let id = uuid::Uuid::new_v4().to_string();
         let t = now();
-        if self.flat {
+        if self.flat || self.virtual_folders() {
             self.index.insert(id.clone(), Meta { folder: Some(title.to_string()), parent: parent.map(str::to_string), created: t, modified: t, ..Default::default() });
             if let Err(e) = self.save_index() { self.index.remove(&id); return Err(e); }
             self.record_file_change(&id, None);
@@ -97,7 +97,7 @@ impl Store {
         let pos = before.and_then(|key| siblings.iter().position(|x| x == key)).unwrap_or(siblings.len());
         siblings.insert(pos, id.to_string());
         let mut previous = self.index.clone();
-        if self.index[id].parent.as_deref() != parent && !self.index[id].local() && !self.flat {
+        if self.index[id].parent.as_deref() != parent && !self.index[id].local() && !self.flat && !self.virtual_folders() {
             // Into another folder: the file moves there, keeping its name when it is free.
             self.relocate(&[(id.to_string(), self.rel_in(id, parent))])?;
             for (k, m) in &self.index { if let Some(p) = previous.get_mut(k) { p.rel = m.rel.clone(); p.folder = m.folder.clone(); p.name = m.name.clone(); } }

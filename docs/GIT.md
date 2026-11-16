@@ -14,30 +14,35 @@ Git 由 `git2` 和编入应用的 libgit2 实现；图片和附件由应用实�
 
 远端支持 HTTPS 和独立本地仓库路径（也支持 `file://`）；回环地址的 HTTP 可用于本地服务。当前不支持 SSH 远端、系统凭据助手、自动提交、定时拉取或分叉历史合并。可选 LFS 地址用于服务商单独部署的 LFS 端点。没有上传动作的 LFS 对象表示服务器已持有；提供 verify 动作时，上传后执行确认。
 
+## 查看工作区变更
+
+启用后，侧栏「Git 变更」打开独立面板。左侧列出新增、修改和删除的受管理文件，并显示文章标题与实际路径；点击文件在右侧对比上次提交与当前工作区，绿色为新增行、红色为删除行，两列行号分别对应旧版和当前版本。
+
+XML 文章默认对比正文，可切换「查看源码」检查格式与样式；Markdown 和 JSON 直接按文本对比。图片与附件显示变更提示，不展示 LFS 指针。长文件最多对比前 1200 行并标注截断。点击「刷新状态」前会保存所有窗口中的文章。面板支持填写提交说明、整库提交、拉取和推送；当前不提供逐文件暂存或丢弃操作。
+
 ## 文件与元数据
 
-应用内新建、导入和复制的文章始终使用固定的 `<文章 UUID>.xml` 或 `<文章 UUID>.md` 文件名，无需启用 Git。未启用 Git 时标题等元数据保存在 `.quiet/index.json`，启用后使用 `quiet.json`。启用 Git 时保留真实文件夹，并将已有的旧标题文件名转换为 UUID 文件名。同名文章互不冲突，修改文章标题不再改变文件名。文件夹移动仍会改变文章的相对路径；读取 Git 历史时按 UUID 在当时的元数据中寻找路径。
+文档库始终使用 FORMAT 6：根目录 `quiet.json` 保存虚拟文件夹及文章元数据，正文固定在 `notes/<UUID>.xml|md`。无需启用 Git。文件夹仅由 `parentId`、文章归属仅由 `folderId` 表示，移动与重命名只更新 JSON，不改变正文路径或内容。完整清单示例见 [FORMAT.md](FORMAT.md)。
+
+启用 Git 只初始化仓库并加入 `.gitattributes` / `.gitignore`。提交包含 `quiet.json`、格式标记、活动与回收站正文和 `.assets/` 资源。空文件夹也通过清单保存，克隆 / 拉取后无需建立对应目录。
 
 ```text
 Quiet.md/
-├── quiet.json                 共享元数据，格式与原 DiskIndex 一致
-├── 工作/
-│   ├── <uuid>.xml
-│   └── <uuid>.md
-├── .assets/                   真实图片与附件，不是 LFS 指针
+├── quiet.json                 version: 2，folders / notes / trash
+├── notes/<uuid>.xml|md        固定正文路径
+├── .assets/                   工作目录中的原图与附件
 ├── .gitattributes             .assets/** filter=lfs diff=lfs merge=lfs -text
 ├── .gitignore
-├── .git/
-│   └── lfs/objects/           SHA-256 对象缓存
+├── .git/lfs/objects/          SHA-256 对象缓存
 └── .quiet/
-    ├── format.json            {"format": 5}
-    ├── before-git-5/          启用前文章、索引及格式标记的备份（重试另建带后缀的目录）
-    ├── trash/                 回收站正文与元数据，也进入 Git
-    ├── history/               原有自动快照，仅本地
+    ├── format.json            {"format": 6}
+    ├── before-virtual-6-*/    旧布局迁移备份，仅本地
+    ├── trash/                 回收站正文，进入 Git
+    ├── history/               自动快照，仅本地
     └── git-preview/           不可变历史资源预览，仅本地
 ```
 
-`quiet.json` 是文章与文件夹的共享元数据源，不是可随意删除的缓存。键为相对路径，文件夹键以 `/` 结尾；保留原有 `id`、创建 / 修改时间、排序、收藏、阅读设置等字段，文章增加 `stable_name: true` 与 `title`。Markdown 的显示标题来自此处，XML 正文仍保留自己的标题。新字段都有默认值，普通文件夹格式的旧索引仍能读取。
+清单是层级和标题的唯一来源，应与正文一起备份。XML 中保留正文上次保存时的标题，但当前显示标题及历史提交标题均按对应清单读取。读取旧 FORMAT 5 的 Git 提交仍按当时的路径索引查找 ID。
 
 本机文件、访问令牌、最近打开时间、窗口大小、缓存、自动快照与迁移备份不提交。Git 提交使用显式文件集合，不运行系统的 clean / smudge 过滤器；资源写为标准 LFS 指针进入 Git 对象库，工作目录中的原图不被替换。单个资源上限 256 MiB。
 
@@ -45,10 +50,9 @@ Quiet.md/
 
 ## 转换与恢复
 
-- 转换前备份每篇原文和原索引，再提升格式号并修改路径、更新文档链接。失败时恢复原文件与索引；备份保留在 `.quiet/before-git-5`，不自动清除。
-- FORMAT 5 用来阻止旧版应用把 UUID 当标题、或忽略共享元数据。新建文章统一使用 UUID 文件名，未启用 Git 时也一样；向 FORMAT 4 文档库写入第一篇 UUID 文档前将格式标记提升为 5，以避免旧版误写新元数据。
-- Markdown 普通链接和引用定义中的文档目标随转换更新；代码中的同形文本保持不变。文件夹仍是真实目录，空文件夹也由 `quiet.json` 记录并在拉取时建立。
-- 手工放入的文章在列表扫描时也改为 UUID 文件名；从文件系统移动 UUID 文章时，按文件名找回原 id 与元数据。遇到同名实际文件时拒绝移动或恢复，不给 UUID 追加数字。
+- 旧库转换独立于 Git 是否启用；先备份，转换中断可重开恢复。迁移与删除恢复的记录见 [FORMAT.md](FORMAT.md)。原 Git 分支和提交保留，旧文章历史仍按 UUID 读取。
+- FORMAT 6 阻止旧版按物理目录误读清单。Markdown 链接、图片与引用定义随集中存储转换，代码中的同形文本保留。
+- 手工放入 `notes/` 的文章在扫描时采用 UUID 文件名；目录不作为虚拟层级导入。遇到 UUID 冲突拒绝覆盖，不给固定文件名追加数字。
 - 拉取先验证远端路径、元数据、正文格式和 LFS 的大小 / SHA-256，再修改工作目录；写入出错时恢复文章与 Git 索引，HEAD 最后更新。未跟踪同名文件不覆盖。符号链接、可执行文件和文档库以外路径不接受。
 - 拉取到一半进程被强制终止时，可能留下 `.git/quiet-apply-*` 的备份；这不是多文件原子事务，需保留该目录以人工恢复。正常错误路径会自动回滚。转换备份同样应在核对完成前保留。
 
@@ -58,6 +62,6 @@ Git 只版本化 `.assets/` 中的图片 / 附件；外链、任意外部文件�
 
 ## 实现与验证
 
-文档引擎的 `git.rs`、`git/lfs.rs`、`git_store.rs` 不依赖 GPUI；应用层 `src/git.rs` 负责配置和后台任务，`history.rs` 复用原有历史抽屉。临时目录测试覆盖转换 / 重开 / 链接 / 回收站、提交历史、LFS 指针与校验、HTTP batch 上传下载确认、推送克隆拉取、分叉拒绝以及写入失败回滚，不使用真实文档库。
+文档引擎的 `manifest.rs`、`virtual_store.rs`、`virtual_migrate.rs`、`git.rs`、`git/lfs.rs`、`git_store.rs` 不依赖 GPUI；应用层 `src/git.rs` 负责配置和后台任务，`history.rs` 复用原有历史抽屉。临时目录测试覆盖转换 / 重开 / 链接 / 回收站、提交历史、LFS 指针与校验、HTTP batch 上传下载确认、推送克隆拉取、分叉拒绝以及写入失败回滚，不使用真实文档库。
 
 协议参考：[git2 文档](https://docs.rs/git2/0.21.0/git2/)、[Git LFS Batch API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/batch.md)、[Basic Transfer API](https://github.com/git-lfs/git-lfs/blob/main/docs/api/basic-transfers.md)。

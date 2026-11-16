@@ -174,6 +174,11 @@ impl Workspace {
                 .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Home, cx))),
         );
 
+        let nav = nav.when(self.store.with(|s| s.git_enabled()), |d| d.child(
+            footer_row("nav-git", "storage", crate::settings::tr("Git 变更", "Git changes"))
+                .when(self.view == View::Git, |d| d.bg(Theme::sidebar_selected()).text_color(Theme::text()))
+                .on_click(cx.listener(|w, _, window, cx| w.open_git(window, cx)))));
+
         let mut list = div().flex().flex_col().px(px(SB_X)).pb(px(8.));
         // Pinned docs are shortcuts: they stay in 我的文档 too.
         let pinned: Vec<&Entry> = entries.iter().filter(|e| e.meta.pinned).collect();

@@ -9,13 +9,15 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
 
-新建文章统一使用固定的 UUID 文件名（FORMAT 5），与 Git 是否启用无关；标题等元数据默认保存在 `.quiet/index.json`。Git 是文档库的可选模式，在设置中启用后使用根目录 `quiet.json` 保存共享元数据，并把旧标题文件名的文章备份后转换为 UUID 文件名。`crates/core/src/git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输；`git_store.rs` 处理旧库转换和 Store 写锁。界面在 `src/git.rs`，网络与仓库操作在后台执行，不调用系统 Git / Git LFS。详细范围与恢复规则见 [GIT.md](GIT.md)。
+文档库采用 FORMAT 6：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及删除恢复事务，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动与重命名只更新清单。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
+
+Git 是可选功能。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输；`git_store.rs` 负责 Store 写锁和历史文档读取。旧 FORMAT 5 的路径索引 Git 历史仍可读取。配置界面在 `src/git.rs`，变更列表与只读行级对比在 `src/git_panel.rs`，仓库与网络操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
 
 ```
 main.rs ─ 窗口
   ├─ onboarding.rs  首次启动的引导页；选定文档库后，同一个窗口换成 Workspace
   └─ app.rs  Workspace（窗口根视图）
-       ├─ store.rs        文档库：真实文件夹 + .quiet/index.json（见 FORMAT.md）           [core]
+       ├─ store.rs        文档库：虚拟文件夹 + quiet.json（见 FORMAT.md）           [core]
        ├─ sidebar / home / search / trash / tree / docmenu / docinfo / modes
        └─ editor::Editor（view.rs）   打开的那篇文档
             └─ editor::Core（core.rs） 文档 + 选区 + 撤销栈                        [core]

@@ -473,7 +473,8 @@ impl Workspace {
     /// system's file manager.
     pub(crate) fn render_place_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (folder, pos) = self.place_menu.clone()?;
-        let label = if cfg!(target_os = "macos") { crate::settings::tr("在访达中打开", "Open in Finder") }
+        let label = if folder.is_some() && self.store.virtual_folders() { crate::settings::tr("打开正文目录", "Open Notes Directory") }
+            else if cfg!(target_os = "macos") { crate::settings::tr("在访达中打开", "Open in Finder") }
             else if cfg!(target_os = "windows") { crate::settings::tr("在文件资源管理器中打开", "Open in File Explorer") }
             else { crate::settings::tr("在文件管理器中打开", "Open in File Manager") };
         Some(deferred(anchored().anchor(Corner::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(

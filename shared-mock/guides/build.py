@@ -11,9 +11,8 @@ Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{button:Action|url|text|color}}  inline button (OpenLink / DuplicatePage)
 Assets under guides/assets are copied to <out>/.assets/guides.
 
-The output is a FORMAT 4 library: folders on disk, each document a file named
-after its title (store::file_name_for), links as paths relative to the file,
-and what the files cannot say in .quiet/index.json, keyed by path.
+The output is a FORMAT 6 library: virtual folder identities in quiet.json,
+fixed notes/<UUID>.xml bodies and relative document links.
 """
 import datetime as dt, json, re, shutil, sys, time, uuid
 from pathlib import Path
@@ -21,7 +20,7 @@ from pathlib import Path
 here = Path(__file__).resolve().parent
 out = Path(sys.argv[1]).resolve()
 NS = uuid.UUID("6f7c1e9a-9d0b-4a51-8c7e-2a1d3b4c5e6f")
-# Folders in the guide library: key -> title, a folder on disk.
+# Virtual folders in the guide library: key -> title.
 FOLDERS = {"writing-guides": "Writing and formatting", "examples": "Examples"}
 # The top level, in order; every entry gets its place, so the sidebar and
 # Home's manual order (the default) read the same.
@@ -68,12 +67,8 @@ def rel_path(frm, to):
     n = 0
     while n < min(len(a), len(b)) and a[n] == b[n]: n += 1
     return "/".join([".."] * (len(a) - n) + b[n:])
-# Where each guide goes: <folder>/<title>.xml.
-paths = {}
-for k, parent, _ in KEYS.values():
-    d = file_name(FOLDERS[parent]) if parent else ""
-    paths[k] = (d + "/" if d else "") + file_name(titles[k]) + ".xml"
-assert len({p.lower() for p in paths.values()}) == len(paths), "two guides with one name"
+# Body paths do not depend on the visible tree or titles.
+paths = {k: f"notes/{ids[k]}.xml" for k, _, _ in KEYS.values()}
 here_dir = ""
 
 def fill(x):
@@ -118,11 +113,11 @@ if out.exists() and any(out.iterdir()):
     sys.exit(f"{out} is not empty")
 out.mkdir(parents=True, exist_ok=True)
 (out / ".quiet").mkdir()
+(out / "notes").mkdir()
 index = {}
 order = list(KEYS.values())
 inside = {}
 for k, title in FOLDERS.items():
-    (out / file_name(title)).mkdir()
     index[file_name(title) + "/"] = {"id": ids[k], "created": now - 3600, "modified": now}
 for i, (k, parent, pinned) in enumerate(order):
     here_dir = paths[k].rpartition("/")[0]
@@ -143,8 +138,20 @@ assert set(TOP) == {k for k, p, _ in KEYS.values() if not p} | set(FOLDERS), "TO
 key_of = {**{k: paths[k] for k in paths}, **{k: file_name(t) + "/" for k, t in FOLDERS.items()}}
 for i, k in enumerate(TOP):
     index[key_of[k]]["root_order"] = i + 1
-(out / ".quiet" / "index.json").write_text(json.dumps(dict(sorted(index.items())), ensure_ascii=False, indent=2) + "\n")
-(out / ".quiet" / "format.json").write_text('{\n  "format": 4\n}')
+stamp = lambda t: dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat().replace("+00:00", "Z")
+folders, notes = [], []
+for k, title in FOLDERS.items():
+    meta = index[key_of[k]]
+    folders.append({"id": ids[k], "name": title, "parentId": None, "createdAt": stamp(meta["created"]),
+                    "updatedAt": stamp(meta["modified"]), "options": {"root_order": meta["root_order"]}})
+for k, parent, _ in order:
+    meta = index[paths[k]]
+    options = {key: value for key, value in meta.items() if key not in ("id", "created", "modified")}
+    notes.append({"id": ids[k], "title": titles[k], "filename": f"{ids[k]}.xml", "folderId": ids[parent] if parent else None,
+                  "createdAt": stamp(meta["created"]), "updatedAt": stamp(meta["modified"]), "options": options})
+manifest = {"version": 2, "folders": sorted(folders, key=lambda f: f["id"]), "notes": sorted(notes, key=lambda n: n["id"]), "trash": []}
+(out / "quiet.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+(out / ".quiet" / "format.json").write_text('{\n  "format": 6\n}')
 shutil.copytree(here / "assets", out / ".assets" / "guides")
 (out / ".assets" / "guides" / "covers").mkdir()
 for name in sorted(covers):

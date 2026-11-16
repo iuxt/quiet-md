@@ -61,11 +61,13 @@ subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), 
                check=True, timeout=60, env=dict(os.environ, FDL_NOBLINK="1"))
 lib = run / "lib"
 metadata = json.loads((lib / "quiet.json").read_text())
-assert list(metadata) == [f"{doc_id}.xml"], metadata
-assert metadata[f"{doc_id}.xml"]["title"] == "Git regression"
+assert metadata["version"] == 2 and len(metadata["notes"]) == 1, metadata
+assert metadata["notes"][0]["filename"] == f"{doc_id}.xml"
+assert metadata["notes"][0]["title"] == "Git regression"
 assert not (lib / "Git regression.xml").exists()
-assert (lib / ".quiet/before-git-5/Git regression.xml").read_text() == body
-assert (lib / f"{doc_id}.xml").read_text() == body
+backups = list((lib / ".quiet").glob("before-virtual-6-*"))
+assert len(backups) == 1 and (backups[0] / "Git regression.xml").read_text() == body
+assert (lib / f"notes/{doc_id}.xml").read_text() == body
 repo = lib / ".git"
 assert "ui-secret-token" not in (repo / "config").read_text()
 commit = (repo / "refs/heads/main").read_text().strip()

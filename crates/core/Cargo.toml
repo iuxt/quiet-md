@@ -28,6 +28,7 @@ ureq = { version = "3.5", features = ["json"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 percent-encoding = "2"
 url = "2"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 
 [lints]
 workspace = true

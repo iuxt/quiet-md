@@ -36,6 +36,10 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 `python3 tools/harness/git_sync.py` 在临时文档库中通过界面启用 Git、提交并打开历史，核对 UUID 文件名、元数据、真实提交对象、令牌不落盘及只读预览；不调用系统 Git、不联网。
 
+`python3 tools/harness/git_changes.py` 在临时 Git 库中验证文件列表、正文 / 源码对比、Markdown / JSON / 附件、只读保护、窄窗口与整库提交后的空状态。
+
+`python3 tools/harness/virtual_folders.py` 用 FORMAT 6 临时文档库验证 JSON 标题、侧栏拖动、文件夹重命名和文件夹内新建文章；确认只改变虚拟层级，原正文不变，新正文固定使用 UUID 文件名，无需启用 Git。
+
 每行一条命令；`#` 开头的是注释。完整说明见 `src/devtools.rs` 顶部。
 
 | 命令 | 作用 |

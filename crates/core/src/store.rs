@@ -1,9 +1,5 @@
-//! On-disk library (FORMAT 4/5): the folders on disk are the library's folders
-//! and new documents keep UUID file names. Display titles and other metadata
-//! (pinned, order …) are kept per relative path in `.quiet/index.json`, or
-//! `quiet.json` with Git enabled; state that
-//! belongs to this computer only (recently opened, window sizes, 本机文件)
-//! is kept outside the library.
+//! Library storage: FORMAT 6 virtual folders in quiet.json, fixed notes/<UUID> bodies.
+//! FORMAT 4/5 physical folders and older layouts remain readable for migration.
 
 use crate::docxml;
 use crate::model::Document;
@@ -22,10 +18,13 @@ use layout::{parent_rel, base_name, stem_of, join_rel};
 #[path = "migrate.rs"] mod migrate;
 pub use migrate::{MigrationState, ConsentReason, DeviceHint, MigrationReport, RestoreReport, SyncService, sync_of, set_ubiquity_probe};
 #[path = "git_store.rs"] mod git_store;
+#[path = "virtual_store.rs"] mod virtual_store;
+#[path = "virtual_migrate.rs"] mod virtual_migrate;
+#[cfg(test)] #[path = "virtual_tests.rs"] mod virtual_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Meta {
-    /// A folder, by its name on disk.
+    /// A folder, by its display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,7 +147,7 @@ pub enum PageWidth {
 }
 
 impl PageWidth {
-    fn is_standard(&self) -> bool {
+    pub(crate) fn is_standard(&self) -> bool {
         *self == PageWidth::Standard
     }
 
@@ -244,6 +243,7 @@ pub struct Entry {
 pub struct Store {
     file_changes: Vec<std::sync::Weak<std::sync::Mutex<Vec<FileDelta>>>>,
     loaded: std::cell::RefCell<HashMap<String, String>>,
+    loaded_titles: std::cell::RefCell<HashMap<String, String>>,
     /// Library images and attachments copied beside each 本机文件 this
     /// session, so autosaves reuse the copy instead of making another.
     copied: std::cell::RefCell<HashMap<String, HashMap<PathBuf, String>>>,
@@ -252,14 +252,14 @@ pub struct Store {
     /// the main thread for seconds on big or iCloud-evicted libraries.
     parsed: HashMap<String, (std::time::SystemTime, u64, Parsed)>,
     root: PathBuf,
-    /// Every document and folder by its id. Ids are handed out per library
-    /// and remembered in `.quiet/index.json`, but nothing in a file refers
-    /// to them: links are relative paths.
+    /// Every document and virtual folder by its stable UUID; quiet.json
+    /// stores the tree while document links remain relative file paths.
     index: HashMap<String, Meta>,
     trash: HashMap<String, Trashed>,
     /// The old layout (FORMAT 3: `docs/<id>.xml`, folders only in the index,
     /// the app's files at the top), kept until the user agrees to the move.
     flat: bool,
+    manifest: Option<crate::manifest::Manifest>,
     /// Problems found while opening the library (a damaged index recovered
     /// from its backup …), for the window to tell the user once.
     pub warnings: Vec<String>,
@@ -321,8 +321,9 @@ struct Batch { lock: Option<WriteLock>, depth: u32, index: std::cell::Cell<bool>
 /// Version of the on-disk layout, kept in `.quiet/format.json`. Bump it when
 /// a change would make older builds misread the library. 4: real folders,
 /// files named by title, internal data in `.quiet/`. 5: opt-in UUID names
-/// with authoritative shared metadata in `quiet.json` for embedded Git.
-pub const FORMAT: u32 = 5;
+/// with shared metadata for Git. 6: virtual folders, one quiet.json,
+/// fixed notes/<UUID> body paths regardless of Git.
+pub const FORMAT: u32 = 6;
 /// The hidden folder holding the library's own data.
 pub const INTERNAL: &str = ".quiet";
 /// The hidden folder holding pasted and inserted images and attachments.
@@ -619,6 +620,7 @@ impl Store {
         let found = layout::scan(&if Self::flat_at(root) { root.join("docs") } else { root.to_path_buf() });
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (found.dirs, found.docs, found.pending).hash(&mut h);
+        if let Ok(meta) = std::fs::metadata(root.join(crate::manifest::FILE)) { (meta.len(), meta.modified().ok()).hash(&mut h); }
         h.finish()
     }
 
@@ -666,6 +668,7 @@ impl Store {
             _ => None,
         };
         let mut store = Self::open_at(root)?;
+        if !store.flat { store.use_virtual_folders()?; }
         store.migrated = report;
         store.warnings.extend(failed);
         Ok(store)
@@ -697,6 +700,7 @@ impl Store {
     /// Open the library at `root` in the layout it has; never moves it.
     pub fn open_at(root: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&root)?;
+        virtual_migrate::recover(&root)?;
         let mut warnings = vec![];
         let internal = root.join(INTERNAL);
         let marker = internal.join("format.json");
@@ -712,16 +716,24 @@ impl Store {
                 Some(_) => if migrate::legacy(&root) { migrate::finish(&root, &mut warnings); },
                 None => {
                     std::fs::create_dir_all(&internal)?;
-                    write_atomic(&marker, &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
+                    let existing = layout::scan(&root);
+                    let format = if std::fs::read(root.join(crate::manifest::FILE)).is_ok_and(|b| crate::manifest::Manifest::parse(&b).is_ok())
+                        || (existing.docs.is_empty() && existing.dirs.is_empty() && !root.join(crate::manifest::FILE).exists()) { FORMAT } else { 5 };
+                    if format == FORMAT && !root.join(crate::manifest::FILE).exists() {
+                        save_json(&root.join(crate::manifest::FILE), &crate::manifest::Manifest::default())?;
+                    }
+                    write_atomic(&marker, &serde_json::to_vec_pretty(&FormatMarker { format })?)?;
                 }
             }
         }
         let base = if flat { root.clone() } else { internal.clone() };
         let trash = load_json(&base.join("trash").join("index.json"), "回收站索引", &mut warnings);
-        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, warnings, migrated: None, loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, manifest: None, warnings, migrated: None, loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
         if flat {
             store.index = load_json(&base.join("index.json"), "文档索引", &mut store.warnings);
             store.flat_folders()?;
+        } else if reread::<FormatMarker>(&marker).is_some_and(|m| m.format == FORMAT) {
+            store.open_virtual()?;
         } else {
             let disk: DiskIndex = load_json(&store.index_file(), "文档索引", &mut store.warnings);
             let local = store.read_local();
@@ -753,7 +765,7 @@ impl Store {
     /// not moved to folders yet never grows a visible `history/` folder.
     fn history_base(&self) -> PathBuf { self.root.join(INTERNAL) }
     fn internal(&self) -> PathBuf { if self.flat { self.root.clone() } else { self.root.join(INTERNAL) } }
-    fn index_file(&self) -> PathBuf { if self.git_enabled() { self.root.join(crate::git::MANIFEST) } else { self.internal().join("index.json") } }
+    fn index_file(&self) -> PathBuf { if self.virtual_folders() || self.root.join(crate::git::MANIFEST).is_file() { self.root.join(crate::git::MANIFEST) } else { self.internal().join("index.json") } }
     fn trash_index_file(&self) -> PathBuf { self.internal().join("trash").join("index.json") }
     fn local_file(&self) -> PathBuf { local_file_for(&self.root) }
 
@@ -855,7 +867,7 @@ impl Store {
     pub fn folder_dir(&self, id: Option<&str>) -> Option<PathBuf> {
         match id {
             None => Some(self.root.clone()),
-            Some(id) => self.index.get(id).filter(|m| m.folder.is_some()).map(|m| if self.flat { self.root.clone() } else { self.abs(&m.rel) }),
+            Some(id) => self.index.get(id).filter(|m| m.folder.is_some()).map(|m| if self.flat { self.root.clone() } else if self.virtual_folders() { self.root.join(crate::manifest::NOTES) } else { self.abs(&m.rel) }),
         }
     }
 
@@ -864,6 +876,10 @@ impl Store {
     /// The folder of a 本机文件, which its images are relative to.
     fn base(&self, id: &str) -> Option<PathBuf> {
         self.index.get(id)?.path.as_ref().and_then(|p| std::path::Path::new(p).parent()).map(PathBuf::from)
+    }
+
+    fn markdown_base(&self, id: &str) -> Option<PathBuf> {
+        self.base(id).or_else(|| (self.virtual_folders() && !self.index.get(id).is_some_and(Meta::local)).then(|| self.root.join(crate::manifest::NOTES)))
     }
 
     /// A Markdown document's title: its file name.
@@ -914,7 +930,18 @@ impl Store {
             if text.contains("href=") { self.links_to_ids(&self.doc_dir(id), &mut doc); }
             return Ok(doc);
         }
-        let mut doc = crate::markdown::parse_file(text, &self.markdown_title(id), self.base(id).as_deref());
+        let base = self.markdown_base(id);
+        let mut doc = crate::markdown::parse_file(text, &self.markdown_title(id), base.as_deref());
+        if self.virtual_folders() && !self.index.get(id).is_some_and(Meta::local) {
+            let mut paths = HashMap::new();
+            for src in doc.asset_sources() {
+                if let Ok(rel) = Path::new(&src).strip_prefix(&self.root)
+                    && let Some(rel) = layout::resolve("", &rel.to_string_lossy()) {
+                    paths.insert(src, self.root.join(rel).to_string_lossy().into_owned());
+                }
+            }
+            git_store::rewrite_asset_sources(&mut doc.blocks, &paths);
+        }
         // Images a Markdown file carries inline (#133) become assets, so the
         // page shows them and an export writes them like any other picture.
         crate::data_images::absorb(&mut doc.blocks, &self.root);
@@ -936,11 +963,12 @@ impl Store {
             return (docxml::serialize(doc), vec![]);
         }
         let front = disk.map(|d| crate::markdown::front_matter(d.trim_start_matches('\u{feff}')).0).unwrap_or_default();
-        let base = self.base(id);
-        let name = base.is_some().then(|| self.markdown_title(id));
+        let base = self.markdown_base(id);
+        let virtual_note = self.virtual_folders() && !self.index.get(id).is_some_and(Meta::local);
+        let name = self.base(id).is_some().then(|| self.markdown_title(id));
         let copied = self.copied.borrow();
         let out = crate::markdown::write_file_with(doc, front, &crate::markdown::Options {
-            library_root: Some(&self.root), base: base.as_deref(), name: name.as_deref(), copied: copied.get(id), original: disk, ..Default::default()
+            library_root: Some(&self.root), base: base.as_deref(), relative_from: virtual_note.then_some(crate::manifest::NOTES), name: name.as_deref(), copied: copied.get(id), original: disk, ..Default::default()
         });
         let bom = if disk.is_some_and(|d| d.starts_with('\u{feff}')) { "\u{feff}" } else { "" };
         (format!("{bom}{}", out.text), out.files)
@@ -964,11 +992,13 @@ impl Store {
         // version in memory is written back unchanged.
         if self.flat {
             if let Some(index) = reread(&self.index_file()) { self.index = index; }
+        } else if marker.format == FORMAT {
+            self.reload_virtual()?;
         } else if let Some(disk) = reread::<DiskIndex>(&self.index_file()) {
             let local = self.read_local();
             self.index = self.from_disk(&disk, &local);
         }
-        if let Some(trash) = reread(&self.trash_index_file()) { self.trash = trash; }
+        if !self.virtual_folders() && let Some(trash) = reread(&self.trash_index_file()) { self.trash = trash; }
         Ok(lock)
     }
 
@@ -976,6 +1006,7 @@ impl Store {
         if self.batch.lock.is_some() { self.batch.index.set(true); return Ok(()); }
         // The old layout keeps everything in its index, as older builds expect.
         if self.flat { return save_json(&self.index_file(), &self.index); }
+        if self.virtual_folders() { return self.save_virtual(); }
         save_json(&self.index_file(), &self.to_disk())?;
         self.save_local(&self.local_state())
     }
@@ -1066,7 +1097,8 @@ impl Store {
     fn require_uuid_format(&self) -> Result<()> {
         let path = self.internal().join("format.json");
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(&path)?)?;
-        if marker.format < FORMAT { write_atomic(&path, &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?; }
+        let required = if self.virtual_folders() { FORMAT } else { 5 };
+        if marker.format < required { write_atomic(&path, &serde_json::to_vec_pretty(&FormatMarker { format: required })?)?; }
         Ok(())
     }
 
@@ -1216,6 +1248,10 @@ impl Store {
     /// when the name is taken.
     fn follow_title(&mut self, id: &str, title: &str) -> Result<()> {
         let Some(m) = self.index.get(id) else { return Ok(()) };
+        if self.virtual_folders() && m.folder.is_some() {
+            self.index.get_mut(id).unwrap().folder = Some(title.to_string());
+            return Ok(());
+        }
         if m.stable_name && !m.local() && m.folder.is_none() {
             self.index.get_mut(id).unwrap().name = Some(title.to_string());
             return Ok(());
@@ -1259,6 +1295,7 @@ impl Store {
             Err(e) => { self.warnings.push(format!("无法锁定文档库：{e}")); None }
         };
         if self.flat { return self.list_flat(_lock.is_some()); }
+        if self.virtual_folders() { return self.list_virtual(_lock.is_some()); }
         let found = layout::scan(&self.root);
         let mut disk = self.to_disk();
         let stable_names = self.git_enabled() || self.index.values().any(|meta| meta.stable_name);
@@ -1374,20 +1411,23 @@ impl Store {
     }
 
     pub fn load(&self, id: &str) -> Result<Document> {
-        self.parse_doc(id, &self.read_doc_text(id)?)
+        let mut doc = self.parse_doc(id, &self.read_doc_text(id)?)?;
+        self.manifest_title(id, &mut doc);
+        Ok(doc)
     }
 
     /// Only opening an editor establishes a new save baseline; previews must
     /// not hide external changes from an already open editor.
     pub fn load_for_edit(&self, id: &str, shared: bool) -> Result<Document> {
         let xml = self.read_doc_text(id)?;
-        let doc = self.parse_doc(id, &xml)?;
-        if !shared { self.loaded.borrow_mut().insert(id.to_string(), xml); }
+        let mut doc = self.parse_doc(id, &xml)?;
+        self.manifest_title(id, &mut doc);
+        if !shared { self.loaded.borrow_mut().insert(id.to_string(), xml); self.loaded_titles.borrow_mut().insert(id.to_string(), doc.title.text.clone()); }
         Ok(doc)
     }
 
     /// Release a closed editor's conflict-detection baseline, after its last window saved.
-    pub fn forget_loaded(&self, id: &str) { self.loaded.borrow_mut().remove(id); }
+    pub fn forget_loaded(&self, id: &str) { self.loaded.borrow_mut().remove(id); self.loaded_titles.borrow_mut().remove(id); }
 
     pub fn save(&mut self, id: &str, doc: &Document) -> Result<Meta> {
         let _lock = self.begin_write()?;
@@ -1406,8 +1446,8 @@ impl Store {
             let dir = self.folder_rel(parent);
             let stable_name = !self.flat;
             let rel = if self.flat { String::new() } else { self.require_uuid_format()?; self.uuid_rel(&dir, id, "xml")? };
-            self.index.insert(id.to_string(), Meta { created: t, modified: t, rel, stable_name, name: stable_name.then(|| doc.title.text.clone()), ..Default::default() });
-            if !dir.is_empty() { derive_tree(&mut self.index); }
+            self.index.insert(id.to_string(), Meta { created: t, modified: t, rel, stable_name, name: stable_name.then(|| doc.title.text.clone()), parent: parent.map(str::to_string), ..Default::default() });
+            if !dir.is_empty() && !self.virtual_folders() { derive_tree(&mut self.index); }
         }
         let r = self.write_doc(id, doc);
         if r.is_err() && new { self.index.remove(id); }
@@ -1415,6 +1455,11 @@ impl Store {
     }
 
     fn write_doc(&mut self, id: &str, doc: &Document) -> Result<Meta> {
+        if self.virtual_folders() && let Some(meta) = self.index.get(id).filter(|m| !m.local())
+            && let Some(expected) = self.loaded_titles.borrow().get(id) {
+            let current = meta.name.as_deref().unwrap_or_default();
+            anyhow::ensure!(current == expected || current == doc.title.text.trim(), "文档标题已被另一个实例修改，请重新载入磁盘版本");
+        }
         let disk = if self.is_markdown(id) || self.loaded.borrow().contains_key(id) { std::fs::read_to_string(self.path(id)).ok() } else { None };
         let (xml, copies) = self.serialize_with_copies(id, doc, disk.as_deref());
         if let Some(previous) = self.loaded.borrow().get(id) {
@@ -1462,6 +1507,7 @@ impl Store {
         m.modified = t;
         let m = m.clone();
         self.save_index()?;
+        if let Some(title) = &m.name { self.loaded_titles.borrow_mut().insert(id.to_string(), title.clone()); }
         Ok(m)
     }
 
@@ -1505,10 +1551,11 @@ impl Store {
             let dir = self.folder_rel(parent);
             self.require_uuid_format()?;
             let rel = self.uuid_rel(&dir, &id, "md")?;
-            self.index.insert(id.clone(), Meta { created: t, modified: t, rel, stable_name: true, name: Some(doc.title.text.clone()), ..Default::default() });
-            derive_tree(&mut self.index);
+            self.index.insert(id.clone(), Meta { created: t, modified: t, rel, stable_name: true, name: Some(doc.title.text.clone()), parent: parent.map(str::to_string), markdown: true, ..Default::default() });
+            if !self.virtual_folders() { derive_tree(&mut self.index); }
         }
-        let text = format!("{front}{}", crate::markdown::write_file(doc, "", None));
+        let text = if self.virtual_folders() { format!("{front}{}", self.serialize_doc(&id, doc, None)) }
+            else { format!("{front}{}", crate::markdown::write_file(doc, "", None)) };
         if let Err(e) = self.write_file(&self.path(&id), text.as_bytes()).and_then(|_| self.save_index()) { self.index.remove(&id); return Err(e); }
         self.record_file_change(&id, None);
         drop(lock);
@@ -1519,6 +1566,7 @@ impl Store {
     /// The relative path of folder `parent` ("" for the top or the old layout).
     fn folder_rel(&self, parent: Option<&str>) -> String {
         if self.flat { return String::new(); }
+        if self.virtual_folders() { return crate::manifest::NOTES.to_string(); }
         parent.and_then(|p| self.index.get(p)).map(|m| m.rel.clone()).unwrap_or_default()
     }
 
@@ -1597,7 +1645,15 @@ impl Store {
         anyhow::ensure!(self.index.contains_key(id), "文档或文件夹不存在");
         let ride = root.unwrap_or(id).to_string();
         let mut items = vec![];
-        if self.index[id].folder.is_some() && !self.flat {
+        if self.index[id].folder.is_some() && self.virtual_folders() {
+            for key in self.index.keys().filter(|k| *k != id) {
+                let mut parent = self.index[key].parent.as_deref();
+                while let Some(p) = parent {
+                    if p == id { items.push((key.clone(), Some(ride.clone()))); break; }
+                    parent = self.index.get(p).and_then(|m| m.parent.as_deref());
+                }
+            }
+        } else if self.index[id].folder.is_some() && !self.flat {
             let prefix = format!("{}/", self.index[id].rel);
             let mut inside: Vec<(String, usize, bool)> = self.index.iter().filter(|(_, m)| !m.local() && m.rel.starts_with(&prefix))
                 .map(|(k, m)| (k.clone(), m.rel.matches('/').count(), m.folder.is_some())).collect();
@@ -1617,6 +1673,7 @@ impl Store {
     /// once before anything moves and the library's once after, so a big
     /// folder costs two index writes, not two per document.
     fn trash_many(&mut self, items: &[(String, Option<String>)], record: bool) -> Result<()> {
+        if self.virtual_folders() { return self.trash_virtual(items, record); }
         let mut trash = self.trash.clone();
         let mut targets = vec![];
         for (id, root) in items {
@@ -1671,6 +1728,7 @@ impl Store {
     }
 
     fn save_trash(&self) -> Result<()> {
+        if self.virtual_folders() { return self.save_index(); }
         std::fs::create_dir_all(self.trash_dir())?;
         save_json(&self.trash_index_file(), &self.trash)
     }
@@ -1697,7 +1755,7 @@ impl Store {
         // Unreadable folder: list what the index knows, and leave it alone.
         let listed = std::fs::read_dir(&dir);
         let mut readable = listed.is_ok();
-        if let Ok(rd) = listed {
+        if let Ok(rd) = listed && !self.virtual_folders() {
             for entry in rd {
                 let e = match entry {
                     Ok(e) => e,
@@ -1731,7 +1789,7 @@ impl Store {
                 on_disk.insert(id);
             }
         }
-        if readable {
+        if readable && !self.virtual_folders() {
             let before = self.trash.len();
             self.trash.retain(|id, t| t.meta.folder.is_some() || on_disk.contains(id));
             dirty |= self.trash.len() != before;
@@ -1776,7 +1834,7 @@ impl Store {
         anyhow::ensure!(self.trash.contains_key(id), "回收站中没有这篇文档");
         let mut group = self.trash_group(id);
         // Folders before what is in them.
-        let depth = |k: &String| { let mut n = 0; let mut p = self.trash.get(k).and_then(|t| t.meta.parent.clone()); while let Some(q) = p.filter(|_| n < 64) { n += 1; p = self.trash.get(&q).and_then(|t| t.meta.parent.clone()); } n };
+        let depth = |k: &String| { let mut seen = HashSet::new(); let mut p = self.trash.get(k).and_then(|t| t.meta.parent.clone()); while let Some(q) = p { if !seen.insert(q.clone()) { break } p = self.trash.get(&q).and_then(|t| t.meta.parent.clone()); } seen.len() };
         group.sort_by_key(|k| (depth(k), k.clone()));
         let parent = self.trash.get(id).and_then(|t| t.meta.parent.clone());
         let moved = parent.as_ref().is_some_and(|p| !self.index_has(p));
@@ -1795,6 +1853,7 @@ impl Store {
     /// old name (numbered when taken); `place` overrides its position.
     /// Its links are rewritten for where it lands.
     fn untrash(&mut self, id: &str, parent: Option<String>, place: Option<(u64, Option<u64>)>) -> Result<()> {
+        if self.virtual_folders() { return self.untrash_virtual(id, parent, place); }
         let t = self.trash.get(id).cloned().ok_or_else(|| anyhow::anyhow!("恢复内容已不在回收站"))?;
         let src = self.trash_path(id);
         if self.flat {
@@ -1859,7 +1918,7 @@ impl Store {
     }
 
     fn index_has(&self, id: &str) -> bool {
-        self.index.get(id).is_some_and(|m| if m.folder.is_some() { self.flat || self.abs(&m.rel).is_dir() } else { self.path(id).exists() })
+        self.index.get(id).is_some_and(|m| if m.folder.is_some() { self.flat || self.virtual_folders() || self.abs(&m.rel).is_dir() } else { self.path(id).exists() })
     }
 
     /// 彻底删除 a page from the 回收站, with the pages that went with it.
@@ -2025,7 +2084,7 @@ impl Store {
     pub fn rename(&mut self, id: &str, title: &str) -> Result<Meta> {
         let _lock = self.begin_write()?;
         let before = self.file_state(id);
-        if self.index.get(id).is_some_and(|m| m.folder.is_some() || m.markdown) {
+        if self.index.get(id).is_some_and(|m| m.folder.is_some() || m.markdown || (self.virtual_folders() && !m.local())) {
             // A Markdown file is left as it is: only its name changes.
             self.follow_title(id, title)?;
             let m = self.index.get_mut(id).unwrap();
@@ -2082,7 +2141,7 @@ impl Store {
 mod tests {
     use super::*;
 
-    /// A library in a fresh temporary folder, removed on drop.
+    /// Physical-layout compatibility fixtures in temporary folders.
     struct Lib(PathBuf);
 
     impl Lib {
@@ -2091,6 +2150,10 @@ mod tests {
             Lib(d)
         }
         fn open(&self) -> Store {
+            if !self.0.exists() {
+                std::fs::create_dir_all(self.0.join(INTERNAL)).unwrap();
+                write_atomic(&self.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
+            }
             Store::open_at(self.0.clone()).unwrap()
         }
         /// Moved to the new layout, then opened.
@@ -2230,7 +2293,7 @@ mod tests {
         let index: serde_json::Value = serde_json::from_slice(&std::fs::read(lib.0.join(".quiet/index.json")).unwrap()).unwrap();
         assert_eq!(index[format!("Folder/{md}.md")]["title"], "另一个显示标题");
         assert!(index[format!("{xml}.xml")]["stable_name"].as_bool().unwrap());
-        assert_eq!(serde_json::from_slice::<FormatMarker>(&std::fs::read(lib.0.join(".quiet/format.json")).unwrap()).unwrap().format, FORMAT);
+        assert_eq!(serde_json::from_slice::<FormatMarker>(&std::fs::read(lib.0.join(".quiet/format.json")).unwrap()).unwrap().format, 5);
         assert!(!lib.0.join(".git").exists());
         drop(s);
         let mut s = lib.open();
@@ -2649,7 +2712,7 @@ mod tests {
         let index = std::fs::read(trash.join("index.json")).unwrap();
         std::fs::rename(&trash, lib.0.join(".quiet/trash-away")).unwrap();
         std::fs::write(&trash, b"").unwrap();
-        let mut s = Store { file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), flat: false, migrated: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+        let mut s = Store { file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), flat: false, manifest: None, migrated: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
         assert_eq!(s.list_trash().len(), 1);
         assert_eq!(s.trash.len(), 1);
     }

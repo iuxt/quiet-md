@@ -65,6 +65,7 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 文件 | 改动 | 用途 |
 |---|---|---|
 | `src/sys/mod.rs` | Linux/Android 下 `ENOATTR` 映射为 `::libc::ENODATA` | 解决现代 libc crate 在 Linux GNU 下没有 `ENOATTR` 常量导致的编译错误 |
+| `src/sys/linux_macos/macos.rs` | macOS 扩展属性 FFI 的 `position` 参数改用 `u32`，移除 `libc::uint32_t` 导入 | 保持 ABI 不变，消除现代 libc crate 的弃用警告 |
 
 ## 删掉的上游文件
 

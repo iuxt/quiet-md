@@ -369,11 +369,11 @@ impl Workspace {
                     ConsentReason::Restored => crate::settings::tr("你之前把文档库恢复成了原来的存放方式。", "You went back to the old layout before. ").to_string(),
                 };
                 (
-                    crate::settings::tr("把文档库改为真实文件夹？", "Move the library to real folders?").to_string(),
+                    crate::settings::tr("升级文档库存储格式？", "Upgrade library storage?").to_string(),
                     why + crate::settings::tr(
-                        "改完后，在访达里看到的文件夹和文件就是侧栏里的样子，文件以标题命名。别的电脑上的旧版 Quiet.md 打不开改过的文档库，请先把它们更新到最新版本。原来的文件会在文档库的 .quiet 文件夹里保留 30 天。",
-                        "Afterwards, Finder shows the same folders and files as the sidebar, each file named by its title. Older versions of Quiet.md on other computers can't open the moved library, so update them first. The old files are kept in the library's .quiet folder for 30 days."),
-                    crate::settings::tr("改用文件夹", "Move"),
+                        "升级后，JSON 管理文件夹层级，正文使用固定 UUID 文件名。请先更新其他电脑上的 Quiet.md。迁移前会在文档库的 .quiet 目录中保留原文件备份。",
+                        "After upgrading, JSON manages the folder hierarchy and documents use fixed UUID filenames. Update Quiet.md on other computers first. The original files are backed up in the library’s .quiet directory before migration."),
+                    crate::settings::tr("升级格式", "Upgrade"),
                     false,
                 )
             }

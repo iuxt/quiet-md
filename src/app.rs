@@ -210,6 +210,7 @@ pub enum View {
     Folder,
     Trash,
     Settings,
+    Git,
 }
 
 /// A confirmation dialog and the pages it is about.
@@ -1127,9 +1128,9 @@ impl Workspace {
     pub(crate) fn migrate_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.save_before(cx, |w, window, cx| w.migrate_library(window, cx)) { return }
         let root = crate::store::Store::root_dir();
-        let moved = crate::store::Store::migrate(&root).and_then(|r| Ok((r, crate::store::Store::open_at(root.clone())?)));
+        let moved = crate::store::Store::migrate(&root).and_then(|r| { let mut store = crate::store::Store::open_at(root.clone())?; store.use_virtual_folders()?; Ok((r, store)) });
         match moved {
-            Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("没能改为真实文件夹，文档库保持原样：{}", "Couldn't move to real folders; the library is unchanged: {}", crate::settings::diagnostic(&e.to_string())), cx),
+            Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("文档库格式升级未完成：{}", "Library storage upgrade did not finish: {}", crate::settings::diagnostic(&e.to_string())), cx),
             Ok((report, store)) => {
                 self.store.with(|s| *s = store);
                 crate::changelog::migrated(&report);
@@ -1584,6 +1585,7 @@ impl Render for Workspace {
             View::Folder => self.render_folder(window, cx),
             View::Trash => self.render_trash(cx),
             View::Settings => self.render_settings(cx),
+            View::Git => self.render_git(cx),
         };
         let move_dlg = self.render_move_dialog(cx);
         let export_md = self.render_export_md(cx);

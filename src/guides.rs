@@ -139,7 +139,7 @@ mod tests {
         for l in links { assert!(ids.contains(l.target.as_str()), "unresolved link {}", l.target); }
         for e in &docs {
             let name = store.file_path(&e.id).unwrap().file_stem().unwrap().to_string_lossy().into_owned();
-            assert_eq!(name, crate::store::file_name_for(&e.title), "build.py names {} differently", e.title);
+            assert_eq!(name, e.id, "guide body must use its fixed UUID: {}", e.title);
         }
         assert!(!root.join("docs").exists() && !root.join("index.json").exists());
         std::fs::remove_dir_all(&root).unwrap();

@@ -18,6 +18,8 @@ pub struct Options<'a> {
     pub in_place: bool,
     /// The folder of a Markdown file outside the library; None: one in the library.
     pub base: Option<&'a Path>,
+    /// Stable library files use paths relative to this library directory.
+    pub relative_from: Option<&'a str>,
     /// In place, outside the library: the file's name (no extension). The
     /// library's own images and attachments it uses are copied beside it,
     /// into `<name>.assets/`.
@@ -188,6 +190,10 @@ impl Writer<'_> {
         let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
         // Relative sources left after `parse_file` are the library's (`.assets/…`).
         let abs = if raw.is_absolute() { raw.to_path_buf() } else { root.join(raw) };
+        if let Some(from) = self.opts.relative_from && let Ok(rel) = abs.strip_prefix(&root) {
+            let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
+            return crate::store::relative(from, &rel);
+        }
         let Some(base) = self.opts.base else { return abs.to_string_lossy().into_owned() };
         if let Ok(rel) = abs.strip_prefix(base) {
             return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
@@ -428,7 +434,7 @@ pub fn write_file(doc: &Document, front: &str, base: Option<&Path>) -> String {
 /// `write_file` with the copies to make beside a 本机文件 (`Export::files`,
 /// relative to the file's folder).
 pub fn write_file_with(doc: &Document, front: &str, opts: &Options) -> Export {
-    let opts = Options { in_place: true, library_root: opts.library_root, base: opts.base, name: opts.name, copied: opts.copied, original: opts.original, ..Default::default() };
+    let opts = Options { in_place: true, library_root: opts.library_root, base: opts.base, relative_from: opts.relative_from, name: opts.name, copied: opts.copied, original: opts.original, ..Default::default() };
     let mut w = Writer { opts: &opts, files: vec![], missing: 0 };
     let pieces = w.pieces(&doc.blocks);
     let canonical = joined(&pieces);

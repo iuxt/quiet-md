@@ -1,83 +1,78 @@
 # 存储格式
 
-当前最高支持 FORMAT 5。应用内新建、导入和复制的文章统一使用固定 UUID 文件名，与 Git 是否启用无关；默认元数据在 `.quiet/index.json`，启用 Git 后使用根目录 `quiet.json`，详见 [GIT.md](GIT.md)。旧的 FORMAT 4 文档库仍可读取，在写入第一篇 UUID 文档前提升格式标记为 5。
+当前布局为 FORMAT 6，清单版本为 2。文件夹和标题由根目录 `quiet.json` 管理；所有正文集中在 `notes/<UUID>.xml` 或 `notes/<UUID>.md`。Git 是可选功能，不改变目录布局。详见 [GIT.md](GIT.md)。
 
-## 文档库目录（FORMAT 4/5）
+## 文档库目录（FORMAT 6）
 
-默认位置：`~/Documents/Quiet.md`（「文稿」里的独立文件夹，用户能直接看到和备份）。首次启动可以改到别处，选定的位置记在本机应用数据目录的 `quiet-md/library.json`（`store::Location`，只有 `path` 一个字段；以后加字段一律 `#[serde(default)]`）。环境变量 `QUIET_MD_HOME` 可以临时指定别处，测试一律用它。
+默认位置：`~/Documents/Quiet.md`。首次启动可以另选位置，本机应用数据目录的 `quiet-md/library.json` 记住所选路径。测试一律用临时目录和 `QUIET_MD_HOME`，不操作真实文档库。
 
-磁盘就是侧栏：文件夹是真实目录，应用内新建文章使用 `<id>.xml` / `<id>.md`，标题变化不改文件名，同名文章使用不同 UUID。旧库和手工放入的标题文件名仍兼容；启用 Git 时备份并统一转换。文件夹仍按标题命名（转义规则见 `layout::file_name_for`）。
-
-```
+```text
 Quiet.md/
-├── 工作/                文件夹
-│   ├── <uuid-1>.xml     DocxXML 文档
-│   └── <uuid-2>.md      Markdown 文档
-├── <uuid-3>.xml
-├── .assets/             粘贴或插入的图片、附件；.assets/thumbs 是文件预览缩略图
-└── .quiet/              应用自己的数据
-    ├── format.json      {"format": 5}：目录布局版本（store::FORMAT）
-    ├── index.json       相对路径 → 附加信息（见下）
-    ├── index.json.bak   上一版 index.json
-    ├── settings.json    窗口级 UI 设置（侧栏宽度等）
-    ├── preferences.json、shortcuts.json、emoji.json、themes/
-    ├── .lock            写锁（flock）：改写索引时短暂独占，不是单实例标记
-    ├── trash/           回收站：index.json（id → Trashed）和被删的文件
-    ├── history/<id>/    每篇文档的正文版本快照（见下）
-    ├── history-trash/<id>/  随文档一起进回收站的版本快照
-    └── before-folders-4/  迁移前的旧布局备份，30 天后清理
+├── quiet.json                标题、虚拟文件夹层级、日期、排序等共享元数据
+├── quiet.json.bak            上一次有效清单
+├── notes/
+│   ├── <uuid-1>.xml          DocxXML 正文
+│   └── <uuid-2>.md           Markdown 正文
+├── .assets/                  图片、附件（Git 中使用 LFS）
+└── .quiet/
+    ├── format.json           {"format": 6}：布局版本（store::FORMAT）
+    ├── .lock                 跨进程写锁
+    ├── trash/<uuid>.xml|md   回收站正文，条目仍由 quiet.json 管理
+    ├── history/<id>/         本地自动快照
+    ├── history-trash/<id>/   随文档进入回收站的快照
+    ├── before-virtual-6-*/   原布局、正文、索引与格式标记的备份
+    └── preferences.json、shortcuts.json、emoji.json、themes/
 ```
 
-扫描时递归遍历文档库，认 `.md` 和 `.xml`，跳过以 `.` 开头的目录和文件（`.quiet`、`.assets`、`.git`、`.obsidian` 等）。在访达里手放的文件也会出现。窗口尺寸只属于这台电脑，存在本机应用数据目录，不进文档库。
+侧栏文件夹没有对应的物理目录。移动文章、移动或重命名文件夹、重命名文章只更新清单；正文路径、字节及修改时间不变。编辑正文仍正常写入文章文件。外部打开的「本机文件」沿用原有规则，在原位置编辑，重命名时改实际文件名。
+
+### 清单（quiet.json）
+
+结构参照 Fever 的 manifest：文件夹用 `parentId` 指向父文件夹，文章用 `folderId` 指向所在文件夹，`null` 表示顶层。`filename` 必须等于条目 ID 加 `.xml` 或 `.md`。ID 是全库唯一、规范小写的 UUID，回收站 ID 也不能与活动条目重复。
+
+```json
+{
+  "version": 2,
+  "folders": [{
+    "id": "11111111-1111-4111-8111-111111111111",
+    "name": "项目",
+    "parentId": null,
+    "createdAt": "2026-11-16T00:00:00Z",
+    "updatedAt": "2026-11-16T00:00:00Z"
+  }],
+  "notes": [{
+    "id": "22222222-2222-4222-8222-222222222222",
+    "title": "计划",
+    "filename": "22222222-2222-4222-8222-222222222222.md",
+    "folderId": "11111111-1111-4111-8111-111111111111",
+    "createdAt": "2026-11-16T00:00:00Z",
+    "updatedAt": "2026-11-16T00:00:00Z"
+  }],
+  "trash": []
+}
+```
+
+`createdAt` / `updatedAt` 写成 RFC 3339；读取也兼容 Unix 秒。`options` 可选，保存 `pinned`、`starred`、`order`、`root_order`、`width`、`catalogue_closed`、`reading`、`info`、`refs_hidden`，缺省值沿用 `Meta`。未知字段保留，例如 `sourcePath`。同级显示顺序由 `Meta::place()` 和顺序字段决定，JSON 数组按 ID 排序以减少 Git 差异。
+
+`trash` 保存删除时间 `deletedAt`、原父级 `folderId` 和分组 `rootId`。有 `filename` 的条目是文章，没有的是虚拟文件夹。恢复时原父级不存在则放在顶层；恢复整个文件夹时先恢复父级，再恢复子级。回收站正文在 `.quiet/trash/`，其链接保留原 `notes/` 语境，恢复时无需再次改写。
+
+清单是标题和层级的唯一来源，应与正文、资源一起备份。正文缺失时保留条目并在打开时报告错误，不因一次扫描丢掉元数据。只扫描 `notes/` 直属的 `.xml` / `.md`；手工放入的正文转换为 UUID 文件名并加到顶层。导入文件夹通过清单建立虚拟层级，不在磁盘重建该目录树。
 
 ### 链接与图片
 
-- 文档链接写成相对于当前文件的路径：DocxXML 是 `<cite type="doc" href="../工作/周报.xml">`，Markdown 是标准链接。读入时解析成运行期 id，写出时再换回路径，整个文件夹拷走后链接仍然有效。读旧文件时仍认 `doc-id`。
-- 图片和附件的 `path` 相对于文档库根目录（`.assets/…`）。
+- 文档链接使用相对于正文文件的路径：XML 的 `<cite type="doc" href="<uuid>.xml">`，以及 Markdown 标准链接。读入转换成运行期 ID，写出再转为路径；虚拟层级改变不影响链接。兼容旧 `doc-id`。
+- XML 图片 / 附件的路径相对于文档库根目录（`.assets/…`）；Markdown 图片相对于正文文件（`../.assets/…`）。
+- 最近打开时间、窗口状态、本机文件路径和缓存属于本机应用数据，不进共享清单。
 
-### 索引（.quiet/index.json）
+### 迁移与可靠性
 
-键是相对路径，文件夹以 `/` 结尾（`"工作/"`）。值是 `Attached`：
-
-| 字段 | 含义 | 省略时 |
-|---|---|---|
-| `id` | 文档 id；UUID 命名的文章与文件名相同，链接仍使用相对路径 | 必填 |
-| `created` / `modified` | unix 秒 | 必填 |
-| `pinned` | 置顶 | false |
-| `starred` | 收藏时间，0 表示未收藏 | 0 |
-| `order` | 文件夹内的同级顺序 | 0，未手动排序 |
-| `root_order` | 顶层同级顺序 | 未手动排序 |
-| `width` | 页宽：`standard`（820）/ `wide`（1020）/ `full` | standard |
-| `catalogue_closed` | 目录已收起 | false |
-| `reading` | 阅读模式 | false |
-| `info` | 文档信息行：`{hidden, created, modified}` | 只显示修改时间 |
-| `refs_hidden` | 隐藏引用列表 | false |
-
-UUID 文章额外保存 `stable_name: true` 与显示标题 `title`，文件夹归属和是否 Markdown 仍由路径决定。JSON 元数据应与正文一起备份：删掉 `.quiet/index.json` 不丢正文、结构和相对链接，但会丢附加信息及 UUID Markdown 文章的显示标题。启用 Git 后以 `quiet.json` 为元数据源。新字段一律带 `#[serde(default)]`，值为默认时不写出。
-
-### 从旧布局迁移（FORMAT 3 → 4）
-
-旧布局是平铺的 `docs/<id>.xml`，文件夹只是 `index.json` 里的记录。`Store::open` 遇到旧库时：
-
-- **静默迁移**：本机文档库直接迁移，完成后更新日志卡片里说明迁了多少篇。
-- **先征求同意**：文档库在同步盘里（iCloud、Dropbox 等），或者有在别的电脑上用过的迹象（本机文件路径不存在、同步冲突副本），或者用户之前恢复过旧布局时，`Store::migration_state` 返回 `NeedsConsent`，界面弹窗询问；「稍后」一周后再问。
-- 迁移前把旧布局整份移进 `.quiet/before-folders-4/`；任何一步失败都回滚，不留半迁移的库。`Store::restore_backup` 能退回旧布局。
-- 更早的 FORMAT 2 把父文档结构转换成同名文件夹，迁移前保留 `index.before-folders.json`。
-
-侧栏和主页手动排序共用 `Meta::place()`：未手动定位的条目按修改时间倒序在前，已定位的条目按顺序号排列，最后用 id 打破并列。
-
-旧版本遇到 FORMAT 4 会拒绝打开，不会误读。
-
-### 可靠性约定
-
-- **原子写入。** 所有文件先写到 `<name>.tmp`，再 `rename` 覆盖原文件。崩溃时，磁盘上要么是旧内容，要么是新内容。
-- **索引损坏后恢复。** 每次保存 `index.json` 前，先把旧文件复制成 `.bak`。读取时如果解析失败：
-  - 坏文件改名为 `<name>.corrupt-<秒>` 保留，不会被覆盖；
-  - 改用 `.bak`，并提示用户一次；
-  - 没有可用的 `.bak` 时，用空索引。文档和文件夹都还在磁盘上，只是置顶、收藏、排序这些信息会丢。
-- **版本标记。** 打开库时，如果 `format.json` 里的版本比本程序新，会拒绝打开并提示升级；每次写入获取锁后也会重新检查版本。改目录布局、会让旧版本误读的时候，要把 `FORMAT` 加一。
-- **手放的文件也会出现。** 在访达里放进文档库的 `.xml`（比如从飞书导出的 DocxXML）和 `.md` 文件会出现在列表里。
-- **保存失败不静默。**
+- `Store::open` 将 FORMAT 4/5 的物理文件夹库转换为 FORMAT 6；`Store::open_at` 仍能打开旧布局供兼容和迁移使用。FORMAT 3 及更早的布局沿用原有迁移判断和同步盘确认流程，再转换为 6。
+- 先把原正文和索引复制到 `.quiet/before-virtual-6-<uuid>/`，再发布集中正文、清单和格式标记。转换会重写 XML 文档链接，以及 Markdown 链接、图片和引用定义；代码文本与 front matter 保留。
+- `.quiet/virtual-migration.json` 记录未完成的转换。重开时在写锁下恢复：已发布 FORMAT 6 清单则完成清理，否则恢复原文件和标记。只删除已备份、已迁移的旧正文及空目录，不删除其他文件；备份不会自动清除。
+- 删除、恢复正文使用 `.quiet/virtual-transaction.json`：先记录前后清单和文件移动，再移动正文，最后原子发布新清单。中断后按当前清单回滚或完成操作。
+- 文件先写临时文件、同步，再原子替换；清单写前保留 `.bak`。清单损坏时保留损坏副本并尝试有效备份；两者都不可用就停止打开，避免用空清单覆盖层级。
+- 清单校验拒绝重复 / 非法 UUID、父级缺失、文件夹循环及任意正文路径。正文路径不接受符号链接。旧版应用遇到 FORMAT 6 会拒绝写入。
+- 跨实例写操作在 `.quiet/.lock` 下重新读取清单；批量导入在完成时发布清单。保存冲突仍按正文打开时的基线检测。
 
 ## DocxXML
 
@@ -126,7 +121,7 @@ DocxXML 里没有、本应用自己加的写法。别的工具不认识这些写
 - **每行的改动量**：抽屉里每份快照后面跟 `+N 行 −M 行`，由相邻两版的行级 LCS 算出（`diff`），最旧的一份没有前一份可比较，标「最早的一份」。
 - **失败不影响正文**：写快照失败只记一条警告，文档的保存照常成功。
 - **兼容性**：旧版本不读取 `.quiet/history/`，也不会因为多出这个目录而误读索引或正文，所以 `store::FORMAT` 不必加一。旧版本写入含历史的新库时，历史只是停止更新，不会损坏正文。
-- **对应关系**：快照按索引里的运行期 `id` 对应文档，所以重命名、移动文件夹后历史仍在；删掉 `.quiet/index.json` 后 id 重新分配，旧快照不再对应任何文档。
+- **对应关系**：快照按索引里的运行期 `id` 对应文档，所以重命名、移动文件夹后历史仍在；FORMAT 6 的 ID 与正文文件名固定对应；清单仍必须与正文一起保留，以保住标题和层级。
 - **附件**：`.assets/` 目前没有清理机制，历史正文引用的图片与附件始终可用。将来若引入 GC，必须同时扫描所有历史快照、回收站文档与恢复副本。
 
 ## 保存失败与恢复

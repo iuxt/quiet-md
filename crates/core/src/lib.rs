@@ -11,6 +11,7 @@ pub mod emoji;
 pub mod git;
 pub mod lang;
 pub mod markdown;
+pub mod manifest;
 pub mod model;
 pub mod palette;
 pub mod paste;

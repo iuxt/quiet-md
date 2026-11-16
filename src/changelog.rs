@@ -116,13 +116,13 @@ pub fn card(on_close: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> 
     let notes = notes().filter(|_| PENDING.load(Ordering::Relaxed));
     let moved = *MIGRATED.lock().unwrap();
     if notes.is_none() && moved.is_none() { return None }
-    let title: String = if notes.is_some() { crate::localized_format!("已更新到 {}", "Updated to {}", VERSION) } else { crate::settings::tr("文档库已改为真实文件夹", "Your library now uses real folders").into() };
+    let title: String = if notes.is_some() { crate::localized_format!("已更新到 {}", "Updated to {}", VERSION) } else { crate::settings::tr("文档库存储已升级", "Library storage upgraded").into() };
     let line = |text: String| div().w_full().min_w_0().flex().gap(px(6.)).text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption())
         .child(div().flex_none().child("·")).child(div().flex_1().min_w_0().child(text));
     let mut list = div().mt(px(6.)).w_full().min_w_0().flex().flex_col().gap(px(4.));
     if let Some((docs, folders)) = moved {
-        list = list.child(line(crate::localized_format!("文档库改为真实文件夹：访达里看到的就是侧栏，文件以标题命名（{docs} 篇文档、{folders} 个文件夹）",
-            "The library now uses real folders: Finder shows what the sidebar shows, files named by title ({docs} documents, {folders} folders)")));
+        list = list.child(line(crate::localized_format!("文档库已升级：JSON 管理虚拟文件夹，正文使用固定 UUID 文件名（{docs} 篇文档、{folders} 个文件夹）",
+            "Library upgraded: JSON manages virtual folders and documents use fixed UUID filenames ({docs} documents, {folders} folders)")));
     }
     for &(zh, en) in notes.unwrap_or_default() {
         if moved.is_some() && zh == REAL_FOLDERS { continue }
