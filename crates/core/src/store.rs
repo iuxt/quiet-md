@@ -1,4 +1,4 @@
-//! On-disk library (FORMAT 4): the folders on disk are the library's folders
+//! On-disk library (FORMAT 4/5): the folders on disk are the library's folders
 //! and each document is a file named after its title (`工作/周报.xml`,
 //! `随手记.md`). What the files cannot say (pinned, order …) is kept per
 //! relative path in `.quiet/index.json`, a cache that can be lost; state that
@@ -21,6 +21,7 @@ pub use layout::{file_name_for, relative, resolve};
 use layout::{parent_rel, base_name, stem_of, join_rel};
 #[path = "migrate.rs"] mod migrate;
 pub use migrate::{MigrationState, ConsentReason, DeviceHint, MigrationReport, RestoreReport, SyncService, sync_of, set_ubiquity_probe};
+#[path = "git_store.rs"] mod git_store;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Meta {
@@ -75,6 +76,9 @@ pub struct Meta {
     /// the 回收站: where it was.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub rel: String,
+    /// Git libraries keep the UUID file name when the display title changes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stable_name: bool,
 }
 
 impl Meta {
@@ -91,7 +95,7 @@ impl Default for Meta {
             width: PageWidth::default(), catalogue_closed: true,
             parent: None, order: 0, starred: 0, reading: false,
             info: InfoRow::default(), refs_hidden: false,
-            markdown: false, path: None, name: None, rel: String::new(),
+            markdown: false, path: None, name: None, rel: String::new(), stable_name: false,
         }
     }
 }
@@ -316,8 +320,9 @@ struct Batch { lock: Option<WriteLock>, depth: u32, index: std::cell::Cell<bool>
 
 /// Version of the on-disk layout, kept in `.quiet/format.json`. Bump it when
 /// a change would make older builds misread the library. 4: real folders,
-/// files named by title, internal data in `.quiet/`.
-pub const FORMAT: u32 = 4;
+/// files named by title, internal data in `.quiet/`. 5: opt-in UUID names
+/// with authoritative shared metadata in `quiet.json` for embedded Git.
+pub const FORMAT: u32 = 5;
 /// The hidden folder holding the library's own data.
 pub const INTERNAL: &str = ".quiet";
 /// The hidden folder holding pasted and inserted images and attachments.
@@ -359,6 +364,10 @@ struct Attached {
     info: InfoRow,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     refs_hidden: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    stable_name: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
 }
 
 type DiskIndex = BTreeMap<String, Attached>;
@@ -366,11 +375,13 @@ type DiskIndex = BTreeMap<String, Attached>;
 impl Attached {
     fn of(id: &str, m: &Meta) -> Self {
         Attached { id: id.to_string(), created: m.created, modified: m.modified, pinned: m.pinned, starred: m.starred, order: m.order, root_order: m.root_order,
-            width: m.width, catalogue_closed: m.catalogue_closed, reading: m.reading, info: m.info, refs_hidden: m.refs_hidden }
+            width: m.width, catalogue_closed: m.catalogue_closed, reading: m.reading, info: m.info, refs_hidden: m.refs_hidden,
+            stable_name: m.stable_name, title: m.stable_name.then(|| m.name.clone()).flatten() }
     }
     fn meta(&self) -> Meta {
         Meta { created: self.created, modified: self.modified, pinned: self.pinned, starred: self.starred, order: self.order, root_order: self.root_order,
-            width: self.width, catalogue_closed: self.catalogue_closed, reading: self.reading, info: self.info, refs_hidden: self.refs_hidden, ..Default::default() }
+            width: self.width, catalogue_closed: self.catalogue_closed, reading: self.reading, info: self.info, refs_hidden: self.refs_hidden,
+            stable_name: self.stable_name, name: self.title.clone(), ..Default::default() }
     }
 }
 
@@ -558,7 +569,7 @@ fn derive_tree(index: &mut HashMap<String, Meta>) {
         if m.folder.is_some() { m.folder = Some(name); }
         else {
             m.markdown = name.ends_with(".md");
-            m.name = m.markdown.then(|| stem_of(&name).to_string());
+            if !m.stable_name { m.name = m.markdown.then(|| stem_of(&name).to_string()); }
         }
         let up = parent_rel(&m.rel);
         m.parent = (!up.is_empty()).then(|| folders.get(up).cloned()).flatten();
@@ -712,7 +723,7 @@ impl Store {
             store.index = load_json(&base.join("index.json"), "文档索引", &mut store.warnings);
             store.flat_folders()?;
         } else {
-            let disk: DiskIndex = load_json(&internal.join("index.json"), "文档索引", &mut store.warnings);
+            let disk: DiskIndex = load_json(&store.index_file(), "文档索引", &mut store.warnings);
             let local = store.read_local();
             store.index = store.from_disk(&disk, &local);
             store.load_parsed();
@@ -742,7 +753,7 @@ impl Store {
     /// not moved to folders yet never grows a visible `history/` folder.
     fn history_base(&self) -> PathBuf { self.root.join(INTERNAL) }
     fn internal(&self) -> PathBuf { if self.flat { self.root.clone() } else { self.root.join(INTERNAL) } }
-    fn index_file(&self) -> PathBuf { self.internal().join("index.json") }
+    fn index_file(&self) -> PathBuf { if self.git_enabled() { self.root.join(crate::git::MANIFEST) } else { self.internal().join("index.json") } }
     fn trash_index_file(&self) -> PathBuf { self.internal().join("trash").join("index.json") }
     fn local_file(&self) -> PathBuf { local_file_for(&self.root) }
 
@@ -1188,6 +1199,10 @@ impl Store {
     /// when the name is taken.
     fn follow_title(&mut self, id: &str, title: &str) -> Result<()> {
         let Some(m) = self.index.get(id) else { return Ok(()) };
+        if m.stable_name && !m.local() && m.folder.is_none() {
+            self.index.get_mut(id).unwrap().name = Some(title.to_string());
+            return Ok(());
+        }
         if let Some(old) = m.path.clone().map(PathBuf::from) {
             let name = title.replace(['/', '\\', ':'], "_");
             let name = name.trim().trim_start_matches('.');
@@ -1229,6 +1244,7 @@ impl Store {
         if self.flat { return self.list_flat(_lock.is_some()); }
         let found = layout::scan(&self.root);
         let mut disk = self.to_disk();
+        let old_ids: HashMap<_, _> = if self.git_enabled() { disk.values().map(|meta| (meta.id.clone(), meta.clone())).collect() } else { HashMap::new() };
         let mut keys: HashSet<String> = found.dirs.iter().map(|d| format!("{d}/")).collect();
         keys.extend(found.docs.iter().cloned());
         keys.extend(found.pending.iter().cloned());
@@ -1239,7 +1255,12 @@ impl Store {
             if disk.contains_key(key) { continue; }
             let t = std::fs::metadata(self.abs(key.trim_end_matches('/'))).ok().and_then(|m| m.modified().ok())
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or_else(now);
-            disk.insert(key.clone(), Attached { id: String::new(), created: t, modified: t, ..Attached::of("", &Meta::default()) });
+            let mut attached = Attached { id: String::new(), created: t, modified: t, ..Attached::of("", &Meta::default()) };
+            if self.git_enabled() && !key.ends_with('/') && let Some(id) = Path::new(key).file_stem().and_then(|s| s.to_str())
+                && uuid::Uuid::parse_str(id).is_ok() {
+                attached = old_ids.get(id).cloned().unwrap_or(attached); attached.id = id.to_string();
+            }
+            disk.insert(key.clone(), attached);
             dirty = true;
         }
         if dirty {
@@ -1248,6 +1269,7 @@ impl Store {
             // Paths changed: links parsed before may point elsewhere now.
             self.parsed.clear();
         }
+        if self.git_enabled() && _lock.is_some() && let Err(error) = self.normalize_git_files() { self.warnings.push(format!("整理 Git 文件名失败：{error}")); }
         let pending: HashSet<&str> = found.pending.iter().map(String::as_str).collect();
         let mut out = vec![];
         let mut reparsed = false;
@@ -1364,8 +1386,10 @@ impl Store {
         if new {
             let t = now();
             let dir = self.folder_rel(parent);
-            let rel = if self.flat { String::new() } else { join_rel(&dir, &self.free_name(&dir, &file_name_for(&doc.title.text), Some("xml"), None)) };
-            self.index.insert(id.to_string(), Meta { created: t, modified: t, rel, ..Default::default() });
+            let stable_name = self.git_enabled();
+            let base = if stable_name { id.to_string() } else { file_name_for(&doc.title.text) };
+            let rel = if self.flat { String::new() } else { join_rel(&dir, &self.free_name(&dir, &base, Some("xml"), None)) };
+            self.index.insert(id.to_string(), Meta { created: t, modified: t, rel, stable_name, name: stable_name.then(|| doc.title.text.clone()), ..Default::default() });
             if !dir.is_empty() { derive_tree(&mut self.index); }
         }
         let r = self.write_doc(id, doc);
@@ -1462,8 +1486,10 @@ impl Store {
             self.index.insert(id.clone(), Meta { created: t, modified: t, markdown: true, name: Some(doc.title.text.trim().to_string()), ..Default::default() });
         } else {
             let dir = self.folder_rel(parent);
-            let rel = join_rel(&dir, &self.free_name(&dir, &file_name_for(&doc.title.text), Some("md"), None));
-            self.index.insert(id.clone(), Meta { created: t, modified: t, rel, ..Default::default() });
+            let stable_name = self.git_enabled();
+            let base = if stable_name { id.clone() } else { file_name_for(&doc.title.text) };
+            let rel = join_rel(&dir, &self.free_name(&dir, &base, Some("md"), None));
+            self.index.insert(id.clone(), Meta { created: t, modified: t, rel, stable_name, name: stable_name.then(|| doc.title.text.clone()), ..Default::default() });
             derive_tree(&mut self.index);
         }
         let text = format!("{front}{}", crate::markdown::write_file(doc, "", None));
@@ -1788,10 +1814,13 @@ impl Store {
             if src.is_dir() { std::fs::rename(&src, self.abs(&rel))?; } else { std::fs::create_dir_all(self.abs(&rel))?; }
             rel
         } else {
-            let base = if !t.meta.rel.is_empty() { layout::unnumbered(stem_of(base_name(&t.meta.rel))).to_string() }
+            let base = if meta.stable_name { id.to_string() }
+                else if !t.meta.rel.is_empty() { layout::unnumbered(stem_of(base_name(&t.meta.rel))).to_string() }
                 else if meta.markdown { file_name_for(meta.name.as_deref().unwrap_or("")) }
                 else { file_name_for(&text.as_deref().and_then(|x| docxml::parse(x).ok()).map(|d| d.title.text).unwrap_or_default()) };
-            let rel = join_rel(&dir, &self.free_name(&dir, &base, Some(ext_of(&meta)), None));
+            let name = if meta.stable_name { format!("{base}.{}", ext_of(&meta)) } else { self.free_name(&dir, &base, Some(ext_of(&meta)), None) };
+            let rel = join_rel(&dir, &name);
+            anyhow::ensure!(!self.abs(&rel).exists(), "文档库已存在同名文档，未覆盖：{id}");
             std::fs::rename(&src, self.abs(&rel))?;
             rel
         };
@@ -1873,14 +1902,23 @@ impl Store {
     /// 版本历史: snapshots of one document, newest first.
     pub fn versions(&self, id: &str) -> Vec<crate::versions::Version> { crate::versions::list(&self.history_base(), id, false) }
 
-    pub fn version_text(&self, id: &str, name: &str) -> Result<String> { crate::versions::read(&self.history_base(), id, name, false) }
+    pub fn version_text(&self, id: &str, name: &str) -> Result<String> {
+        if let Some(commit) = git_store::git_commit_name(name) { return crate::git::LibraryRepo::open(&self.root)?.revision(commit, id); }
+        crate::versions::read(&self.history_base(), id, name, false)
+    }
 
     pub fn delete_version(&self, id: &str, name: &str) -> Result<()> { crate::versions::remove(&self.history_base(), id, name, false) }
 
     /// Parse a snapshot into a document, for 另存副本.
     pub fn version_document(&self, id: &str, name: &str) -> Result<Document> {
+        if let Some(commit) = git_store::git_commit_name(name) { return self.git_version_document(id, commit, true) }
         let text = self.version_text(id, name)?;
         self.parse_doc(id, &text)
+    }
+
+    pub fn version_copy_document(&self, id: &str, name: &str) -> Result<Document> {
+        if let Some(commit) = git_store::git_commit_name(name) { return self.git_version_document(id, commit, false) }
+        self.version_document(id, name)
     }
 
     /// Diff a snapshot against a baseline. `None` is the document on disk
@@ -1889,12 +1927,12 @@ impl Store {
     /// are kept, so the same list doubles as a read-only preview.
     pub fn version_diff(&self, id: &str, name: &str, baseline: Option<&str>) -> Result<Vec<crate::diff::Line>> {
         let a = self.version_text(id, name)?;
-        let a_ms = crate::versions::stamp(name).unwrap_or(0);
+        let a_ms = git_store::version_ms(name);
         let (b, b_ms) = match baseline {
-            Some(other) => (self.version_text(id, other)?, crate::versions::stamp(other).unwrap_or(0)),
+            Some(other) => (self.version_text(id, other)?, git_store::version_ms(other)),
             None => (std::fs::read_to_string(self.path(id))?, u64::MAX),
         };
-        let (old, new) = if a_ms <= b_ms { (a.as_str(), b.as_str()) } else { (b.as_str(), a.as_str()) };
+        let (old, new) = if a_ms < b_ms { (a.as_str(), b.as_str()) } else { (b.as_str(), a.as_str()) };
         Ok(crate::diff::diff(old, new, self.is_markdown(id)))
     }
 
@@ -1909,7 +1947,8 @@ impl Store {
         let text = self.version_text(id, name)?;
         let current = std::fs::read_to_string(self.path(id)).unwrap_or_default();
         let ext = if self.is_markdown(id) { "md" } else { "xml" };
-        let _ = crate::versions::snapshot(&self.history_base(), id, ext, &current, crate::time::now_ms(), self.settings().history_limit(), true);
+        crate::versions::snapshot(&self.history_base(), id, ext, &current, crate::time::now_ms(), self.settings().history_limit(), true)?;
+        if let Some(commit) = git_store::git_commit_name(name) { return self.git_version_document(id, commit, false) }
         self.parse_doc(id, &text)
     }
 

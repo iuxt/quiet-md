@@ -51,6 +51,8 @@ The declared macOS minimum is 13, not yet verified on real hardware. Intel packa
 
 ### macOS
 
+For a local build installed in `/Applications/quiet.md.app`, run `./build.sh`. It packages the native architecture, requests a normal quit of the installed app, waits up to 60 seconds for it to exit, replaces it and launches the new version. A cancelled or timed-out quit stops installation. The default is ad-hoc signing without notarization; set `SIGNING_IDENTITY` and `NOTARY_PROFILE` to use the signed release flow below. Writing to `/Applications` requires permission for that directory.
+
 `scripts/release.sh` builds for the local architecture, generates the app icon, signs with a Developer ID Application certificate, submits for Apple notarization, staples the ticket and runs a Gatekeeper check, then writes a ZIP and its SHA-256. It does not upload to GitHub or launch the app.
 
 Install the signing certificate, with its private key, in the login keychain and set up a notarytool keychain profile, then run:

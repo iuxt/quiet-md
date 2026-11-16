@@ -38,9 +38,16 @@ impl SharedStore {
     pub fn save_settings(&self, s: &Settings) -> Result<()> { self.0.borrow_mut().save_settings(s) }
     pub fn scroll_top(&self, id: &str) -> Option<(usize, f32)> { self.0.borrow().scroll_top(id) }
     pub fn remember_scroll(&self, id: &str, top: Option<(usize, f32)>) -> Result<()> { self.0.borrow().remember_scroll(id, top) }
-    pub fn versions(&self, id: &str) -> Vec<fdl_core::versions::Version> { self.0.borrow().versions(id) }
+    pub fn history_versions(&self, id: &str) -> Vec<fdl_core::versions::Version> {
+        let store = self.0.borrow();
+        let mut versions = store.versions(id);
+        if store.git_enabled() { versions.extend(store.git_versions(id).unwrap_or_default()); }
+        versions.sort_by_key(|version| std::cmp::Reverse(version.ms));
+        versions
+    }
     pub fn version_diff(&self, id: &str, name: &str, baseline: Option<&str>) -> Result<Vec<fdl_core::diff::Line>> { self.0.borrow().version_diff(id, name, baseline) }
     pub fn version_document(&self, id: &str, name: &str) -> Result<Document> { self.0.borrow().version_document(id, name) }
+    pub fn version_copy_document(&self, id: &str, name: &str) -> Result<Document> { self.0.borrow().version_copy_document(id, name) }
     pub fn set_version_label(&self, id: &str, name: &str, label: Option<&str>) -> Result<()> { self.0.borrow().set_version_label(id, name, label) }
     pub fn delete_version(&self, id: &str, name: &str) -> Result<()> { self.0.borrow().delete_version(id, name) }
     pub fn restore_version(&self, id: &str, name: &str) -> Result<Document> { self.0.borrow().restore_version(id, name) }

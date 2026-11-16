@@ -10,7 +10,7 @@ use crate::app::{Workspace, HEADER_H};
 use crate::editor::core::Core;
 use crate::input::{TextField, TextFieldEvent};
 use crate::theme::{self, Theme};
-use crate::ui::{format_date, format_time};
+use crate::ui::{format_date, format_time, TipExt};
 use fdl_core::changes::Change;
 use fdl_core::model::BlockId;
 use fdl_core::versions::Version;
@@ -86,8 +86,8 @@ fn delta_text(name: &str, delta: &HashMap<String, (usize, usize)>) -> String {
 
 impl Workspace {
     pub fn open_history(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        self.flush(cx);
-        let versions = self.store.versions(id);
+        if !self.flush(cx) { return }
+        let versions = self.store.history_versions(id);
         let mut delta = HashMap::new();
         for (i, v) in versions.iter().enumerate() {
             let Some(older) = versions.get(i + 1) else { continue };
@@ -251,7 +251,7 @@ impl Workspace {
         let Some(h) = self.history.as_ref() else { return };
         let id = h.id.clone();
         let keep = h.selected.clone();
-        let versions = self.store.versions(&id);
+        let versions = self.store.history_versions(&id);
         let mut delta = HashMap::new();
         for (i, v) in versions.iter().enumerate() {
             let Some(older) = versions.get(i + 1) else { continue };
@@ -289,8 +289,7 @@ impl Workspace {
         };
         // Leave the preview first: from here on the editor holds the live
         // document again, and `flush` must work.
-        self.exit_preview(cx);
-        self.history = None;
+        self.close_history(cx);
         if self.store.save(&id, &doc).is_err() {
             self.show_toast_kind(crate::editor_ui::ToastKind::Error, crate::settings::tr("恢复失败：当前版本未被改动。", "Restore failed; the current version was left alone."), cx);
             return;
@@ -309,7 +308,7 @@ impl Workspace {
     pub fn version_as_copy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, name)) = self.history.as_ref().and_then(|h| h.selected.clone().map(|n| (h.id.clone(), n))) else { return };
         let meta = self.history.as_ref().and_then(|h| h.versions.iter().find(|v| v.name == name)).map(|v| (v.label.clone(), v.ms));
-        match self.store.version_document(&id, &name) {
+        match self.store.version_copy_document(&id, &name) {
             Ok(mut doc) => {
                 // Name the copy after *which* snapshot it is: a bare "副本" or
                 // "的历史版本" says nothing when several exist side by side.
@@ -363,6 +362,7 @@ impl Workspace {
 
     fn finish_version_rename(&mut self, save: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some(r) = self.version_rename.take() else { return };
+        if !save { window.focus(&self.focus); cx.notify(); return }
         let Some(h) = self.history.as_ref() else { return };
         let id = h.id.clone();
         let text = if save { r.field.read(cx).text.clone() } else { String::new() };
@@ -396,13 +396,12 @@ impl Workspace {
         let has_marks = h.versions.iter().position(|x| x.name == p.name).is_some_and(|i| i + 1 < h.versions.len());
         let on = h.marks && has_marks;
         Some(
-            div().id("history-banner").flex_none().h(px(BANNER_H)).px(px(16.)).pr(px(DRAWER_W + 8.)).flex().items_center().gap(px(10.))
+            div().id("history-banner").flex_none().min_h(px(BANNER_H)).py(px(5.)).px(px(16.)).pr(px(DRAWER_W + 8.)).flex().flex_wrap().items_center().justify_end().gap(px(10.))
                 .bg(theme::ca(crate::theme::craft::O50, 0.6))
                 .border_b_1().border_color(Theme::line_divider())
-                .child(div().flex_none().text_size(px(12.)).text_color(Theme::text()).child(title))
+                .child(div().id("history-version-title").flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(12.)).text_color(Theme::text()).child(title.clone()).tip(&title, None))
                 .child(div().flex_none().text_size(px(11.)).text_color(Theme::text_caption())
                     .child(crate::localized_format!("+{} 行 −{} 行", "+{} −{} lines", added, removed)))
-                .child(div().flex_1())
                 .child(
                     div().id("history-marks").flex_none().h(px(24.)).px(px(10.)).flex().items_center().rounded(px(6.))
                         .when(on, |d| d.bg(Theme::primary_fill_1()).text_color(Theme::primary()))
@@ -423,7 +422,7 @@ impl Workspace {
         let h = self.history.as_ref()?;
         let selected = h.selected.clone();
         let renaming = self.version_rename.as_ref().map(|r| (r.name.clone(), r.field.clone()));
-        let visible: Vec<Version> = h.versions.iter().filter(|v| !h.named_only || v.label.is_some()).cloned().collect();
+        let visible: Vec<Version> = h.versions.iter().filter(|v| !h.named_only || (v.label.is_some() && !v.name.starts_with("git:"))).cloned().collect();
         let mut rows: Vec<AnyElement> = vec![];
         let mut day: Option<(i64, u32, u32)> = None;
         for (i, v) in visible.iter().enumerate() {
@@ -470,7 +469,7 @@ impl Workspace {
                         // 命名 markers stay subtle: a dot before the name.
                         div().flex_none().w(px(4.)).h(px(4.)).rounded_full().bg(Theme::primary()),
                     ))
-                    .when(!editing, |d| d.child(
+                    .when(!editing && !v.name.starts_with("git:"), |d| d.child(
                         div().id(("history-rename", i)).flex_none().h(px(22.)).px(px(6.)).flex().items_center().rounded(px(5.))
                             .text_size(px(11.)).text_color(Theme::text_caption()).opacity(0.)
                             .group_hover(group.clone(), |s| s.opacity(1.))
@@ -481,8 +480,9 @@ impl Workspace {
                     .into_any_element(),
             );
         }
-        let count = h.versions.iter().filter(|v| v.label.is_some()).count();
+        let count = h.versions.iter().filter(|v| v.label.is_some() && !v.name.starts_with("git:")).count();
         let has_sel = selected.is_some();
+        let can_delete = selected.as_ref().is_some_and(|name| !name.starts_with("git:"));
         let header = div().flex_none().h(px(44.)).px(px(14.)).flex().items_center().gap(px(8.))
             .border_b_1().border_color(Theme::line_divider())
             .child(div().flex_1().text_size(px(13.)).font_weight(FontWeight::MEDIUM).child(crate::settings::tr("版本历史", "Version history")))
@@ -490,8 +490,10 @@ impl Workspace {
                 .on_click(cx.listener(|w, _, _, cx| w.close_history(cx))));
         let filter = div().flex_none().h(px(32.)).px(px(14.)).flex().items_center().gap(px(8.))
             .border_b_1().border_color(Theme::line_divider())
-            .child(div().flex_1().text_size(px(11.)).text_color(Theme::text_caption())
-                .child(crate::localized_format!("{} 份 · 每份 5 分钟起", "{} kept · 5 min apart", h.versions.len())))
+            .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(11.)).text_color(Theme::text_caption())
+                .child(if h.versions.iter().any(|v| v.name.starts_with("git:")) {
+                    crate::localized_format!("{} 份 · 快照与 Git 提交", "{} versions · snapshots and Git commits", h.versions.len())
+                } else { crate::localized_format!("{} 份 · 每份 5 分钟起", "{} kept · 5 min apart", h.versions.len()) }))
             .child(
                 div().id("history-named").flex_none().h(px(22.)).px(px(8.)).flex().items_center().rounded(px(5.))
                     .text_size(px(11.)).cursor_pointer()
@@ -524,10 +526,10 @@ impl Workspace {
                     .child(crate::settings::tr("另存副本", "Save as copy"))
                     .when(has_sel, |d| d.on_click(cx.listener(|w, _, window, cx| w.version_as_copy(window, cx)))))
                 .child(div().id("history-delete").flex_none().text_size(px(11.))
-                    .text_color(Theme::text_caption()).when(!has_sel, |d| d.opacity(0.4))
-                    .when(has_sel, |d| d.cursor_pointer().hover(|s| s.text_color(Theme::danger())))
+                    .text_color(Theme::text_caption()).when(!can_delete, |d| d.opacity(0.4))
+                    .when(can_delete, |d| d.cursor_pointer().hover(|s| s.text_color(Theme::danger())))
                     .child(crate::settings::tr("删除此版本", "Delete version"))
-                    .when(has_sel, |d| d.on_click(cx.listener(|w, _, window, cx| w.delete_selected_version(window, cx)))))
+                    .when(can_delete, |d| d.on_click(cx.listener(|w, _, window, cx| w.delete_selected_version(window, cx)))))
                 .child(div().flex_1())
                 .child(div().text_size(px(11.)).text_color(Theme::text_caption())
                     .child(crate::settings::tr("设置 › 文档库可调份数", "Count in Settings"))));

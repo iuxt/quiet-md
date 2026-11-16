@@ -17,6 +17,7 @@ chmod +x "$tool"
 appdir="$stage/Quiet.md.AppDir"
 mkdir -p "$appdir/usr/share/doc/quiet-md"
 cp LICENSE THIRD_PARTY.md "$appdir/usr/share/doc/quiet-md/"
+cp -R assets/licenses "$appdir/usr/share/doc/quiet-md/"
 mkdir -p "$appdir/usr/share/X11"
 cp -a /usr/share/X11/locale "$appdir/usr/share/X11/"
 # License notices for bundled shared libraries and their Compose data.

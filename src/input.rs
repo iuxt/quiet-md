@@ -97,6 +97,8 @@ pub struct TextField {
     pub max_len: Option<usize>,
     /// Only ASCII digits get in (number inputs).
     pub digits: bool,
+    /// ASCII access tokens: masked, never copied or exposed to the input method.
+    pub secret: bool,
     /// Tab / Shift+Tab emit events instead of reaching the parent.
     pub tab_events: bool,
     /// Draw no caret even when focused (a field that takes keys before it
@@ -139,6 +141,7 @@ impl TextField {
             mono: false,
             max_len: None,
             digits: false,
+            secret: false,
             tab_events: false,
             hide_caret: false,
             selecting: false,
@@ -153,7 +156,7 @@ impl TextField {
     }
 
     pub fn set_text(&mut self, s: &str, cx: &mut Context<Self>) {
-        self.text = s.to_string();
+        self.text = if self.secret { s.chars().filter(char::is_ascii_graphic).collect() } else { s.to_string() };
         self.sel = self.text.len()..self.text.len();
         self.marked = None;
         cx.notify();
@@ -205,6 +208,7 @@ impl TextField {
         if self.digits {
             s.retain(|c| c.is_ascii_digit());
         }
+        if self.secret { s.retain(|c| c.is_ascii_graphic()); }
         if let Some(max) = self.max_len {
             let room = max.saturating_sub(self.text.chars().count() - self.text[range.clone()].chars().count());
             if let Some((cut, _)) = s.char_indices().nth(room) {
@@ -308,14 +312,14 @@ impl TextField {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.sel.is_empty() {
+        if !self.secret && !self.sel.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(self.text[self.sel.clone()].to_string()));
         }
     }
 
     fn cut(&mut self, _: &Cut, _: &mut Window, cx: &mut Context<Self>) {
         if !self.sel.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(self.text[self.sel.clone()].to_string()));
+            if !self.secret { cx.write_to_clipboard(ClipboardItem::new_string(self.text[self.sel.clone()].to_string())); }
             self.replace(self.sel.clone(), "", cx);
         }
     }
@@ -462,7 +466,7 @@ impl EntityInputHandler for TextField {
     ) -> Option<String> {
         let r = self.range8(&range);
         actual.replace(self.range16(&r));
-        Some(self.text[r].to_string())
+        Some(if self.secret { "*".repeat(r.len()) } else { self.text[r].to_string() })
     }
 
     fn selected_text_range(&mut self, _: bool, _: &mut Window, _: &mut Context<Self>) -> Option<UTF16Selection> {
@@ -494,6 +498,7 @@ impl EntityInputHandler for TextField {
     ) {
         self.pointer_hidden = true;
         let r = range.map(|r| self.range8(&r)).or(self.marked.clone()).unwrap_or(self.sel.clone());
+        if self.secret { self.marked = None; self.replace(r, s, cx); return; }
         self.text.replace_range(r.clone(), s);
         self.marked = (!s.is_empty()).then(|| r.start..r.start + s.len());
         let sel = new_sel
@@ -540,7 +545,7 @@ impl Render for TextField {
         spec.mono = self.mono;
         let el = RichTextElement {
             id: self.id,
-            text: RichText::plain(self.text.clone()),
+            text: RichText::plain(if self.secret { "*".repeat(self.text.len()) } else { self.text.clone() }),
             spec,
             align: self.align,
             placeholder: Some(crate::settings::label(self.placeholder.clone()).into()),

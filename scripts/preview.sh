@@ -20,6 +20,7 @@ pkill -f "^$old/Contents/MacOS/quiet_md" || true
 sleep 1
 rm -rf "$old"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+cp -R assets/licenses "$app/Contents/Resources/"
 cp assets/branding/app-icon-dev.png "$app/Contents/Resources/app-icon.png"
 icon_tmp=$(mktemp -d)
 iconset="$icon_tmp/app-icon.iconset"

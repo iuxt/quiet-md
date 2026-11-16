@@ -264,6 +264,7 @@ pub struct Workspace {
     pub settings_page: crate::settings::Page,
     /// 版本历史: snapshots kept per document (1–30), cached for the settings page.
     pub history_limit: u32,
+    pub(crate) git: Option<crate::git::GitPanel>,
     /// 外观's theme dropdown while open: the theme its preview shows.
     pub theme_menu: Option<String>,
     /// Where the theme dropdown's button was drawn last frame.
@@ -518,6 +519,7 @@ impl Workspace {
             shortcut_error: None,
             settings_page: Default::default(),
             history_limit,
+            git: None,
             theme_menu: None,
             theme_anchor: Default::default(),
             lang_menu: None,

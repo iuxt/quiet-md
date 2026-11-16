@@ -22,6 +22,12 @@ uuid = { version = "1.28.0", features = ["v4"] }
 rustc-hash = "2.1"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
+git2 = { version = "0.21", default-features = false, features = ["https", "vendored-libgit2", "vendored-openssl"] }
+sha2 = "0.10"
+ureq = { version = "3.5", features = ["json"] }
+pulldown-cmark = { version = "0.13", default-features = false }
+percent-encoding = "2"
+url = "2"
 
 [lints]
 workspace = true

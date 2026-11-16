@@ -2,6 +2,7 @@
 # Build, sign, notarize and package this checkout; never launches the app.
 # MACOS_TARGET=x86_64-apple-darwin cross-compiles Intel on Apple Silicon.
 # SIGNING_IDENTITY=- creates an ad-hoc signed, unnotarized CI package only.
+# RELEASE_OUT lets build.sh select the package directory before building.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${SIGNING_IDENTITY:?Set SIGNING_IDENTITY to your Developer ID Application identity}"
@@ -25,7 +26,8 @@ else
 fi
 lipo "$binary" -verify_arch "$arch"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-out=$(mktemp -d "$PWD/dist-release.XXXXXX")
+out=${RELEASE_OUT:-$(mktemp -d "$PWD/dist-release.XXXXXX")}
+mkdir -p "$out"
 app="$out/quiet.md.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/"
@@ -33,6 +35,7 @@ cp "$binary" "$app/Contents/MacOS/"
 # (`atos -o <dSYM> -l <base> <addresses>`) and crash reports, matched by UUID.
 ditto -c -k --keepParent "$binary.dSYM/" "$out/dSYM-quiet-md-$version-macos-$arch.zip"
 cp LICENSE THIRD_PARTY.md "$app/Contents/Resources/"
+cp -R assets/licenses "$app/Contents/Resources/"
 icons="$out/AppIcon.iconset"
 mkdir -p "$icons"
 for size in 16 32 128 256 512; do

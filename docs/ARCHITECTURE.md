@@ -9,6 +9,8 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
 
+Git 是文档库的可选模式（FORMAT 5），在设置中启用后把文章改为 UUID 文件名，使用根目录 `quiet.json` 保存共享元数据。`crates/core/src/git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输；`git_store.rs` 处理旧库转换和 Store 写锁。界面在 `src/git.rs`，网络与仓库操作在后台执行，不调用系统 Git / Git LFS。详细范围与恢复规则见 [GIT.md](GIT.md)。
+
 ```
 main.rs ─ 窗口
   ├─ onboarding.rs  首次启动的引导页；选定文档库后，同一个窗口换成 Workspace

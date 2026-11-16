@@ -8,6 +8,7 @@ pub mod diff;
 pub mod docxml;
 pub mod editor;
 pub mod emoji;
+pub mod git;
 pub mod lang;
 pub mod markdown;
 pub mod model;

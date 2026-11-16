@@ -57,6 +57,7 @@ Source: "{#AppSource}\quiet_md.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#AppSource}\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"
 Source: "..\..\THIRD_PARTY.md"; DestDir: "{app}"
+Source: "..\..\assets\licenses\*"; DestDir: "{app}\licenses"; Flags: recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{userprograms}\Quiet.md"; Filename: "{app}\quiet_md.exe"; WorkingDir: "{app}"

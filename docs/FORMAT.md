@@ -1,5 +1,7 @@
 # 存储格式
 
+当前最高支持 FORMAT 5。未启用 Git 的文档库继续使用下述标题文件名布局；启用 Git 后改为 UUID 文件名、根目录 `quiet.json` 共享元数据，并在转换前保留备份，详见 [GIT.md](GIT.md)。新版本创建的格式标记为 5，旧的 FORMAT 4 文档库仍可读取。
+
 ## 文档库目录（FORMAT 4）
 
 默认位置：`~/Documents/Quiet.md`（「文稿」里的独立文件夹，用户能直接看到和备份）。首次启动可以改到别处，选定的位置记在本机应用数据目录的 `quiet-md/library.json`（`store::Location`，只有 `path` 一个字段；以后加字段一律 `#[serde(default)]`）。环境变量 `QUIET_MD_HOME` 可以临时指定别处，测试一律用它。

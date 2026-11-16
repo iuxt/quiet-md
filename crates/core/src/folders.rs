@@ -13,6 +13,7 @@ impl Store {
     pub(super) fn rel_in(&self, id: &str, parent: Option<&str>) -> String {
         let m = &self.index[id];
         let dir = parent.and_then(|p| self.index.get(p)).map(|p| p.rel.clone()).unwrap_or_default();
+        if m.stable_name && m.folder.is_none() { return join_rel(&dir, &format!("{id}.{}", ext_of(m))); }
         let name = base_name(&m.rel);
         let ext = m.folder.is_none().then(|| ext_of(m));
         let base = if ext.is_some() { layout::unnumbered(stem_of(name)) } else { layout::unnumbered(name) };

@@ -34,6 +34,8 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 ## 脚本命令
 
+`python3 tools/harness/git_sync.py` 在临时文档库中通过界面启用 Git、提交并打开历史，核对 UUID 文件名、元数据、真实提交对象、令牌不落盘及只读预览；不调用系统 Git、不联网。
+
 每行一条命令；`#` 开头的是注释。完整说明见 `src/devtools.rs` 顶部。
 
 | 命令 | 作用 |

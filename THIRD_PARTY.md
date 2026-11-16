@@ -4,9 +4,11 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 
 ## Rust 依赖
 
-由 `cargo metadata` 生成，共 742 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
+由 `cargo metadata` 生成，共 769 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
+
+Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 linking exception）与 OpenSSL（Apache-2.0）。随安装包附带的原始许可与作者信息在 [`assets/licenses/`](assets/licenses/)；libgit2 未修改，源代码随 `libgit2-sys` 的固定 Cargo 依赖取得。
 
 | 包 | 版本 | 许可 |
 |---|---|---|
@@ -52,6 +54,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | av1-grain | 0.2.5 | BSD-2-Clause |
 | avif-serialize | 0.8.9 | BSD-3-Clause |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
+| base64 | 0.23.1 | MIT OR Apache-2.0 |
 | bindgen | 0.71.1 | BSD-3-Clause |
 | bit-set | 0.8.0 | Apache-2.0 OR MIT |
 | bit-vec | 0.8.0 | Apache-2.0 OR MIT |
@@ -104,6 +107,8 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | const-random | 0.1.18 | MIT OR Apache-2.0 |
 | const-random-macro | 0.1.16 | MIT OR Apache-2.0 |
 | convert_case | 0.4.0 | MIT |
+| cookie | 0.18.2 | MIT OR Apache-2.0 |
+| cookie_store | 0.22.1 | MIT OR Apache-2.0 |
 | core-foundation | 0.9.4 | MIT OR Apache-2.0 |
 | core-foundation | 0.10.0 | MIT OR Apache-2.0 |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
@@ -135,6 +140,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | darling_macro | 0.24.1 | MIT |
 | data-url | 0.3.2 | MIT OR Apache-2.0 |
 | deflate64 | 0.1.12 | MIT |
+| deranged | 0.5.9 | MIT OR Apache-2.0 |
 | derive_more | 0.99.20 | MIT |
 | digest | 0.10.7 | MIT OR Apache-2.0 |
 | digest | 0.11.3 | MIT OR Apache-2.0 |
@@ -148,6 +154,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | dispatch2 | 0.3.1 | Zlib OR Apache-2.0 OR MIT |
 | displaydoc | 0.2.7 | MIT OR Apache-2.0 |
 | dlib | 0.5.3 | MIT |
+| document-features | 0.2.12 | MIT OR Apache-2.0 |
 | downcast-rs | 1.2.1 | MIT/Apache-2.0 |
 | dtor | 0.0.6 | Apache-2.0 OR MIT |
 | dtor-proc-macro | 0.0.5 | Apache-2.0 OR MIT |
@@ -213,6 +220,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
 | gif | 0.14.2 | MIT OR Apache-2.0 |
+| git2 | 0.21.0 | MIT OR Apache-2.0 |
 | glob | 0.3.4 | MIT OR Apache-2.0 |
 | globset | 0.4.20 | Unlicense OR MIT |
 | gloo-timers | 0.3.0 | MIT OR Apache-2.0 |
@@ -295,12 +303,15 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | lebe | 0.5.3 | BSD-3-Clause |
 | libc | 0.2.191 | MIT OR Apache-2.0 |
 | libfuzzer-sys | 0.4.13 | (MIT OR Apache-2.0) AND NCSA |
+| libgit2-sys | 0.18.8+1.9.7 | MIT OR Apache-2.0 |
 | libloading | 0.8.9 | ISC |
 | libm | 0.2.16 | MIT |
 | libredox | 0.1.25 | MIT |
+| libz-sys | 1.1.33 | MIT OR Apache-2.0 |
 | linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litemap | 0.8.3 | Unicode-3.0 |
+| litrs | 1.0.1 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | loop9 | 0.1.5 | MIT |
@@ -323,6 +334,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | mime_guess | 2.0.5 | MIT |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
+| minisign-verify | 0.3.0 | MIT |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mint | 0.5.9 | MIT |
@@ -343,6 +355,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | num-bigint | 0.4.8 | MIT OR Apache-2.0 |
 | num-bigint-dig | 0.8.6 | MIT/Apache-2.0 |
 | num-complex | 0.4.6 | MIT OR Apache-2.0 |
+| num-conv | 0.2.2 | MIT OR Apache-2.0 |
 | num-derive | 0.4.2 | MIT OR Apache-2.0 |
 | num-integer | 0.1.47 | MIT OR Apache-2.0 |
 | num-iter | 0.1.46 | MIT OR Apache-2.0 |
@@ -365,7 +378,10 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | once_cell | 1.21.4 | MIT OR Apache-2.0 |
 | oo7 | 0.5.0 | MIT |
 | open | 5.4.4 | MIT |
+| openssl-probe | 0.1.6 | MIT/Apache-2.0 |
 | openssl-probe | 0.2.1 | MIT OR Apache-2.0 |
+| openssl-src | 300.6.1+3.6.3 | MIT/Apache-2.0 |
+| openssl-sys | 0.9.118 | MIT |
 | option-ext | 0.2.0 | MPL-2.0 |
 | ordered-stream | 0.2.0 | MIT OR Apache-2.0 |
 | parking | 2.2.1 | Apache-2.0 OR MIT |
@@ -399,6 +415,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | pollster | 0.2.5 | Apache-2.0/MIT |
 | postage | 0.5.0 | MIT |
 | potential_utf | 0.1.6 | Unicode-3.0 |
+| powerfmt | 0.2.1 | MIT OR Apache-2.0 |
 | ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
 | precomputed-hash | 0.1.1 | MIT |
 | prettyplease | 0.2.37 | MIT OR Apache-2.0 |
@@ -410,6 +427,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | profiling | 1.0.18 | MIT OR Apache-2.0 |
 | profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 |
 | psm | 0.1.32 | MIT OR Apache-2.0 |
+| pulldown-cmark | 0.13.6 | MIT |
 | pulp | 0.22.3 | MIT |
 | pulp-wasm-simd-flag | 0.1.1 | MIT |
 | pxfm | 0.1.30 | BSD-3-Clause OR Apache-2.0 |
@@ -564,6 +582,9 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 |
 | thiserror-impl | 2.0.21 | MIT OR Apache-2.0 |
 | tiff | 0.11.3 | MIT |
+| time | 0.3.55 | MIT OR Apache-2.0 |
+| time-core | 0.1.9 | MIT OR Apache-2.0 |
+| time-macros | 0.2.32 | MIT OR Apache-2.0 |
 | tiny-keccak | 2.0.2 | CC0-1.0 |
 | tiny-skia | 0.11.4 | BSD-3-Clause |
 | tiny-skia-path | 0.11.4 | BSD-3-Clause |
@@ -610,15 +631,19 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | unicode-vo | 0.1.0 | MIT/Apache-2.0 |
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
+| ureq | 3.5.2 | MIT OR Apache-2.0 |
+| ureq-proto | 0.7.1 | MIT OR Apache-2.0 |
 | url | 2.5.8 | MIT OR Apache-2.0 |
 | usvg | 0.45.1 | Apache-2.0 OR MIT |
 | utf-8 | 0.7.6 | MIT OR Apache-2.0 |
+| utf8-zero | 0.8.1 | MIT OR Apache-2.0 |
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT |
 | uuid | 1.28.0 | Apache-2.0 OR MIT |
 | v_frame | 0.3.9 | BSD-2-Clause |
 | value-bag | 1.14.1 | Apache-2.0 OR MIT |
 | value-bag-serde1 | 1.14.1 | Apache-2.0 OR MIT |
 | value-bag-sval2 | 1.14.1 | Apache-2.0 OR MIT |
+| vcpkg | 0.2.15 | MIT/Apache-2.0 |
 | version_check | 0.9.5 | MIT/Apache-2.0 |
 | vswhom | 0.1.0 | MIT |
 | vswhom-sys | 0.1.3 | MIT |
@@ -643,6 +668,10 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | wayland-sys | 0.31.11 | MIT |
 | web-sys | 0.3.106 | MIT OR Apache-2.0 |
 | web-time | 1.1.0 | MIT OR Apache-2.0 |
+| webpki-roots | 1.0.12 | CDLA-Permissive-2.0 |
+| webview2-com | 0.38.2 | MIT |
+| webview2-com-macros | 0.8.1 | MIT |
+| webview2-com-sys | 0.38.2 | MIT |
 | weezl | 0.1.12 | MIT OR Apache-2.0 |
 | which | 6.0.3 | MIT |
 | winapi | 0.3.9 | MIT/Apache-2.0 |
@@ -752,10 +781,6 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 | zvariant | 5.15.1 | MIT |
 | zvariant_derive | 5.15.1 | MIT |
 | zvariant_utils | 4.2.0 | MIT |
-
-## Windows 运行库
-
-Windows 安装包随附未修改的 Microsoft Visual C++ Runtime `vcruntime140.dll`，从 Visual Studio 的 x64 Redistributable 目录复制。它受微软的分发许可约束，不属于本项目的 MIT 许可；参见 [Visual Studio 2022 Redistribution](https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution)。源码仓库不包含该二进制文件。
 
 ## 字体
 

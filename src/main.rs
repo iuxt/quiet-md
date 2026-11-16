@@ -31,6 +31,7 @@ mod docmenu;
 mod editor;
 mod highlight;
 mod history;
+mod git;
 mod home;
 mod html;
 mod input;

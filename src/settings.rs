@@ -744,6 +744,7 @@ impl Workspace {
     pub(crate) fn open_settings(&mut self, page: Page, cx: &mut Context<Self>) {
         self.cancel_shortcut_recording(cx);
         self.settings_page = page;
+        if page == Page::Library { self.init_git_panel(cx); }
         self.theme_menu = None;
         self.lang_menu = None;
         self.pref_menu = None;
@@ -993,6 +994,7 @@ impl Workspace {
                         .child(div().w(px(40.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(self.history_limit.to_string()))
                         .child(button("history-plus", "+").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(1, window, cx))))).into_any_element(),
             ]))
+            .child(self.render_git_settings(cx))
             .into_any_element()
     }
 
