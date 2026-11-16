@@ -197,17 +197,6 @@ pub fn restore_from_trash(root: &Path, id: &str) {
     move_dir(&trash_root(root).join(id), &history_root(root).join(id));
 }
 
-pub fn purge(root: &Path, id: &str) {
-    let dir = trash_root(root).join(id);
-    let Ok(entries) = std::fs::read_dir(&dir) else { return };
-    for e in entries.flatten() {
-        let name = e.file_name();
-        let name = name.to_string_lossy();
-        if safe_name(&name) || is_label(&name) { let _ = std::fs::remove_file(e.path()); }
-    }
-    let _ = std::fs::remove_dir(&dir);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -259,8 +248,7 @@ mod tests {
         restore_from_trash(&root, "a");
         assert_eq!(list(&root, "a", false).len(), 1);
         move_to_trash(&root, "a");
-        purge(&root, "a");
-        assert!(list(&root, "a", true).is_empty());
+        assert!(!list(&root, "a", true).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -301,8 +289,7 @@ mod tests {
         restore_from_trash(&root, "a");
         assert_eq!(list(&root, "a", false)[0].label.as_deref(), Some("最新"));
         move_to_trash(&root, "a");
-        purge(&root, "a");
-        assert!(list(&root, "a", true).is_empty());
+        assert!(!list(&root, "a", true).is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

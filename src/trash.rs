@@ -1,27 +1,17 @@
-//! 回收站 page and the confirmation dialogs (删除, 恢复, 彻底删除).
-//! Deleted pages wait in the library's `trash/` for 30 days; each row is a
-//! deleted page together with the child pages that went with it.
+//! 回收站 page and the confirmation dialogs (删除, 恢复).
+//! Deleted pages stay in the library until restored; each row includes
+//! the child pages that went with it.
 
 use crate::app::{Confirm, Workspace};
 use crate::settings::display_title;
 use crate::search::doc_icon;
-use crate::store::{TRASH_DAYS, TrashEntry};
+use crate::store::TrashEntry;
 pub(crate) use crate::ui::{close_button, dialog, list_header_text, list_line, menu_label, primary_button, row_hover, scrim, secondary_button};
 use crate::theme::{self, Theme, craft};
 use crate::ui::{ROW_RADIUS, TipExt, TitleBarExt, icon, popover, ui_para, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 
 pub const TRASH_MENU_W: f32 = 160.;
-
-struct ListedTrash { trash: Vec<TrashEntry>, warnings: Vec<String> }
-struct PurgedTrash { errors: Vec<String> }
-
-/// 剩余时间: whole days left before the automatic 彻底删除.
-fn remaining(deleted: u64) -> String {
-    let end = deleted + TRASH_DAYS * 86_400;
-    let left = end.saturating_sub(crate::time::now());
-    if left < 86_400 { crate::settings::text("即将彻底删除").into() } else { crate::localized_format!("{} 天", "{} days", left.div_ceil(86_400)) }
-}
 
 /// The page header, as tall as the document's so the header pills sit in
 /// the same place: a 17pt semibold view title, and the open-sidebar
@@ -93,13 +83,7 @@ impl Workspace {
     }
 
     pub(crate) fn render_trash(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        // 清空回收站: a labelled button, only when there is something to empty.
-        let empty = (!self.trash.is_empty()).then(|| div().id("trash-empty").no_drag().flex_none().mr(px(8.)).h(px(28.)).px(px(10.)).flex().items_center().gap(px(6.))
-            .rounded(px(9.)).cursor_pointer().hover(|s| s.bg(Theme::fill_hover())).active(|s| s.bg(Theme::fill_pressed()))
-            .text_size(px(13.)).line_height(px(20.)).text_color(Theme::text())
-            .child(icon("bin", 14., Theme::icon())).child(crate::settings::text("清空回收站"))
-            .on_click(cx.listener(|w, _, _, cx| { w.trash_menu = None; w.confirm = Some(Confirm::EmptyTrash); cx.notify(); })));
-        let header = page_header(self, "回收站", 26., cx).children(empty).child(
+        let header = page_header(self, "回收站", 26., cx).child(
             crate::ui::header_icon("trash-search", "search")
                 .tip_label(crate::shortcuts::keys(crate::settings::text("搜索(⌘ + J)")).into(), crate::ui::TipSide::Below)
                 .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::FocusSearch), cx))),
@@ -130,7 +114,7 @@ impl Workspace {
             .border_color(list_line())
             .child(col(None, "标题"))
             .child(col(Some(168.), "位置"))
-            .child(col(Some(168.), "剩余时间"))
+            .child(col(Some(168.), "删除时间"))
             .child(div().w(px(48.)).flex_none());
         let mut list = div().id("trash-list").flex_1().min_h_0().overflow_y_scroll().px(px(24.)).pb(px(24.));
         for (i, t) in self.trash.iter().enumerate() {
@@ -194,7 +178,7 @@ impl Workspace {
                             .child(icon("library", 16., Theme::icon()))
                             .child(div().min_w_0().text_size(px(13.)).text_color(Theme::text_caption()).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(self.trash_location(t)))),
                     )
-                    .child(div().w(px(168.)).flex_none().pl(px(20.)).text_size(px(13.)).text_color(Theme::text_caption()).child(remaining(t.deleted)))
+                    .child(div().w(px(168.)).flex_none().pl(px(20.)).text_size(px(13.)).text_color(Theme::text_caption()).child(crate::ui::format_time(t.deleted)))
                     .child(div().w(px(48.)).flex_none().flex().justify_end().pr(px(12.)).child(more)),
             );
         }
@@ -212,12 +196,9 @@ impl Workspace {
                 .child(icon(ic, 16., if color == Theme::icon() { Theme::icon() } else { color }))
                 .child(menu_label(label, g, gpui::white()))
         };
-        let (a, b) = (id.clone(), id);
         let menu = popover()
             .id("trash-menu")
             .occlude()
-            // At least TRASH_MENU_W, wider when a label needs it (English
-            // "Delete permanently" ran into the edge).
             .min_w(px(TRASH_MENU_W))
             .py(px(crate::ui::MENU_PAD_Y))
             .on_mouse_down_out(cx.listener(|w, _, _, cx| {
@@ -226,12 +207,7 @@ impl Workspace {
             }))
             .child(item("tm-restore", "restore", crate::settings::text("恢复"), Theme::text()).on_click(cx.listener(move |w, _, _, cx| {
                 w.trash_menu = None;
-                w.confirm = Some(Confirm::Restore(a.clone()));
-                cx.notify();
-            })))
-            .child(item("tm-purge", "bin", crate::settings::text("彻底删除"), Theme::danger()).on_click(cx.listener(move |w, _, _, cx| {
-                w.trash_menu = None;
-                w.confirm = Some(Confirm::Purge(b.clone()));
+                w.confirm = Some(Confirm::Restore(id.clone()));
                 cx.notify();
             })));
         Some(
@@ -262,56 +238,6 @@ impl Workspace {
         self.remember_files(file_before, crate::settings::tr("恢复", "Restore"));
     }
 
-    fn purge_doc(&mut self, id: &str, cx: &mut Context<Self>) {
-        let success = crate::settings::text("已彻底删除");
-        self.purge_trash(vec![id.to_string()], success, cx);
-    }
-
-    /// 清空回收站: purges every trashed page; stops at the first failure.
-    fn empty_trash(&mut self, cx: &mut Context<Self>) {
-        let ids: Vec<String> = self.trash.iter().map(|t| t.id.clone()).collect();
-        let success = crate::settings::text("已清空回收站");
-        self.purge_trash(ids, success, cx);
-    }
-
-    fn purge_trash(&mut self, ids: Vec<String>, success: &'static str, cx: &mut Context<Self>) {
-        if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() || ids.is_empty() { return; }
-        let Some(task_guard) = self.store.begin_file_task() else { return };
-        let mut writer = self.store.tree_writer();
-        let task = cx.background_executor().spawn(async move {
-            let batch = writer.begin_batch().is_ok();
-            let mut errors = vec![];
-            let mut result: anyhow::Result<()> = Ok(());
-            for id in ids {
-                result = writer.purge(&id);
-                if result.is_err() { break }
-            }
-            if let Err(e) = result { errors.push(e.to_string()); }
-            if batch && let Err(e) = writer.end_batch() { errors.push(e.to_string()); }
-            let warnings = writer.take_warnings();
-            let trash = writer.list_trash();
-            (PurgedTrash { errors }, ListedTrash { trash, warnings })
-        });
-        self.trash_menu = None;
-        cx.notify();
-        cx.spawn(async move |this, cx| {
-            let _task_guard = task_guard;
-            let (done, listed) = task.await;
-            let _ = this.update(cx, |w, cx| {
-                w.trash = listed.trash;
-                let mut errors = done.errors;
-                errors.extend(listed.warnings.iter().map(|s| crate::settings::diagnostic(s)));
-                if errors.is_empty() { w.show_toast(success, cx); }
-                else {
-                    let msg = errors.iter().map(|e| crate::localized_format!("删除失败：{}", "Could not delete document: {}", crate::settings::diagnostic(e))).collect::<Vec<_>>().join("；");
-                    w.show_toast_kind(crate::ui::ToastKind::Error, &msg, cx);
-                    w.status = crate::app::SaveStatus::Failed(msg);
-                }
-                cx.notify();
-            });
-        }).detach();
-    }
-
     fn show_store_warnings(&mut self, cx: &mut Context<Self>) {
         self.show_store_warnings_from(&self.store.take_warnings(), cx);
     }
@@ -340,18 +266,11 @@ impl Workspace {
         let (title, body, action, danger) = match c {
             Confirm::Delete { ids, batch } => (
                 if *batch || ids.len() > 1 { crate::localized_format!("是否删除所选的 {} 项？", "Delete the {} selected items?", ids.len()) } else { crate::localized_format!("是否删除： {}？", "Delete {}?", title_of(&ids[0])) },
-                crate::settings::text("删除的内容将进入回收站，30 天后自动彻底删除").to_string(),
+                crate::settings::text("删除的内容将移入回收站并保留，可随时恢复").to_string(),
                 crate::settings::text("删除"),
                 true,
             ),
             Confirm::Restore(_) => (crate::settings::text("确认恢复？").to_string(), crate::settings::text("确认后将恢复至原位置").to_string(), crate::settings::text("恢复"), false),
-            Confirm::EmptyTrash => (
-                crate::settings::text("确认清空回收站？").to_string(),
-                crate::localized_format!("回收站中的 {} 项将被彻底删除，无法恢复", "The {} items in the Trash will be deleted permanently. This cannot be undone.", self.trash.len()),
-                crate::settings::text("清空"),
-                true,
-            ),
-            Confirm::Purge(_) => (crate::settings::text("确认彻底删除？").to_string(), crate::settings::text("彻底删除后，该页面及其子页面将无法恢复").to_string(), crate::settings::text("删除"), true),
             Confirm::Refs { show: false, .. } => (
                 crate::settings::text("是否隐藏引用列表？").to_string(),
                 crate::settings::text("选择隐藏后，协作者将无法查看本文的引用列表。如需重新显示，可点击文档右上角的更多按钮“...”，打开“显示引用列表”开关。").to_string(),
@@ -467,8 +386,6 @@ impl Workspace {
                                 w.delete_docs(&ids, window, cx);
                             }
                             Confirm::Restore(id) => w.restore_doc(&id, cx),
-                            Confirm::Purge(id) => w.purge_doc(&id, cx),
-                            Confirm::EmptyTrash => w.empty_trash(cx),
                             Confirm::Refs { show, no_ask } => {
                                 if no_ask {
                                     let mut s = w.store.settings();

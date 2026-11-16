@@ -47,8 +47,9 @@ fn virtual_tree_delete_restore_and_undo_preserve_structure_and_bytes() {
     s.apply_file_history(&changes, false).unwrap(); assert_eq!(std::fs::read(&path).unwrap(), bytes);
     assert_eq!(s.index[&id].parent.as_deref(), Some(child.as_str())); assert_eq!(s.index[&child].parent.as_deref(), Some(root.as_str()));
     s.apply_file_history(&changes, true).unwrap(); s.restore(&root).unwrap(); assert_eq!(std::fs::read(&path).unwrap(), bytes);
-    s.delete(&root, None).unwrap(); s.purge(&root).unwrap(); assert!(lib.manifest().trash.is_empty());
+    s.delete(&root, None).unwrap(); assert_eq!(lib.manifest().trash.len(), 3);
     assert!(s.list().is_empty()); assert!(!path.exists());
+    assert_eq!(std::fs::read(s.trash_path(&id)).unwrap(), bytes);
 }
 
 #[test]
@@ -179,4 +180,28 @@ fn virtual_library_keeps_local_file_names_and_reuses_its_body_cache() {
     let local = reopened.open_local(&path).unwrap(); reopened.list(); reopened.rename(&local, "Renamed file").unwrap();
     assert_eq!(reopened.list().iter().find(|e| e.id == local).unwrap().title, "Renamed file");
     assert!(lib.0.join("Renamed file.md").is_file()); assert_eq!(lib.manifest().notes.len(), 1);
+}
+
+#[test]
+fn old_trash_keeps_bodies_metadata_and_history_until_restored() {
+    let lib = Library::new(); let mut s = lib.open();
+    let root = s.create_folder("Root", None).unwrap(); let child = s.create_folder("Child", Some(&root)).unwrap();
+    let xml = s.create_from_in(&doc("XML"), Some(&child)).unwrap();
+    let md = s.create_markdown_in(&doc("Markdown"), "# Markdown\n\nKeep **everything**.\n", Some(&child)).unwrap();
+    s.save_version_now(&xml).unwrap();
+    let bodies: Vec<_> = [&xml, &md].into_iter().map(|id| (id.clone(), s.file_path(id).unwrap(), std::fs::read(s.file_path(id).unwrap()).unwrap())).collect();
+    s.delete(&root, None).unwrap();
+    let mut manifest = lib.manifest(); for t in &mut manifest.trash { t.deleted = 1; }
+    save_json(&lib.0.join("quiet.json"), &manifest).unwrap();
+    let metadata = std::fs::read(lib.0.join("quiet.json")).unwrap();
+    let mut s = lib.open();
+    for _ in 0..2 {
+        let trash = s.list_trash(); assert_eq!(trash.len(), 1); assert_eq!(trash[0].id, root); assert_eq!(trash[0].deleted, 1);
+        assert!(s.list().is_empty()); assert_eq!(std::fs::read(lib.0.join("quiet.json")).unwrap(), metadata);
+        for (id, path, bytes) in &bodies { assert!(!path.exists()); assert_eq!(std::fs::read(s.trash_path(id)).unwrap(), *bytes); }
+    }
+    assert_eq!(crate::versions::list(&s.history_base(), &xml, true).len(), 1);
+    assert!(!s.restore(&root).unwrap()); assert!(s.list_trash().is_empty());
+    for (id, path, bytes) in bodies { assert_eq!(std::fs::read(path).unwrap(), bytes); assert_eq!(s.index[&id].parent.as_deref(), Some(child.as_str())); }
+    assert_eq!(s.index[&child].parent.as_deref(), Some(root.as_str())); assert_eq!(s.versions(&xml).len(), 1);
 }

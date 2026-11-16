@@ -200,13 +200,13 @@ impl Settings {
     pub fn set_history_limit(&mut self, n: u32) { self.history_limit = Some(crate::versions::clamp_limit(n)); }
 }
 
-/// A document in the 回收站, as kept in `.quiet/trash/index.json`.
+/// A document in the 回收站, as kept in quiet.json (legacy: `.quiet/trash/index.json`).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Trashed {
     pub meta: Meta,
     pub deleted: u64,
     /// The page whose deletion took this one along (`None`: deleted itself).
-    /// Such pages are listed, restored and purged with that page.
+    /// Such pages are listed and restored with that page.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<String>,
 }
@@ -221,9 +221,6 @@ pub struct TrashEntry {
     /// Where it was: its parent page, `None` for the top of 我的文档库.
     pub parent: Option<String>,
 }
-
-/// The 回收站 is emptied after 30 days.
-pub const TRASH_DAYS: u64 = 30;
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -1741,8 +1738,8 @@ impl Store {
     }
 
     /// The 回收站, newest first: one row per deleted page (its child pages
-    /// ride along). Files trashed by older versions are adopted, and pages
-    /// past 30 days are removed for good.
+    /// ride along). Files trashed by older versions are adopted and kept
+    /// until restored, regardless of deletion time.
     pub fn list_trash(&mut self) -> Vec<TrashEntry> {
         let _lock = match self.begin_write() {
             Ok(lock) => Some(lock),
@@ -1780,8 +1777,6 @@ impl Store {
                         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                         .map(|d| d.as_secs())
                         .unwrap_or_else(now);
-                    // Modification time is not deletion time. Recovered orphans
-                    // get a full retention period instead of immediate expiry.
                     let meta = Meta { created: t, modified: t, markdown, name: markdown.then(|| "未命名".into()), ..Default::default() };
                     self.trash.insert(id.clone(), Trashed { meta, deleted: now(), root: None });
                     dirty = true;
@@ -1793,17 +1788,6 @@ impl Store {
             let before = self.trash.len();
             self.trash.retain(|id, t| t.meta.folder.is_some() || on_disk.contains(id));
             dirty |= self.trash.len() != before;
-        }
-        let cutoff = now().saturating_sub(TRASH_DAYS * 86_400);
-        let expired: Vec<String> = self.trash.iter().filter(|(_, t)| t.deleted <= cutoff).map(|(k, _)| k.clone()).collect();
-        for id in expired.into_iter().filter(|_| _lock.is_some()) {
-            let p = self.trash_path(&id);
-            let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
-            match r {
-                Ok(()) => { self.trash.remove(&id); dirty = true; crate::versions::purge(&self.history_base(), &id); }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => { self.trash.remove(&id); dirty = true; crate::versions::purge(&self.history_base(), &id); }
-                Err(e) => self.warnings.push(format!("无法清理过期回收站文档 {id}：{e}")),
-            }
         }
         if dirty && _lock.is_some() && let Err(e) = self.save_trash() {
             self.warnings.push(format!("回收站索引保存失败：{e}"));
@@ -1919,23 +1903,6 @@ impl Store {
 
     fn index_has(&self, id: &str) -> bool {
         self.index.get(id).is_some_and(|m| if m.folder.is_some() { self.flat || self.virtual_folders() || self.abs(&m.rel).is_dir() } else { self.path(id).exists() })
-    }
-
-    /// 彻底删除 a page from the 回收站, with the pages that went with it.
-    pub fn purge(&mut self, id: &str) -> Result<()> {
-        let _lock = self.begin_write()?;
-        for k in self.trash_group(id) {
-            let p = self.trash_path(&k);
-            let r = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
-            match r {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(e.into()),
-            }
-            self.trash.remove(&k);
-            crate::versions::purge(&self.history_base(), &k);
-        }
-        self.save_trash()
     }
 
     /// Copy a DocxXML file into the library under a fresh id.
@@ -2226,7 +2193,9 @@ mod tests {
         s.restore(&id).unwrap();
         assert!(!s.versions(&id).is_empty());
         s.delete(&id, None).unwrap();
-        s.purge(&id).unwrap();
+        assert_eq!(s.list_trash()[0].id, id);
+        s.restore(&id).unwrap();
+        assert!(!s.versions(&id).is_empty());
     }
 
     #[test]
@@ -2699,6 +2668,18 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list.iter().find(|e| e.id == b).unwrap().meta.parent.as_deref(), Some(a.as_str()));
         assert!(s.list_trash().is_empty());
+    }
+
+    #[test]
+    fn legacy_trash_never_expires_on_listing_or_reopen() {
+        let lib = Lib::new("old-trash"); let mut s = lib.open();
+        let id = s.create_from(&doc("Keep me")).unwrap(); let bytes = std::fs::read(s.path(&id)).unwrap();
+        s.save_version_now(&id).unwrap(); s.delete(&id, None).unwrap();
+        s.trash.get_mut(&id).unwrap().deleted = 1; s.save_trash().unwrap();
+        let mut s = lib.open(); assert_eq!(s.list_trash()[0].id, id);
+        assert_eq!(std::fs::read(s.trash_path(&id)).unwrap(), bytes);
+        assert_eq!(crate::versions::list(&s.history_base(), &id, true).len(), 1);
+        s.restore(&id).unwrap(); assert_eq!(std::fs::read(s.path(&id)).unwrap(), bytes); assert_eq!(s.versions(&id).len(), 1);
     }
 
     #[test]

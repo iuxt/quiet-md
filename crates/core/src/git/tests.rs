@@ -417,3 +417,33 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
     let text = std::fs::read_to_string(cloned.repo.path().join("config")).unwrap();
     assert!(!text.contains("test-key-password") && !text.contains("fixture-token"));
 }
+
+#[test]
+fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
+    let server = Library::new(); Repository::init_bare(&server.0).unwrap();
+    let first = Library::new(); let mut a = first.store(); a.enable_git().unwrap();
+    let folder = a.create_folder("Folder", None).unwrap(); let nested = a.create_folder("Nested", Some(&folder)).unwrap();
+    let xml = a.create_from_in(&doc("XML"), Some(&nested)).unwrap();
+    let md = a.create_markdown_in(&doc("Markdown"), "# Markdown\n\n![image](../.assets/test.png)\n", Some(&nested)).unwrap();
+    std::fs::create_dir_all(first.0.join(".assets")).unwrap(); std::fs::write(first.0.join(".assets/test.png"), b"keep image").unwrap();
+    let bodies: Vec<_> = [(&xml, "xml"), (&md, "md")].into_iter().map(|(id, ext)| (id.clone(), ext, std::fs::read(a.file_path(id).unwrap()).unwrap())).collect();
+    configure(&first.git(), &server.0); first.git().commit("initial").unwrap(); first.git().push(&Auth::default()).unwrap();
+    let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
+    let mut b = second.store();
+    a.delete(&folder, None).unwrap();
+    let repo = first.git(); let commit = repo.commit("move to trash").unwrap().unwrap(); repo.push(&Auth::default()).unwrap();
+    let tree = repo.repo.find_commit(Oid::from_str(&commit).unwrap()).unwrap().tree().unwrap();
+    for (id, ext, bytes) in &bodies {
+        let path = format!(".quiet/trash/{id}.{ext}");
+        assert_eq!(repo.repo.find_blob(tree.get_path(Path::new(&path)).unwrap().id()).unwrap().content(), bytes);
+        assert!(tree.get_path(Path::new(&format!("notes/{id}.{ext}"))).is_err());
+    }
+    assert!(b.git_pull(&Auth::default()).unwrap()); assert!(b.list().is_empty()); assert_eq!(b.list_trash()[0].id, folder);
+    assert!(!b.restore(&folder).unwrap()); assert!(b.list_trash().is_empty());
+    for (id, ext, bytes) in &bodies { assert_eq!(std::fs::read(second.0.join(format!("notes/{id}.{ext}"))).unwrap(), *bytes); }
+    assert_eq!(b.list().iter().find(|e| e.id == xml).unwrap().meta.parent.as_deref(), Some(nested.as_str()));
+    assert_eq!(std::fs::read(second.0.join(".assets/test.png")).unwrap(), b"keep image");
+    configure(&second.git(), &server.0); second.git().commit("restore").unwrap(); second.git().push(&Auth::default()).unwrap();
+    assert!(a.git_pull(&Auth::default()).unwrap()); assert!(a.list_trash().is_empty());
+    for (id, _, bytes) in bodies { assert_eq!(std::fs::read(a.file_path(&id).unwrap()).unwrap(), bytes); }
+}
