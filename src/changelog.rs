@@ -17,6 +17,14 @@ const REAL_FOLDERS: &str = "文档库改为真实文件夹，以标题命名，�
 /// Each version's notes: (version, [(中文, English)]). Only the running
 /// version's are shown; a version without notes shows nothing.
 const NOTES: &[(&str, &[(&str, &str)])] = &[
+    ("0.2.0", &[
+        ("可选 Git 备份，支持 HTTPS / SSH 推送、克隆和拉取，图片与附件使用 Git LFS", "Optional Git backup with HTTPS / SSH push, clone, and pull; images and attachments use Git LFS"),
+        ("版本历史支持预览、对比、命名和恢复", "Preview, compare, name, and restore document versions"),
+        ("文档库使用 JSON 管理虚拟文件夹，正文使用固定 UUID 文件名", "JSON manages virtual folders; documents use fixed UUID filenames"),
+        ("图片可拖到另一张图片旁边，组合为分栏", "Drag an image beside another to arrange them in columns"),
+        ("回收站保留已删除的文档，直到手动恢复", "Deleted documents stay in Trash until restored"),
+        ("更新从本分叉的 GitHub Releases 下载，验签后保存文档并重启安装", "Updates download from this fork’s GitHub Releases, verify signatures, save documents, and restart to install"),
+    ]),
     ("0.1.12", &[
         ("把文件或「本机文件」直接拖进侧栏的文件夹或两行之间", "Drag files, or Files on this computer, into a sidebar folder or between rows"),
         ("拖入时整个页面都是放置区，导入前先确认", "The whole page is a drop target; importing into the sidebar asks first"),
