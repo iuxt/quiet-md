@@ -99,7 +99,7 @@ On every platform, never commit credentials, private keys or certificate files.
 
 The app reads `https://github.com/iuxt/quiet-md/releases/latest/download/update-<platform>.json`. It checks 10 seconds after launch, every 12 hours, and when a window becomes active more than an hour after the last check. Automatic checks can be disabled in Settings › General. Downloads and restarts require a click; every open document goes through the normal save path before the installer starts. Packages are bound to an exact repository, version, platform and Minisign signature; macOS additionally requires the same code-signature team. See [the update and release guide](docs/UPDATES.md).
 
-Before the first fork release, generate an independent update key on your secure release machine (`brew install minisign`), outside the checkout. The repository intentionally ships without an active release key; automatic updates remain unsupported until you configure and rebuild it:
+Before the first fork release, generate an independent update key on your secure release machine (`brew install minisign`), outside the checkout. This fork already has its public key configured. Only initialize a new key when establishing a new trust chain; keep the matching private key for future releases:
 
 ```sh
 mkdir -p ~/.minisign
@@ -118,6 +118,8 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 ```
 
 Install the first fork-signed release manually. Upstream builds use another feed/key; ad-hoc macOS local builds and Preview cannot replace themselves with signed releases. For isolated tests, build with `QUIET_MD_UPDATE_PUBKEY=<test public key>` and run with `QUIET_MD_UPDATE_URL=http://127.0.0.1:<port>` pointing at test manifests and packages, always with `QUIET_MD_HOME` set to a temporary library. The URL override explicitly enables unsigned test builds and HTTP; production requests and redirects require HTTPS.
+
+For GitHub Actions, commit and push `.github/workflows/release.yml` to `main`, configure the signing Secrets listed in [UPDATES.md](docs/UPDATES.md#github-actions-release), then manually run **Release** on `main` with an existing `v<version>` tag pointing at that commit. Both Cargo versions and the release-notes file must match. The workflow checks credentials before building, runs checks on all platforms, signs and notarizes macOS packages, signs Windows packages, then verifies a draft containing all four platforms. Leave `publish` off for a draft, or enable it to make the verified release Latest. `MINISIGN_PASSWORD` is passed to minisign through stdin, and `--publish ... --draft` provides the same verified-draft behavior locally. An ad-hoc client still needs a one-time manual installation of the first Developer ID signed fork release.
 
 The old `scripts/publish-downloads.sh` is retained for upstream R2 infrastructure and is not the feed used by this fork.
 

@@ -81,7 +81,9 @@ if [ "$SIGNING_IDENTITY" = - ]; then
   echo "CI package only: ad-hoc signed, without notarization; do not publish."
 else
   ditto -c -k --keepParent "$app" "$out/notarization.zip"
-  xcrun notarytool submit "$out/notarization.zip" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json > "$out/notarization.json"
+  notary_args=(--keychain-profile "$NOTARY_PROFILE")
+  [ -z "${NOTARY_KEYCHAIN:-}" ] || notary_args+=(--keychain "$NOTARY_KEYCHAIN")
+  xcrun notarytool submit "$out/notarization.zip" "${notary_args[@]}" --wait --output-format json > "$out/notarization.json"
   python3 - "$out/notarization.json" <<'PYTHON'
 import json, sys
 result = json.load(open(sys.argv[1]))

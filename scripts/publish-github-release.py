@@ -2,7 +2,8 @@
 """Prepare signed update assets, or publish a verified draft to iuxt/quiet-md.
 
 Dry-run is read-only. --prepare writes to a new directory and signs with minisign.
---publish additionally uploads, verifies a draft, and makes it the latest release.
+--publish additionally uploads, verifies a draft, and makes it the latest release
+unless --draft is selected. MINISIGN_PASSWORD supplies a CI password through stdin.
 Private keys are never copied into the output. gh supplies publishing credentials.
 """
 import argparse
@@ -29,9 +30,9 @@ PLATFORMS = {
 }
 
 
-def run(*args, capture=False):
+def run(*args, capture=False, input_text=None):
     result = subprocess.run([str(a) for a in args], check=True, cwd=ROOT,
-                            stdout=subprocess.PIPE if capture else None, text=capture)
+                            stdout=subprocess.PIPE if capture else None, text=capture or input_text is not None, input=input_text)
     return result.stdout.strip() if capture else None
 
 
@@ -109,7 +110,9 @@ def prepare(items, output, secret):
         else:
             if secret is None or not secret.is_file():
                 raise ValueError(f"Supply --key or a detached .minisig for {source.name}")
-            run("minisign", "-S", "-s", secret, "-m", package, "-x", signature, "-t", source.name)
+            password = os.environ.get("MINISIGN_PASSWORD")
+            run("minisign", "-S", "-s", secret, "-m", package, "-x", signature, "-t", source.name,
+                input_text=password + "\n" if password is not None else None)
         verify_signature(package, signature, key)
         if digest(package) != item["sha256"]:
             raise ValueError(f"Package changed while preparing: {source}")
@@ -150,7 +153,7 @@ def https_download(url, path, limit):
             stream.write(chunk)
 
 
-def publish(output, assets, release, notes):
+def publish(output, assets, release, notes, draft=False):
     if shutil.which("gh") is None:
         raise ValueError("Install and authenticate gh before publishing")
     if run("git", "status", "--porcelain", capture=True):
@@ -169,6 +172,9 @@ def publish(output, assets, release, notes):
         downloaded = Path(temp)
         run("gh", "release", "download", tag, "--repo", REPO, "--dir", downloaded)
         verify_downloads(output, downloaded)
+    if draft:
+        print(f"Verified draft: {BASE}/tag/{tag}")
+        return
     # Everything is present and verified before clients can discover this release.
     run("gh", "release", "edit", tag, "--repo", REPO, "--draft=false", "--prerelease=false", "--latest")
     with tempfile.TemporaryDirectory(prefix="quiet-public-check-") as temp:
@@ -192,9 +198,12 @@ def main():
     mode.add_argument("--dry-run", action="store_true", help="Inspect local packages; no signing, writes or network")
     mode.add_argument("--prepare", type=Path, metavar="NEW_DIRECTORY", help="Prepare assets locally without uploading")
     mode.add_argument("--publish", type=Path, metavar="NEW_DIRECTORY", help="Prepare assets, upload a verified draft, then publish")
+    parser.add_argument("--draft", action="store_true", help="With --publish, leave the verified release as a draft")
     parser.add_argument("--key", type=Path, default=Path(os.environ["MINISIGN_KEY"]) if "MINISIGN_KEY" in os.environ else None)
     parser.add_argument("--notes", type=Path, help="Release notes; required for --publish")
     args = parser.parse_args()
+    if args.draft and not args.publish:
+        raise ValueError("--draft requires --publish")
     release = version()
     items = inventory(args.packages, release)
     if args.dry_run:
@@ -206,7 +215,7 @@ def main():
     assets = prepare(items, output, args.key.expanduser().resolve() if args.key else None)
     print(f"Prepared {len(assets)} assets in {output}")
     if args.publish:
-        publish(output, assets, release, args.notes.resolve())
+        publish(output, assets, release, args.notes.resolve(), draft=args.draft)
 
 
 if __name__ == "__main__":

@@ -1,12 +1,12 @@
 # GitHub 自动更新方案
 
-状态：代码已接入 GitHub Releases；正式发布前仍需配置分叉公钥和平台签名，并完成各平台的真实安装验证。本文同时记录实现、发布步骤和验收要求。
+状态：代码已接入 GitHub Releases，并配置分叉公钥；正式发布前仍需配置 Actions 签名凭据，并完成各平台的真实安装验证。本文同时记录实现、发布步骤和验收要求。
 
 ## 目标和现状
 
 复用 `src/update.rs` 的下载、Minisign 验签、平台安装器，以及现有设置项、菜单和侧栏更新按钮，把更新源改为 `https://github.com/iuxt/quiet-md` 的正式 Releases。自动检查不自动下载、不强制重启；用户点击后下载，再点击「重启以更新」。检查只请求公开发布资源，不上传文档或设备标识，不要求 GitHub 登录。
 
-首次接入时（2026-11-16），该仓库尚无 Release。`packaging/update-key.pub` 已清除上游公钥并保留待配置说明；未配置有效公钥时自动更新不可用。现有 CI 的 macOS 包是 ad-hoc 签名的验证包，不能直接用于正式发布。`build.sh` 默认也产生 ad-hoc 签名的本地安装版，按当前规则不能自动更新。
+首次接入时（2026-11-16），该仓库尚无 Release。`packaging/update-key.pub` 已替换为分叉独立公钥；发布环境必须持有与其匹配的私钥。现有 CI 的 macOS 包是 ad-hoc 签名的验证包，不能直接用于正式发布。`build.sh` 默认也产生 ad-hoc 签名的本地安装版，按当前规则不能自动更新。
 
 ## 更新源与发布协议
 
@@ -97,7 +97,7 @@ https://github.com/iuxt/quiet-md/releases/latest/download/update-<platform>.json
 4. 为 `iuxt/quiet-md` 创建 draft Release，上传全部安装包、校验和、签名和清单。读取回传资产并比对名称、大小和下载内容；全部验证成功后才发布为正式 Latest。上传过程中客户端仍看到前一个完整 Release。
 5. 从公开版本资源地址再次下载验签，再检查四个 `latest/download/update-*.json` 地址是否对应本次版本；记录验证结果。发布完成后不替换该版本资产，有修复时递增版本重新发布。
 
-上述发布步骤由维护者显式执行；应用本身不上传、创建 tag 或发布。发布脚本会要求本地和远端 tag 均指向当前提交，并运行完整检查。若将来接 GitHub Actions，只有受信任发布任务持有 `contents: write` 和签名凭据，PR / 常规 CI 不持有发布私钥。
+上述发布步骤由维护者显式执行；应用本身不上传、创建 tag 或发布。发布脚本会要求本地和远端 tag 均指向当前提交，并运行完整检查。`.github/workflows/release.yml` 实现手动发布，只有最终发布任务持有 `contents: write`；签名凭据仅在 Release 流程中使用，PR / 常规 CI 不持有发布私钥。
 
 首次切换需要手动安装一个内置新更新源和独立公钥的版本。现有读取上游源、公钥的安装不能自行迁移到分叉的信任链；本地 ad-hoc 安装版也需要手动安装首个同 Team 的正式签名版本。发布前需准备 Minisign 私钥和 macOS Developer ID；不得把上游公钥可用当作分叉已具备发布条件。
 
@@ -125,6 +125,56 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 
 发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交公钥和源码、创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`，加上 `--notes docs/releases/<version>.md`。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
 
+## GitHub Actions Release
+
+[Release 工作流](../.github/workflows/release.yml) 只接受在 `main` 上手动触发，不因普通 push 或 PR 发布。先把工作流提交并推送到 `main`，再在仓库 Settings › Secrets and variables › Actions 配置下列 **Repository secrets**（不是普通 variables）：
+
+| Secret | 值 |
+|---|---|
+| `MINISIGN_SECRET_KEY_BASE64` | 与仓库公钥匹配的完整 Minisign 私钥文件，编码成单行 Base64 |
+| `MINISIGN_PASSWORD` | Minisign 私钥密码；加密私钥必须配置，无密码私钥可留空 |
+| `MACOS_CERTIFICATE_P12_BASE64` | 含 Developer ID Application 证书及私钥的 `.p12`，单行 Base64 |
+| `MACOS_CERTIFICATE_PASSWORD` | `.p12` 导出密码 |
+| `MACOS_SIGNING_IDENTITY` | 完整的 `Developer ID Application: … (TEAMID)` 身份名称 |
+| `APPLE_ID` | Apple Developer 账户邮箱 |
+| `APPLE_APP_PASSWORD` | 用于 notarytool 的 Apple 专用密码 |
+| `APPLE_TEAM_ID` | 签名证书所属 Apple Team ID |
+| `WINDOWS_CERTIFICATE_PFX_BASE64` | 含有效代码签名证书及私钥的 `.pfx`，单行 Base64 |
+| `WINDOWS_CERTIFICATE_PASSWORD` | `.pfx` 导出密码 |
+
+Windows 时间戳服务默认 `http://time.certum.pl`，可以用仓库 **Variable** `WINDOWS_TIMESTAMP_URL` 改为证书颁发方的 RFC 3161 服务。本工作流的 Windows 签名支持可导入的 PFX；硬件令牌或云签名需要替换该签名步骤，不能拿证书公钥充当 PFX 私钥。
+
+已初始化过 Minisign 密钥时不要重新生成。可在本机安装并登录 `gh` 后，直接把 Base64 通过管道写入 Secret，避免把私钥打印出来：
+
+```sh
+base64 -i ~/.minisign/quiet-md-iuxt.key | tr -d '\n' | gh secret set MINISIGN_SECRET_KEY_BASE64 --repo iuxt/quiet-md
+gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
+```
+
+第二条交互输入私钥密码。证书文件同样先编码成单行 Base64，再通过 Secrets 页面或 `gh secret set` 配置。工作流不会自动读取或上传本机密钥；私钥不进入 Git、日志或构建产物。macOS 在 runner 临时 keychain 中导入证书与公证凭据，Windows 临时导入 PFX，用完后清理。Minisign 私钥只用于预检及最终汇总签名，不交给平台构建步骤。
+
+一次新版本的操作顺序：
+
+1. 同时递增两个 `Cargo.toml` 的版本，更新 `src/changelog.rs` 并创建 `docs/releases/<version>.md`，完成检查后按正常 Git 流程提交、推送到 `main`。**要测试更新，新版本必须高于已安装版本。**
+2. 为当前 `main` 提交创建并推送匹配的 tag（示例版本号需替换）：
+
+   ```sh
+   git tag v0.1.13
+   git push origin v0.1.13
+   ```
+
+3. 打开仓库 Actions › **Release** › **Run workflow**，分支选择 `main`，`tag` 填该 tag。`publish` 默认关闭，生成并下载验签通过的 Release 草稿；需要让客户端发现版本时勾选 `publish`，发布为正式 Latest。也可用 CLI：
+
+   ```sh
+   gh workflow run release.yml --repo iuxt/quiet-md --ref main -f tag=v0.1.13 -f publish=true
+   ```
+
+预检要求 tag 指向当前 `main` 提交、两个版本号一致、发布说明存在、公钥有效、所需 Secrets 完整、Minisign 私钥实际签名能通过仓库公钥验签；失败会在昂贵的平台构建前结束。三个平台任务固定检出预检得到的同一提交，分别完成完整检查、打包与平台签名；macOS 在同一个 runner 顺序构建两种架构并公证。只有所有平台成功后才汇总生成 16 项更新资产，创建 draft、重新下载并逐项校验，再按 `publish` 的值保留 draft 或发布为 Latest。只有最终汇总任务具备 Release 写权限。
+
+所有发布使用同一个并发组，不取消已经开始的签名或上传；已有 Release 和资产拒绝覆盖。草稿验证后如要在同版本运行正式发布，先由维护者检查并删除已有草稿，再重新触发；工作流不会自动删除它，也不会替换已经公开的版本。构建产物保留 7 天，最终更新资产额外保留 14 天；实际 Release 资源长期保留。
+
+当前本地 ad-hoc 客户端依然不能通过正式源自行更新，必须先手动安装首个同 Apple Team、内置分叉公钥和更新源的正式签名版本。Release 草稿不会被 `releases/latest/download` 发现。
+
 ## 实施范围与验收
 
 | 文件 | 已实现 / 发布前操作 |
@@ -132,15 +182,16 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 | `src/update.rs`、`src/update/http.rs`、`src/update/install.rs` | GitHub 清单；精确 URL / 版本验证；请求去重和 HTTP 分类；有界下载；独立暂存目录；平台安装协调和结果记录 |
 | `src/app.rs` | 为正常保存退出路径接入更新完成回调，保存未完成时保留可重试状态 |
 | `src/settings.rs` | 沿用现有控件；更新错误和不支持状态文案，将手动下载指向分叉 Releases |
-| `packaging/update-key.pub` | 已移除上游密钥；首发前由维护者生成并填入分叉独立公钥 |
-| `scripts/publish-github-release.py` | 资产生成、签名校验、dry-run 和 draft → 正式发布 |
+| `packaging/update-key.pub` | 已配置分叉独立公钥；Actions 中的私钥必须与其匹配 |
+| `scripts/publish-github-release.py` | 资产生成、签名校验、dry-run、CI 密码输入和 draft / Latest 发布 |
+| `.github/workflows/release.yml` | 手动校验 tag、四平台构建与检查、平台签名和公证、汇总发布 |
 | `CONTRIBUTING.md`、README 各语言 | 已同步更新源、手动下载、密钥和首装说明；历史发布记录保留原意 |
 
 测试应覆盖数值版本比较、旧版本 / 同版本不升级、错仓库 / tag / 平台、篡改签名或 trusted comment、恶意 URL、清单超限、包截断 / 超长、404 / 403 / 429 / 5xx / 超时，以及自动和手动检查并发。使用本地 HTTP 服务及测试密钥，验证「检查 → 下载 → 验签 → 待安装」；真实 GitHub 冒烟测试只读公开资源。
 
 平台安装测试分别验证目标不可写、路径有空格及中文、跨文件系统暂存、多个实例、保存失败后重试、用户取消、helper 失败和替换失败恢复。macOS / Windows / Linux 需要各自运行安装测试，不能把 macOS 单测通过当作跨平台安装验证通过。
 
-本次 macOS 验证：`scripts/check.sh` 通过（核心 190 项、应用 74 项、指南往返、5 项发布脚本测试及两种构建的 Clippy），`cargo build --release --locked` 通过。另用真实编译的二进制在临时目录运行 helper：确认等待持锁实例、实例退出后拒绝已过期的任务、原应用文件不变，且未创建或打开测试文档库。Windows / Linux 的真实安装、正式 Developer ID 签名包的完整更新，以及 GitHub draft 上传 / 公共资源复核仍需在首发流程中验证；本次未发布 Release。
+自动更新初次实现时的 macOS 验证：`scripts/check.sh` 通过（核心 190 项、应用 74 项、指南往返、5 项发布脚本测试及两种构建的 Clippy），`cargo build --release --locked` 通过。另用真实编译的二进制在临时目录运行 helper：确认等待持锁实例、实例退出后拒绝已过期的任务、原应用文件不变，且未创建或打开测试文档库。Windows / Linux 的真实安装、正式 Developer ID 签名包的完整更新，以及 GitHub draft 上传 / 公共资源复核仍需在首发流程中验证；本次未发布 Release。
 
 所有测试文档库放临时目录，通过 `QUIET_MD_HOME` 指定；不读取或修改 `~/Documents/Quiet.md`，不操作其他应用或使用真实系统剪贴板。不为测试实际安装到用户的 Applications 目录。
 

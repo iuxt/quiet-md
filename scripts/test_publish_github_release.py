@@ -2,6 +2,7 @@
 """Release safety checks; all packages and uploads are isolated test fixtures."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -108,6 +109,57 @@ class ReleaseTests(unittest.TestCase):
         package.write_bytes(b"changed")
         with self.assertRaisesRegex(ValueError, "differs"):
             release.verify_downloads(output, copied)
+
+    def test_verified_draft_is_not_made_latest(self):
+        output = self.root / "assets"
+        output.mkdir()
+        for platform, item in release.inventory(self.packages, self.version).items():
+            source = item["path"]
+            shutil.copyfile(source, output / source.name)
+            (output / (source.name + ".minisig")).write_text("test signature")
+            (output / (source.name + ".sha256")).write_text(item["sha256"])
+            (output / f"update-{platform}.json").write_text(json.dumps({"version": self.version}))
+        for draft in [True, False]:
+            commands = []
+
+            def run(*args, capture=False):
+                commands.append(tuple(map(str, args)))
+                if args[:3] == ("git", "status", "--porcelain"):
+                    return ""
+                if capture:
+                    return "release-commit"
+                if args[:3] == ("gh", "release", "download"):
+                    destination = Path(args[args.index("--dir") + 1])
+                    shutil.copytree(output, destination, dirs_exist_ok=True)
+
+            def download(url, path, limit):
+                shutil.copyfile(output / path.name, path)
+
+            with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
+                    patch.object(release, "public_key", return_value=self.root / "key.pub"), patch.object(release, "verify_signature") as verify, \
+                    patch.object(release, "https_download", side_effect=download) as public_download:
+                release.publish(output, sorted(output.iterdir()), self.version, self.root / "notes.md", draft=draft)
+            self.assertEqual(verify.call_count, 4 if draft else 8)
+            self.assertEqual(public_download.call_count, 0 if draft else 20)
+            self.assertEqual(any(c[:3] == ("gh", "release", "edit") for c in commands), not draft)
+
+    @unittest.skipUnless(shutil.which("minisign"), "minisign is required for the encrypted-key integration test")
+    def test_encrypted_key_signs_all_platforms_without_a_terminal(self):
+        key = self.root / "temporary.key"
+        public = self.root / "temporary.pub"
+        password = "quiet-md-test-password"
+        subprocess.run(["minisign", "-G", "-p", str(public), "-s", str(key)],
+                       input=f"{password}\n{password}\n", text=True, capture_output=True, check=True, timeout=30)
+        with patch.dict(os.environ, {"MINISIGN_PASSWORD": password}), patch.object(release, "public_key", return_value=public):
+            output = self.root / "signed"
+            release.prepare(release.inventory(self.packages, self.version), output, key)
+            copied = self.root / "downloaded"
+            shutil.copytree(output, copied)
+            release.verify_downloads(output, copied)
+            signature = copied / (self.packages[0].name + ".minisig")
+            signature.write_text(signature.read_text().replace(self.packages[0].name, "another-version.zip"))
+            with self.assertRaisesRegex(ValueError, "exact package name"):
+                release.verify_signature(copied / self.packages[0].name, signature, public)
 
 
 if __name__ == "__main__":
