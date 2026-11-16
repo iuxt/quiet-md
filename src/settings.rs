@@ -1061,7 +1061,7 @@ fn update_row(cx: &mut Context<Workspace>) -> Div {
     let state = crate::update::state(cx);
     let (title, detail): (SharedString, Option<SharedString>) = match &state {
         State::Idle => (tr("软件更新", "Software update").into(), None),
-        State::Unsupported => (tr("软件更新", "Software update").into(), desc(tr("这个版本不能自动更新，请从网站下载新版本。", "This copy cannot update itself. Download new versions from the website."))),
+        State::Unsupported => (tr("软件更新", "Software update").into(), desc(tr("这个版本不能自动更新，请从 github.com/iuxt/quiet-md/releases 下载新版本。", "This copy cannot update itself. Download from github.com/iuxt/quiet-md/releases."))),
         State::Checking => (tr("正在检查更新…", "Checking for updates…").into(), None),
         State::Current => (tr("已是最新版本", "Quiet.md is up to date").into(), None),
         State::Available(m) => (crate::localized_format!("新版本 {} 可用", "Version {} is available", m.version).into(), None),

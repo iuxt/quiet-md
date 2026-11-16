@@ -163,7 +163,9 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
 }
 
 fn main() {
+    if update::run_helper() { return }
     logging::init();
+    if let Err(e) = update::register_instance() { logging::fatal("无法启动 / Could not start Quiet.md", &anyhow::anyhow!(e)); }
     let scripted = devtools::scripted();
     // No single-instance guard: copies may share a library (builds tested
     // side by side). `Store` rereads an index another copy rewrote before

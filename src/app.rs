@@ -144,16 +144,17 @@ pub fn bind_keys(cx: &mut App) {
 /// 退出: the open document is saved first; when that fails its dialog asks
 /// (重试 / 放弃修改) and quits afterwards. Call it outside any window update
 /// (`cx.defer`): a window on the update stack cannot be asked to save.
-pub fn quit(cx: &mut App) {
+pub fn quit(cx: &mut App) { quit_after_saving(|cx| cx.quit(), cx); }
+
+/// Run the final action only once every window has accepted the normal save path.
+pub(crate) fn quit_after_saving(then: fn(&mut App), cx: &mut App) {
     let ready = cx
         .windows()
         .into_iter()
         .filter_map(|w| w.downcast::<Workspace>())
-        .map(|w| w.update(cx, |ws, _, cx| ws.save_before(cx, |_, _, cx| cx.defer(quit))).unwrap_or(false))
+        .map(|w| w.update(cx, |ws, _, cx| ws.save_before(cx, move |_, _, cx| cx.defer(move |cx| quit_after_saving(then, cx)))).unwrap_or(false))
         .fold(true, |ready, saved| ready & saved);
-    if ready {
-        cx.quit();
-    }
+    if ready { then(cx); }
 }
 
 /// 更改文档库: open documents are saved first (as for 退出), the folder is

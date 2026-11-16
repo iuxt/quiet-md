@@ -1,33 +1,23 @@
-//! 自动更新. A copy installed from a release package reads
-//! `https://download.quiet.md/latest/update-<platform>.json` (written last by
-//! scripts/publish-downloads.sh) 10s after launch and every 12h while
-//! 自动检查更新 is on; 检查更新… asks at once. Nothing is downloaded until the
-//! user asks: the package is fetched with `curl`, its minisign signature checked
-//! against packaging/update-key.pub (the trusted comment must be the package's
-//! own file name, so an old signed package cannot pose as a newer version),
-//! and on macOS the unpacked app must also carry this copy's code signature
-//! team. 重启以更新 quits through the usual save path; a detached helper waits
-//! for this process to exit, then swaps the bundle (macOS) or runs the Inno
-//! installer silently (Windows), or replaces the AppImage (Linux), then restarts.
-//!
-//! The manifest itself is not signed, so what it may say is narrowed (#41): the
-//! package must come from download.quiet.md over HTTPS (redirects included), and
-//! its signature's trusted comment must name that package, version and all.
-//!
-//! `QUIET_MD_UPDATE_URL` points the check at another folder (testing; it also
-//! enables the check in unsigned builds, and allows http and any host). The public key can be replaced at
-//! build time with `QUIET_MD_UPDATE_PUBKEY`.
+//! GitHub Releases updates: check metadata quietly, download on request, verify
+//! Minisign and the platform signature, then save every window before installing.
+//! See docs/UPDATES.md. Explicit URL/key overrides are for isolated tests only.
 
 use gpui::*;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+mod http;
+mod install;
+pub use install::{register_instance, run_helper};
 use std::time::Duration;
 
-const BASE: &str = "https://download.quiet.md/latest";
-/// Where every package lives (`v<version>/<name>`); a manifest naming any
-/// other host is refused.
-const PACKAGES: &str = "https://download.quiet.md/";
+const BASE: &str = "https://github.com/iuxt/quiet-md/releases/latest/download";
+const PACKAGES: &str = "https://github.com/iuxt/quiet-md/releases/download";
+static DOWNLOADED: AtomicU64 = AtomicU64::new(0);
 const KEY: &str = match option_env!("QUIET_MD_UPDATE_PUBKEY") { Some(k) => k, None => include_str!("../packaging/update-key.pub") };
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -50,14 +40,47 @@ pub enum State {
     Downloading(Manifest),
     /// Verified package: the new `.app`, Windows installer, or Linux AppImage.
     Ready(Manifest, PathBuf),
-    /// The helper waits for this process to exit (a failed save may have kept it open).
+    /// All windows saved; the helper waits for this process to exit.
     Installing(Manifest),
     Failed(String),
 }
 
 /// `last`: when the latest automatic check started.
-pub struct Updater { pub state: State, told: Option<String>, last: Option<std::time::Instant> }
+pub struct Updater {
+    pub state: State, told: Option<String>, last: Option<std::time::Instant>,
+    checking: bool, manual: bool, retry: Option<std::time::Instant>,
+}
 impl Global for Updater {}
+
+#[derive(Debug, PartialEq)]
+enum Check { Start, Joined, Busy, Wait }
+
+impl Updater {
+    fn begin(&mut self, manual: bool) -> Check {
+        if matches!(self.state, State::Downloading(_) | State::Ready(..) | State::Installing(_)) { return Check::Busy }
+        if self.checking { self.manual |= manual; return Check::Joined }
+        if self.retry.is_some_and(|t| t > std::time::Instant::now()) { return Check::Wait }
+        if matches!(self.state, State::Unsupported) && !manual { return Check::Busy }
+        self.checking = true;
+        self.manual = manual;
+        self.last = Some(std::time::Instant::now());
+        self.retry = None;
+        Check::Start
+    }
+
+    fn complete(&mut self, result: Result<Option<Manifest>, Error>) -> Option<State> {
+        self.checking = false;
+        Some(match result {
+            Ok(Some(m)) => State::Available(m),
+            Ok(None) => State::Current,
+            Err(Error::Unsupported) => State::Unsupported,
+            Err(Error::Failed(e)) => {
+                self.retry = e.retry_after.and_then(|d| std::time::Instant::now().checked_add(d));
+                if self.manual { State::Failed(e.message) } else { return None }
+            },
+        })
+    }
+}
 
 pub fn state(cx: &App) -> State { cx.try_global::<Updater>().map_or(State::Idle, |u| u.state.clone()) }
 
@@ -68,7 +91,8 @@ fn set(state: State, cx: &mut App) {
 
 /// Starts the periodic check.
 pub fn init(cx: &mut App) {
-    cx.set_global(Updater { state: State::Idle, told: None, last: None });
+    let state = install::previous_error().map_or(State::Idle, State::Failed);
+    cx.set_global(Updater { state, told: None, last: None, checking: false, manual: false, retry: None });
     cx.spawn(async |cx| {
         cx.background_executor().timer(Duration::from_secs(10)).await;
         loop {
@@ -91,25 +115,23 @@ pub fn check_if_stale(cx: &mut App) {
 /// failures and an up-to-date copy; the automatic check stays silent except
 /// for a toast, once per version, when there is something new.
 pub fn check(manual: bool, cx: &mut App) {
-    match state(cx) {
-        // A finished download waits for 重启以更新.
-        State::Checking | State::Downloading(_) | State::Ready(..) | State::Installing(_) => return,
-        State::Unsupported if !manual => return,
-        _ => {}
+    match cx.global_mut::<Updater>().begin(manual) {
+        Check::Busy => return,
+        Check::Joined => { if manual { set(State::Checking, cx); } return },
+        Check::Wait => {
+            if manual { set(State::Failed(crate::settings::tr("更新服务暂时拒绝请求，请稍后重试", "The update service is busy. Try again later.").into()), cx); }
+            return
+        },
+        Check::Start => {},
     }
-    if manual { set(State::Checking, cx); } else { cx.global_mut::<Updater>().last = Some(std::time::Instant::now()); }
+    if manual { set(State::Checking, cx); }
     let task = cx.background_executor().spawn(async { fetch_manifest() });
     cx.spawn(async move |cx| {
         let result = task.await;
         let _ = cx.update(|cx| {
-            let state = match result {
-                Ok(Some(m)) => State::Available(m),
-                Ok(None) => State::Current,
-                Err(Error::Unsupported) => State::Unsupported,
-                Err(Error::Failed(e)) if manual => State::Failed(e),
-                // A quiet retry at the next check; keep whatever was shown.
-                Err(Error::Failed(_)) => return,
-            };
+            let u = cx.global_mut::<Updater>();
+            let manual = u.manual;
+            let Some(state) = u.complete(result) else { return };
             if let State::Available(m) = &state && !manual && cx.global::<Updater>().told.as_ref() != Some(&m.version) {
                 cx.global_mut::<Updater>().told = Some(m.version.clone());
                 announce(&m.version, cx);
@@ -126,19 +148,18 @@ fn announce(version: &str, cx: &mut App) {
     if let Some(w) = window { let _ = w.update(cx, |ws, _, cx| ws.show_toast_kind(crate::ui::ToastKind::Info, &msg, cx)); }
 }
 
-/// How much of `m` has arrived, 0–1, read off the partial file.
+/// How much of `m` has arrived, 0–1.
 pub fn progress(m: &Manifest) -> f32 {
-    let Some(platform) = platform() else { return 0. };
-    let part = updates_dir().join(format!("{}.part", package_name(&m.version, platform)));
-    let got = std::fs::metadata(part).map_or(0, |d| d.len());
-    if m.size == 0 { 0. } else { (got as f32 / m.size as f32).clamp(0., 1.) }
+    if m.size == 0 { 0. } else { (DOWNLOADED.load(Ordering::Relaxed) as f32 / m.size as f32).clamp(0., 1.) }
 }
 
 /// Downloads and verifies the version on offer.
 pub fn download(cx: &mut App) {
     let State::Available(m) = state(cx) else { return };
+    if cx.global::<Updater>().checking { return }
+    DOWNLOADED.store(0, Ordering::Relaxed);
     set(State::Downloading(m.clone()), cx);
-    // Redraw the progress (read off the partial file) while the download runs.
+    // Redraw the progress while the download runs.
     cx.spawn(async |cx| loop {
         cx.background_executor().timer(Duration::from_millis(300)).await;
         if !cx.update(|cx| if matches!(state(cx), State::Downloading(_)) { cx.refresh_windows(); true } else { false }).unwrap_or(false) { break }
@@ -146,24 +167,42 @@ pub fn download(cx: &mut App) {
     let task = cx.background_executor().spawn({ let m = m.clone(); async move { fetch_package(&m) } });
     cx.spawn(async move |cx| {
         let result = task.await;
-        let _ = cx.update(|cx| set(match result { Ok(path) => State::Ready(m, path), Err(e) => State::Failed(e) }, cx));
+        let _ = cx.update(|cx| {
+            let state = match result {
+                Ok(path) => State::Ready(m, path),
+                Err(e) => {
+                    cx.global_mut::<Updater>().retry = e.retry_after.and_then(|d| std::time::Instant::now().checked_add(d));
+                    State::Failed(e.message)
+                },
+            };
+            set(state, cx);
+        });
     }).detach();
 }
 
 /// Hands the downloaded version to a helper that installs it once this
 /// process has exited, then quits (asking first if a document did not save).
 pub fn install(cx: &mut App) {
+    cx.defer(|cx| crate::app::quit_after_saving(finish_install, cx));
+}
+
+fn finish_install(cx: &mut App) {
     let State::Ready(m, path) = state(cx) else { return };
-    match start_installer(&path) {
-        // After the click's window update: the quit asks every window to save.
-        Ok(()) => { set(State::Installing(m), cx); cx.defer(crate::app::quit); }
-        Err(e) => set(State::Failed(e), cx),
+    match install::start(&path) {
+        Ok(()) => { set(State::Installing(m), cx); cx.quit(); }
+        Err(e) => {
+            // Keep the verified package available for another restart attempt.
+            if let Some(w) = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()) {
+                let _ = w.update(cx, |ws, _, cx| ws.show_toast(&e, cx));
+            }
+        },
     }
 }
 
 // ---- the server
 
-enum Error { Unsupported, Failed(String) }
+enum Error { Unsupported, Failed(http::Failure) }
+
 
 fn platform() -> Option<&'static str> {
     if cfg!(all(target_os = "macos", target_arch = "aarch64")) { Some("macos-arm64") }
@@ -199,13 +238,13 @@ pub(crate) fn newer(a: &str, b: &str) -> bool {
 fn supported() -> bool {
     if platform().is_none() || public_key().is_none() { return false }
     if override_url().is_some() { return true }
-    if crate::devtools::scripted() { return false }
+    if crate::devtools::scripted() || cfg!(debug_assertions) { return false }
     #[cfg(target_os = "macos")]
-    { app_bundle().is_some_and(|app| team(&app).is_some()) }
+    { install::app_bundle().is_some_and(|app| team(&app).is_some() && app.file_name().is_some_and(|n| n == "quiet.md.app")) }
     #[cfg(target_os = "windows")]
     { std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("unins000.exe").is_file())).unwrap_or(false) }
     #[cfg(target_os = "linux")]
-    { appimage().is_some() }
+    { install::appimage().is_some() }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     { false }
 }
@@ -215,10 +254,21 @@ fn fetch_manifest() -> Result<Option<Manifest>, Error> {
     if !supported() { return Err(Error::Unsupported) }
     let platform = platform().unwrap();
     let url = format!("{}/update-{platform}.json", override_url().as_deref().unwrap_or(BASE).trim_end_matches('/'));
-    let body = curl(&["--max-time", "20", &url]).map_err(Error::Failed)?;
-    let m: Manifest = serde_json::from_slice(&body).map_err(|e| Error::Failed(format!("{}: {e}", crate::settings::tr("更新信息无法识别", "Unrecognised update information"))))?;
-    validate(&m, platform, override_url().is_some()).map_err(Error::Failed)?;
+    let m = read_manifest(&url, platform, override_url().is_some()).map_err(Error::Failed)?;
     Ok(newer(&m.version, env!("CARGO_PKG_VERSION")).then_some(m))
+}
+
+fn read_manifest(url: &str, platform: &str, testing: bool) -> Result<Manifest, http::Failure> {
+    let mut body = vec![];
+    http::get(url, 64 * 1024, 20, testing, &mut body, |_| {})?;
+    let m: Manifest = serde_json::from_slice(&body).map_err(|e| http::Failure::message(format!("{}: {e}", crate::settings::tr("更新信息无法识别", "Unrecognised update information"))))?;
+    validate(&m, platform, testing).map_err(http::Failure::message)?;
+    Ok(m)
+}
+
+fn release_version(version: &str) -> bool {
+    let parts: Vec<_> = version.split('.').collect();
+    parts.len() == 3 && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()) && (p.len() == 1 || !p.starts_with('0')) && p.parse::<u64>().is_ok())
 }
 
 /// The manifest names this platform's package for its version, over HTTPS,
@@ -226,8 +276,10 @@ fn fetch_manifest() -> Result<Option<Manifest>, Error> {
 fn validate(m: &Manifest, platform: &str, testing: bool) -> Result<(), String> {
     let name = package_name(&m.version, platform);
     let bad = |what: &str| Err(format!("{}: {what}", crate::settings::tr("更新信息无效", "Invalid update information")));
-    if m.version.split('.').any(|p| p.parse::<u64>().is_err()) { return bad("version") }
-    if !(m.url.starts_with(PACKAGES) || testing) || !m.url.ends_with(&format!("/{name}")) { return bad("url") }
+    if !release_version(&m.version) { return bad("version") }
+    let expected = format!("{PACKAGES}/v{}/{name}", m.version);
+    let test_url = testing && (m.url.starts_with("http://") || m.url.starts_with("https://")) && m.url.ends_with(&format!("/{name}"));
+    if m.url != expected && !test_url { return bad("url") }
     if m.size == 0 || m.size > 1 << 30 { return bad("size") }
     match minisign_verify::Signature::decode(&m.signature) { Ok(sig) if sig.trusted_comment() == name => Ok(()), _ => bad("signature") }
 }
@@ -237,36 +289,32 @@ fn signed(bytes: &[u8], signature: &str, name: &str, key: &minisign_verify::Publ
     minisign_verify::Signature::decode(signature).is_ok_and(|sig| sig.trusted_comment() == name && key.verify(bytes, &sig, false).is_ok())
 }
 
-fn updates_dir() -> PathBuf {
-    let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
-    if cfg!(target_os = "macos") { base.join("com.s1dashu.quietmd").join("updates") }
-    else if cfg!(target_os = "linux") { base.join("quiet.md").join("updates").join(std::process::id().to_string()) }
-    else { base.join("quiet.md").join("updates") }
+fn updates_dir() -> PathBuf { dirs::cache_dir().unwrap_or_else(std::env::temp_dir).join("quiet-md").join("updates") }
+
+fn private_dir(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    { use std::os::unix::fs::DirBuilderExt; std::fs::DirBuilder::new().mode(0o700).create(path).map_err(|e| e.to_string()) }
+    #[cfg(not(unix))]
+    { std::fs::create_dir(path).map_err(|e| e.to_string()) }
 }
 
 /// Downloads, checks the signature and (macOS) unpacks; the path to install.
-fn fetch_package(m: &Manifest) -> Result<PathBuf, String> {
+fn fetch_package(m: &Manifest) -> Result<PathBuf, http::Failure> {
     let platform = platform().ok_or("platform")?;
     let name = package_name(&m.version, platform);
-    let dir = updates_dir();
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // Only this user may swap the package between its check and its install.
-    #[cfg(unix)]
-    { use std::os::unix::fs::PermissionsExt; let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)); }
-    let file = dir.join(&name);
-    let part = dir.join(format!("{name}.part"));
-    // curl gets no path: a Windows curl.exe reads its arguments in the ANSI
-    // code page, which cannot spell every user folder name (中文 included).
-    let out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
-    curl_to(&["--max-time", "900", &m.url], Stdio::from(out))?;
-    let bytes = std::fs::read(&part).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(updates_dir()).map_err(|e| e.to_string())?;
+    let dir = updates_dir().join(uuid::Uuid::new_v4().to_string());
+    private_dir(&dir)?;
+    let result = prepare_package(m, platform, &name, &dir);
+    if result.is_err() { let _ = std::fs::remove_dir_all(&dir); }
+    result
+}
+
+fn prepare_package(m: &Manifest, platform: &str, name: &str, dir: &Path) -> Result<PathBuf, http::Failure> {
+    let key = public_key().ok_or("Update signing key is not configured")?;
+    let file = verified_package(m, platform, name, dir, &key, override_url().is_some())?;
+    #[cfg(target_os = "macos")]
     let failed = |what: &str| format!("{}: {what}", crate::settings::tr("更新包校验失败", "The update package failed verification"));
-    if bytes.len() as u64 != m.size { return Err(failed("size")) }
-    let key = public_key().ok_or_else(|| failed("key"))?;
-    if !signed(&bytes, &m.signature, &name, &key) { return Err(failed("signature")) }
-    drop(bytes);
-    std::fs::rename(&part, &file).map_err(|e| e.to_string())?;
     #[cfg(target_os = "macos")]
     {
         let unpacked = dir.join("app");
@@ -274,8 +322,8 @@ fn fetch_package(m: &Manifest) -> Result<PathBuf, String> {
         let app = unpacked.join("quiet.md.app");
         run(Command::new("/usr/bin/codesign").args(["--verify", "--deep", "--strict"]).arg(&app)).map_err(|_| failed("codesign"))?;
         // Signed by the same team as this copy (unsigned only against unsigned, when testing).
-        let mine = app_bundle().and_then(|a| team(&a));
-        if team(&app) != mine || mine.is_none() && override_url().is_none() { return Err(failed("team")) }
+        let mine = install::app_bundle().and_then(|a| team(&a));
+        if team(&app) != mine || mine.is_none() && override_url().is_none() { return Err(failed("team").into()) }
         let _ = std::fs::remove_file(&file);
         Ok(app)
     }
@@ -283,18 +331,23 @@ fn fetch_package(m: &Manifest) -> Result<PathBuf, String> {
     Ok(file)
 }
 
-fn curl(args: &[&str]) -> Result<Vec<u8>, String> { curl_to(args, Stdio::piped()) }
-
-/// `stdout`: piped (returned) or a file to download into.
-fn curl_to(args: &[&str], stdout: Stdio) -> Result<Vec<u8>, String> {
-    // HTTPS only, redirects too; a test server (QUIET_MD_UPDATE_URL) may be plain http.
-    let proto = if override_url().is_some() { "=https,http" } else { "=https" };
-    let out = command("curl").args(["-fsSL", "--proto", proto, "--proto-redir", proto, "--connect-timeout", "15"]).args(args)
-        .stdin(Stdio::null()).stdout(stdout).stderr(Stdio::piped()).output()
-        .map_err(|e| format!("curl: {e}"))?;
-    if out.status.success() { return Ok(out.stdout) }
-    let msg = String::from_utf8_lossy(&out.stderr).trim().trim_start_matches("curl: ").to_string();
-    Err(format!("{}: {msg}", crate::settings::tr("无法连接更新服务器", "Could not reach the update server")))
+fn verified_package(m: &Manifest, platform: &str, name: &str, dir: &Path, key: &minisign_verify::PublicKey, testing: bool) -> Result<PathBuf, http::Failure> {
+    validate(m, platform, testing)?;
+    let file = dir.join(name);
+    let part = dir.join(format!("{name}.part"));
+    // curl gets no path: a Windows curl.exe reads its arguments in the ANSI
+    // code page, which cannot spell every user folder name (中文 included).
+    let mut out = std::fs::File::create(&part).map_err(|e| e.to_string())?;
+    http::get(&m.url, m.size, 900, testing, &mut out, |n| DOWNLOADED.store(n, Ordering::Relaxed))?;
+    out.sync_all().map_err(|e| e.to_string())?;
+    drop(out);
+    let bytes = std::fs::read(&part).map_err(|e| e.to_string())?;
+    let failed = |what: &str| format!("{}: {what}", crate::settings::tr("更新包校验失败", "The update package failed verification"));
+    if bytes.len() as u64 != m.size { return Err(failed("size").into()) }
+    if !signed(&bytes, &m.signature, name, key) { return Err(failed("signature").into()) }
+    drop(bytes);
+    std::fs::rename(&part, &file).map_err(|e| e.to_string())?;
+    Ok(file)
 }
 
 /// A command that opens no console window on Windows.
@@ -312,17 +365,6 @@ fn run(c: &mut Command) -> Result<(), String> {
     if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
 }
 
-// ---- installing
-
-/// The `.app` this process runs from.
-#[cfg(target_os = "macos")]
-fn app_bundle() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let app = exe.parent()?.parent()?.parent()?;
-    (app.extension()? == "app").then(|| app.to_path_buf())
-}
-
-/// The code signature's team, None for ad-hoc and unsigned code.
 #[cfg(target_os = "macos")]
 fn team(app: &Path) -> Option<String> {
     let out = Command::new("/usr/bin/codesign").args(["-d", "-v"]).arg(app).stdin(Stdio::null()).output().ok()?;
@@ -331,126 +373,33 @@ fn team(app: &Path) -> Option<String> {
     (id != "not set" && !id.is_empty()).then(|| id.to_string())
 }
 
-/// Waits for `pid` to exit, swaps the bundles (putting the old one back if the
-/// new one cannot move in) and opens whichever is in place. `open` starts apps
-/// without the caller's environment, so a copy run with its own library
-/// (`QUIET_MD_HOME`) or update folder gets them back through `--env`.
-#[cfg(target_os = "macos")]
-const SWAP: &str = r#"pid=$1 app=$2 new=$3 old=$4
-shift 4
-while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
-if mv "$app" "$old"; then
-  if mv "$new" "$app"; then rm -rf "$old"; else mv "$old" "$app"; fi
-fi
-/usr/bin/open -n "$@" "$app""#;
-
-#[cfg(target_os = "macos")]
-fn start_installer(new: &Path) -> Result<(), String> {
-    use std::os::unix::process::CommandExt;
-    let app = app_bundle().ok_or_else(|| crate::settings::tr("找不到正在运行的应用", "Could not find the running app").to_string())?;
-    let parent = app.parent().ok_or("parent")?;
-    if app.to_string_lossy().contains("/AppTranslocation/") {
-        return Err(crate::settings::tr("请先把 Quiet.md 移到「应用程序」文件夹，再更新", "Move Quiet.md to the Applications folder first, then update").into());
-    }
-    // The folder must take the new bundle (a standard user cannot write to /Applications).
-    let probe = parent.join(format!(".quiet.md-update-{}", std::process::id()));
-    if std::fs::create_dir(&probe).is_err() {
-        return Err(crate::localized_format!("没有写入 {} 的权限，请从网站下载新版本", "No permission to write to {}. Download the new version from the website instead.", parent.display()));
-    }
-    let _ = std::fs::remove_dir(&probe);
-    let old = parent.join(format!(".quiet.md-old-{}.app", std::process::id()));
-    let env = ["QUIET_MD_HOME", "QUIET_MD_UPDATE_URL"].into_iter()
-        .filter_map(|k| std::env::var(k).ok().map(|v| ["--env".to_string(), format!("{k}={v}")])).flatten();
-    Command::new("/bin/sh").arg("-c").arg(SWAP).arg("sh")
-        .arg(std::process::id().to_string()).arg(&app).arg(new).arg(&old).args(env)
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .process_group(0).spawn().map(drop).map_err(|e| e.to_string())
-}
-
-/// PowerShell waits for this process, then runs the installer silently;
-/// `/UPDATE=1` makes it start the app again (packaging/windows/quiet-md.iss).
-#[cfg(target_os = "windows")]
-fn start_installer(setup: &Path) -> Result<(), String> {
-    let quote = |s: &str| format!("'{}'", s.replace('\'', "''"));
-    let script = format!(
-        "Wait-Process -Id {} -ErrorAction SilentlyContinue; Start-Process -FilePath {} -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/CLOSEAPPLICATIONS','/UPDATE=1'",
-        std::process::id(), quote(&setup.to_string_lossy()));
-    command("powershell.exe").args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
-        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-        .spawn().map(drop).map_err(|e| e.to_string())
-}
-
-/// The runtime supplies APPIMAGE and APPDIR; extracted tarballs and distro packages
-/// remain managed by their installer. Never replace the executable inside a mount.
-#[cfg(target_os = "linux")]
-fn appimage() -> Option<PathBuf> {
-    let image = PathBuf::from(std::env::var_os("APPIMAGE")?).canonicalize().ok()?;
-    let appdir = PathBuf::from(std::env::var_os("APPDIR")?).canonicalize().ok()?;
-    let exe = std::env::current_exe().ok()?.canonicalize().ok()?;
-    let payload = appdir.join("usr/bin/quiet_md").canonicalize().ok()?;
-    (image.is_file() && exe == payload && !image.starts_with(&appdir)).then_some(image)
-}
-
-#[cfg(target_os = "linux")]
-const SWAP_APPIMAGE: &str = r#"pid=$1 app=$2 stage=$3 identity=$4
-shift 4
-trap '' HUP
-while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
-# Another running copy may have updated the same file while we waited.
-if [ "$(stat -Lc '%d:%i' -- "$app")" != "$identity" ]; then rm -rf -- "$stage"; exit 0; fi
-if ! mv -f -- "$stage/new.AppImage" "$app"; then
-  rm -rf -- "$stage"
-  exec "$app" "$@"
-fi
-"$app" "$@" &
-child=$!
-sleep 2
-if ! kill -0 "$child" 2>/dev/null; then
-  if ! wait "$child"; then
-    # Only restore our own replacement, never overwrite a subsequent update.
-    if [ "$(stat -Lc '%d:%i' -- "$app")" = "$(stat -Lc '%d:%i' -- "$stage/installed.AppImage")" ]; then
-      mv -f -- "$stage/previous.AppImage" "$app" || exit 1
-      "$app" "$@" &
-    fi
-  fi
-fi
-rm -rf -- "$stage""#;
-
-#[cfg(target_os = "linux")]
-fn start_installer(new: &Path) -> Result<(), String> {
-    use std::os::unix::{fs::{MetadataExt, PermissionsExt}, process::CommandExt};
-    let app = appimage().ok_or_else(|| crate::settings::tr("请使用 AppImage 版本更新", "Use the AppImage edition to update in the app").to_string())?;
-    let parent = app.parent().ok_or("parent")?;
-    let metadata = std::fs::metadata(&app).map_err(|e| e.to_string())?;
-    let identity = format!("{}:{}", metadata.dev(), metadata.ino());
-    let stage = parent.join(format!(".quiet-md-update-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir(&stage).map_err(|e| crate::localized_format!("无法在 {} 准备更新，请确认目录可写：{}", "Could not prepare the update in {}. Check directory permissions: {}", parent.display(), e))?;
-    let result = (|| -> Result<(), String> {
-        std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
-        // Stage on the destination filesystem for an atomic rename after quitting.
-        let staged = stage.join("new.AppImage");
-        std::fs::copy(new, &staged).map_err(|e| e.to_string())?;
-        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
-        std::fs::File::open(&staged).and_then(|f| f.sync_all()).map_err(|e| e.to_string())?;
-        std::fs::hard_link(&app, stage.join("previous.AppImage")).map_err(|e| e.to_string())?;
-        std::fs::hard_link(&staged, stage.join("installed.AppImage")).map_err(|e| e.to_string())?;
-        Command::new("/bin/sh").arg("-c").arg(SWAP_APPIMAGE).arg("sh")
-            .arg(std::process::id().to_string()).arg(&app).arg(&stage).arg(identity).args(std::env::args_os().skip(1))
-            .env_remove("APPIMAGE").env_remove("APPDIR").env_remove("ARGV0").env_remove("OWD").env_remove("XLOCALEDIR")
-            .current_dir(parent).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-            .process_group(0).spawn().map(drop).map_err(|e| e.to_string())
-    })();
-    if result.is_err() { let _ = std::fs::remove_dir_all(&stage); }
-    else { let _ = std::fs::remove_dir_all(updates_dir()); }
-    result
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn start_installer(_: &Path) -> Result<(), String> { Err("unsupported".into()) }
-
 #[cfg(test)]
 mod tests {
     use super::{newer, signed, validate, Manifest};
+
+    #[test]
+    fn checks_join_preserve_available_updates_and_respect_retry_after() {
+        use super::{Check, Error, State, Updater};
+        let m = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
+        let mut u = Updater { state: State::Available(m.clone()), told: None, last: None, checking: false, manual: false, retry: None };
+        assert_eq!(u.begin(false), Check::Start);
+        assert_eq!(u.begin(false), Check::Joined);
+        assert_eq!(u.state, State::Available(m.clone()));
+        assert!(u.complete(Err(Error::Failed(super::http::Failure::message("offline")))).is_none());
+        assert!(!u.checking);
+        assert_eq!(u.begin(false), Check::Start);
+        assert_eq!(u.begin(true), Check::Joined);
+        let error = super::http::Failure { message: "rate limited".into(), retry_after: Some(std::time::Duration::from_secs(120)) };
+        assert_eq!(u.complete(Err(Error::Failed(error))), Some(State::Failed("rate limited".into())));
+        assert_eq!(u.begin(true), Check::Wait);
+        u.retry = None;
+        assert_eq!(u.begin(true), Check::Start);
+        assert_eq!(u.complete(Ok(None)), Some(State::Current));
+        for state in [State::Downloading(m.clone()), State::Ready(m.clone(), "package".into()), State::Installing(m)] {
+            u.state = state;
+            assert_eq!(u.begin(true), Check::Busy);
+        }
+    }
 
     #[test]
     fn versions_compare_numerically() {
@@ -489,91 +438,82 @@ FuE4L1zQnqL1nA/5xffpEtZyK2ca882Q1joA5X11poZ1xezdAlEMfn/36MJc5C60clQFec4vQf66MoxP
     }
 
     #[test]
+    fn update_urls_and_versions_are_exact() {
+        let original = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
+        for url in [original.url.replace("iuxt/", "s1dashu/"), original.url.replace("v0.2.0/", "v0.1.0/"), format!("{}?other=1", original.url), original.url.replace("github.com/", "github.com.evil.example/"), original.url.replace("https:", "http:")] {
+            let mut m = original.clone(); m.url = url;
+            assert!(validate(&m, "macos-arm64", false).is_err());
+        }
+        for version in ["", "1.2", "1.2.3.4", "01.2.3", "+1.2.3", "1.2.3-beta", "1.2.18446744073709551616", "../2.0"] {
+            let mut m = original.clone(); m.version = version.into();
+            assert!(validate(&m, "macos-arm64", false).is_err());
+        }
+        for size in [0, (1 << 30) + 1] {
+            let mut m = original.clone(); m.size = size;
+            assert!(validate(&m, "macos-arm64", false).is_err());
+        }
+    }
+
+    #[test]
+    fn local_manifest_and_download_verify_content_before_ready() {
+        use std::{io::{Read, Write}, net::TcpListener};
+        let key = minisign_verify::PublicKey::from_base64(TEST_KEY).unwrap();
+        let root = std::env::temp_dir().join(format!("quiet download 中文 {}", uuid::Uuid::new_v4()));
+        super::private_dir(&root).unwrap();
+        for content in [b"quiet.md".as_slice(), b"quiet.mD", b"short", b"quiet.md plus extra"] {
+            let server = TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!("http://{}", server.local_addr().unwrap());
+            let name = "quiet-md-0.2.0-macos-arm64.zip";
+            let m = manifest("0.2.0", &format!("{base}/{name}"), name);
+            let body = serde_json::to_vec(&serde_json::json!({"version": m.version, "url": m.url, "size": m.size, "signature": m.signature})).unwrap();
+            let content = content.to_vec();
+            let good = content == b"quiet.md";
+            let thread = std::thread::spawn(move || {
+                for body in [body, content] {
+                    let (mut stream, _) = server.accept().unwrap();
+                    stream.set_read_timeout(Some(std::time::Duration::from_secs(3))).unwrap();
+                    let _ = stream.read(&mut [0; 4096]);
+                    let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                    let _ = stream.write_all(&body);
+                }
+            });
+            let m = super::read_manifest(&format!("{base}/update-macos-arm64.json"), "macos-arm64", true).unwrap();
+            let result = super::verified_package(&m, "macos-arm64", name, &root, &key, true);
+            assert_eq!(result.is_ok(), good);
+            if good { assert_eq!(std::fs::read(result.unwrap()).unwrap(), b"quiet.md"); }
+            thread.join().unwrap();
+            for entry in std::fs::read_dir(&root).unwrap() { std::fs::remove_file(entry.unwrap().path()).unwrap(); }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn manifests_must_name_the_signed_package() {
-        let ok = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
+        let ok = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
         assert_eq!(validate(&ok, "macos-arm64", false), Ok(()));
         assert!(validate(&ok, "macos-x86_64", false).is_err());
-        let intel = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-macos-x86_64.zip", "quiet-md-0.2.0-macos-x86_64.zip");
+        let intel = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-macos-x86_64.zip", "quiet-md-0.2.0-macos-x86_64.zip");
         assert_eq!(validate(&intel, "macos-x86_64", false), Ok(()));
         assert!(validate(&intel, "macos-arm64", false).is_err());
         // An older package's signature under a newer version number.
-        let replay = manifest("0.9.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
+        let replay = manifest("0.9.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
         assert!(validate(&replay, "macos-arm64", false).is_err());
-        let renamed = manifest("0.9.0", "https://download.quiet.md/v0.9.0/quiet-md-0.9.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
+        let renamed = manifest("0.9.0", "https://github.com/iuxt/quiet-md/releases/download/v0.9.0/quiet-md-0.9.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
         assert!(validate(&renamed, "macos-arm64", false).is_err());
-        let http = manifest("0.2.0", "http://download.quiet.md/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
+        let http = manifest("0.2.0", "http://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "quiet-md-0.2.0-macos-arm64.zip");
         assert!(validate(&http, "macos-arm64", false).is_err());
         assert_eq!(validate(&http, "macos-arm64", true), Ok(()));
         // A genuine signature does not make another host acceptable.
         for url in ["https://evil.example/v0.2.0/quiet-md-0.2.0-macos-arm64.zip", "https://download.quiet.md.evil.example/quiet-md-0.2.0-macos-arm64.zip", "https://evil.example/download.quiet.md/quiet-md-0.2.0-macos-arm64.zip"] {
             assert!(validate(&manifest("0.2.0", url, "quiet-md-0.2.0-macos-arm64.zip"), "macos-arm64", false).is_err(), "{url}");
         }
-        let windows = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-windows-x64-setup.exe", "quiet-md-0.2.0-windows-x64-setup.exe");
+        let windows = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-windows-x64-setup.exe", "quiet-md-0.2.0-windows-x64-setup.exe");
         assert_eq!(validate(&windows, "windows-x64", false), Ok(()));
         assert!(validate(&windows, "macos-arm64", false).is_err());
-        let linux = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-x86_64.AppImage", "quiet-md-0.2.0-x86_64.AppImage");
+        let linux = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-x86_64.AppImage", "quiet-md-0.2.0-x86_64.AppImage");
         assert_eq!(validate(&linux, "linux-x86_64", false), Ok(()));
         assert!(validate(&linux, "windows-x64", false).is_err());
-        let wrong_linux = manifest("0.2.0", "https://download.quiet.md/v0.2.0/quiet-md-0.2.0-linux-x86_64.zip", "quiet-md-0.2.0-linux-x86_64.zip");
+        let wrong_linux = manifest("0.2.0", "https://github.com/iuxt/quiet-md/releases/download/v0.2.0/quiet-md-0.2.0-linux-x86_64.zip", "quiet-md-0.2.0-linux-x86_64.zip");
         assert!(validate(&wrong_linux, "linux-x86_64", false).is_err());
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod linux_tests {
-    use super::SWAP_APPIMAGE;
-    use std::{path::Path, process::{Command, Stdio}, time::Duration};
-    use std::os::unix::fs::{MetadataExt, PermissionsExt};
-
-    #[test]
-    fn appimage_swap_waits_preserves_arguments_and_recovers() {
-        for case in ["success", "failed-launch", "concurrent", "missing-stage"] {
-            let root = std::env::temp_dir().join(format!("quiet update 中文 {}", uuid::Uuid::new_v4()));
-            let stage = root.join("stage with spaces");
-            std::fs::create_dir_all(&stage).unwrap();
-            let app = root.join("quiet $name.AppImage");
-            let log = root.join("launch.log");
-            let script = |name: &str, code: i32| format!("#!/bin/sh\nprintf '%s\\n' '{name}' \"$1\" >> \"$QUIET_UPDATE_TEST_LOG\"\nexit {code}\n");
-            let write = |path: &Path, text: &str| {
-                std::fs::write(path, text).unwrap();
-                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            };
-            let old = script("old", 0);
-            write(&app, &old);
-            let meta = std::fs::metadata(&app).unwrap();
-            let identity = format!("{}:{}", meta.dev(), meta.ino());
-            let new = script("new", if case == "failed-launch" { 1 } else { 0 });
-            write(&stage.join("new.AppImage"), &new);
-            std::fs::hard_link(&app, stage.join("previous.AppImage")).unwrap();
-            std::fs::hard_link(stage.join("new.AppImage"), stage.join("installed.AppImage")).unwrap();
-            if case == "missing-stage" { std::fs::remove_file(stage.join("new.AppImage")).unwrap(); }
-            let mut running = Command::new("sleep").arg("30").spawn().unwrap();
-            let argument = "notes with spaces $(touch should-not-exist) 中文";
-            let mut helper = Command::new("/bin/sh").arg("-c").arg(SWAP_APPIMAGE).arg("sh")
-                .arg(running.id().to_string()).arg(&app).arg(&stage).arg(identity).arg(argument)
-                .env("QUIET_UPDATE_TEST_LOG", &log).stderr(Stdio::null()).spawn().unwrap();
-            std::thread::sleep(Duration::from_millis(250));
-            assert_eq!(std::fs::read_to_string(&app).unwrap(), old);
-            assert!(!log.exists());
-            if case == "concurrent" {
-                write(&root.join("other.AppImage"), "another updater");
-                std::fs::rename(root.join("other.AppImage"), &app).unwrap();
-            }
-            running.kill().unwrap();
-            running.wait().unwrap();
-            assert!(helper.wait().unwrap().success());
-            // Rollback launches the previous image asynchronously.
-            for _ in 0..100 {
-                if log.exists() && (case != "failed-launch" || std::fs::read_to_string(&log).unwrap().contains("old")) { break; }
-                if case == "concurrent" { break; }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let expected: &str = match case { "success" => &new, "concurrent" => "another updater", _ => &old };
-            assert_eq!(std::fs::read_to_string(&app).unwrap(), expected);
-            if case == "concurrent" { assert!(!log.exists()); }
-            else { assert!(std::fs::read_to_string(&log).unwrap().contains(argument)); }
-            assert!(!stage.exists());
-            std::fs::remove_dir_all(root).unwrap();
-        }
     }
 }

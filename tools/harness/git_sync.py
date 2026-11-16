@@ -24,7 +24,7 @@ body = "<title>Git regression</title>\n<p>Keep this body.</p>\n"
     "appearance": "light", "english": True, "seen_version": "0.1.12", "auto_update": False, "quick_hotkey": False,
 }))
 script = work / "steps.txt"
-script.write_text("""resize 1200 1300
+script.write_text("""resize 1200 900
 wait 1700
 move 1150 950
 key cmd-,
@@ -49,12 +49,26 @@ shot masked-token
 click 470 858
 wait 1200
 shot enabled
-click 580 926
+key escape
+wait 300
+click 110 98
+wait 700
+click 390 828
 type First UI commit
-click 525 968
+click 400 872
 wait 1500
 shot committed
-click 700 1134
+key cmd-,
+wait 300
+shot settings-after-commit
+key escape
+wait 300
+click 110 166
+wait 300
+click 1104 24
+wait 300
+shot article-menu
+click 1070 410
 wait 700
 shot git-history
 type SHOULD_NOT_WRITE
@@ -84,6 +98,6 @@ assert "/tmp/quiet-ui-test-key" in config and "/tmp/quiet-ui-test-ca.crt" in con
 commit = (repo / "refs/heads/main").read_text().strip()
 contents = zlib.decompress((repo / "objects" / commit[:2] / commit[2:]).read_bytes())
 assert b"First UI commit" in contents and b"Git UI Tester <ui@example.invalid>" in contents
-for name in ("masked-token", "enabled", "committed", "git-history", "returned"):
+for name in ("masked-token", "enabled", "committed", "settings-after-commit", "article-menu", "git-history", "returned"):
     assert (run / f"{name}.png").is_file(), name
 print(f"Git UI: UUID migration, author, commit, SSH key/CA settings, secret privacy and readonly history verified; screenshots: {run}")

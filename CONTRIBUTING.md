@@ -97,17 +97,29 @@ On every platform, never commit credentials, private keys or certificate files.
 
 ### Uploads and in-app updates
 
-`scripts/publish-downloads.sh <package>…` uploads packages to `v<version>/` and `latest/` on `download.quiet.md`, signs them with minisign, and finally writes `latest/update-<platform>.json` (`macos-arm64`, `macos-x86_64`, `windows-x64`). That manifest is what the app reads. It checks 10 seconds after launch and every 12 hours after that, and again when a window comes to the front more than an hour after the last check (this can be turned off in Settings › General); **Check for Updates…** in the menu checks right away. The download starts only when the user clicks. The app verifies the minisign signature (its trusted comment must be the package's file name); on macOS the new package must also be signed by the same team as the running app. It then quits, swaps the package and reopens. See `src/update.rs`.
+The app reads `https://github.com/iuxt/quiet-md/releases/latest/download/update-<platform>.json`. It checks 10 seconds after launch, every 12 hours, and when a window becomes active more than an hour after the last check. Automatic checks can be disabled in Settings › General. Downloads and restarts require a click; every open document goes through the normal save path before the installer starts. Packages are bound to an exact repository, version, platform and Minisign signature; macOS additionally requires the same code-signature team. See [the update and release guide](docs/UPDATES.md).
 
-Generate the update signing key once (`brew install minisign`), keep the private key outside the repository and commit the public key:
+Before the first fork release, generate an independent update key on your secure release machine (`brew install minisign`), outside the checkout. The repository intentionally ships without an active release key; automatic updates remain unsupported until you configure and rebuild it:
 
 ```sh
-minisign -G -f -p packaging/update-key.pub -s ~/.minisign/quiet-md.key
+mkdir -p ~/.minisign
+minisign -G -p ~/.minisign/quiet-md-iuxt.pub -s ~/.minisign/quiet-md-iuxt.key
+cp ~/.minisign/quiet-md-iuxt.pub packaging/update-key.pub
 ```
 
-The script verifies each freshly signed package against `packaging/update-key.pub` and stops if the keys don't match. A lost private key can only be replaced together with the public key, and installed copies of older versions then stop receiving updates, so keep a backup.
+Keep and back up the private key outside the repository. Commit only `packaging/update-key.pub` before building **all** platforms. The publishing script refuses the upstream key and rejects signatures whose trusted comment differs from the package name. Changing the public key breaks the trust chain for already installed copies; do not rotate it without a migration release.
 
-To try the update flow locally, point `QUIET_MD_UPDATE_URL=http://127.0.0.1:<port>` at a directory holding a manifest and packages, and build with `QUIET_MD_UPDATE_PUBKEY=<test public key>`; with that variable set, unsigned builds check for updates too.
+Build final platform-signed packages as described above, then use `scripts/publish-github-release.py` with all four packages. `--dry-run` only inspects local files; `--prepare dist/github/v<version>` signs and prepares the 16 release assets without network access. `--publish dist/github/v<version>` additionally runs the checks, uploads a draft, downloads and verifies every asset, then publishes it as Latest and checks public downloads. Publishing needs an authenticated `gh`, a clean release checkout, an existing pushed tag pointing at HEAD, and `--notes <release-notes-file>`. Existing releases/assets are never overwritten; failed uploads remain drafts for inspection. Use a new output directory per attempt.
+
+```sh
+# Substitute the four final package paths; globbing is intentionally avoided.
+python3 scripts/publish-github-release.py --dry-run <arm64.zip> <intel.zip> <windows-setup.exe> <linux.AppImage>
+python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key ~/.minisign/quiet-md-iuxt.key <arm64.zip> <intel.zip> <windows-setup.exe> <linux.AppImage>
+```
+
+Install the first fork-signed release manually. Upstream builds use another feed/key; ad-hoc macOS local builds and Preview cannot replace themselves with signed releases. For isolated tests, build with `QUIET_MD_UPDATE_PUBKEY=<test public key>` and run with `QUIET_MD_UPDATE_URL=http://127.0.0.1:<port>` pointing at test manifests and packages, always with `QUIET_MD_HOME` set to a temporary library. The URL override explicitly enables unsigned test builds and HTTP; production requests and redirects require HTTPS.
+
+The old `scripts/publish-downloads.sh` is retained for upstream R2 infrastructure and is not the feed used by this fork.
 
 For a new version, bump the version in both `Cargo.toml` files together, and write the version's highlights in `src/changelog.rs`: after updating, existing users see them once at the bottom of the sidebar.
 
@@ -115,6 +127,6 @@ For a new version, bump the version in both `Cargo.toml` files together, and wri
 
 Install Rust through rustup, then run `scripts/linux-deps.sh` on Ubuntu/Debian or Arch-based systems. Run `scripts/preview-linux.sh` for an isolated temporary library, or set `QUIET_MD_HOME` to reuse a test library. `scripts/package-linux.sh` produces a tarball and SHA-256 in `dist/linux`; it includes a desktop entry and a 512×512 icon generated with ImageMagick. The binary is dynamically linked; build on the oldest distribution you intend to support and check `runtime-libraries.txt` on the target system.
 
-The Linux build and full checks run on Ubuntu 22.04. `scripts/package-appimage.sh` also produces an x86_64 AppImage in `dist/linux`, using a pinned, SHA-256-verified linuxdeploy. It bundles shared dependencies and checks the payload against a glibc 2.35 baseline; graphics drivers remain system-provided. SHA-256 and dependency reports are generated alongside it. AppImage can be run after `chmod +x`; if FUSE is unavailable, use `--appimage-extract-and-run`. Linux updates are manual. Interactive testing has been done on Omarchy 4.5 with Wayland, floating windows and 250% scaling, including Chinese title input. GNOME Wayland, X11 and systems without Noto fonts still need interactive verification; this is not a claim of support for every desktop distribution. Software Vulkan (`vulkan-swrast` on Arch) is useful in VMs or when no hardware Vulkan driver is available. Global quick-note shortcuts and automatic updates are not supported on Linux yet.
+The Linux build and full checks run on Ubuntu 22.04. `scripts/package-appimage.sh` also produces an x86_64 AppImage in `dist/linux`, using a pinned, SHA-256-verified linuxdeploy. It bundles shared dependencies and checks the payload against a glibc 2.35 baseline; graphics drivers remain system-provided. SHA-256 and dependency reports are generated alongside it. AppImage can be run after `chmod +x`; if FUSE is unavailable, use `--appimage-extract-and-run`. AppImage supports in-app updates when the fork release key is configured; other package formats require manual updates. Interactive testing has been done on Omarchy 4.5 with Wayland, floating windows and 250% scaling, including Chinese title input. GNOME Wayland, X11 and systems without Noto fonts still need interactive verification; this is not a claim of support for every desktop distribution. Software Vulkan (`vulkan-swrast` on Arch) is useful in VMs or when no hardware Vulkan driver is available. Global quick-note shortcuts are not supported on Linux yet.
 
 Linux support started in [PR #7](https://github.com/s1dashu/quiet-md/pull/7) by [VJ-2303](https://github.com/VJ-2303); maintainer follow-ups add desktop integration and runtime fixes.

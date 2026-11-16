@@ -123,6 +123,7 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 
 | 模块 | 内容 |
 |---|---|
+| `update.rs` / `update/http.rs` / `update/install.rs` | GitHub Releases 清单、签名更新、有界传输和平台安装 helper；更新前保存所有窗口，安装锁只协调同一应用路径，见 [UPDATES.md](UPDATES.md) |
 | `main.rs` | 入口；`FDL_SCRIPT` 脚本模式（仅 `devtools` 特性）；重新导出 `fdl_core` 的模块 |
 | `guides.rs` | 文档库是空的时放入内置的「开始指南」（只放一次） |
 | `app.rs` | `Workspace`：两栏窗口、打开 / 新建 / 保存 / 删除、保存状态、提醒调度 |

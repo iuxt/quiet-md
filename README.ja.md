@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/s1dashu/quiet-md/releases/latest"><img src="https://img.shields.io/github/v/release/s1dashu/quiet-md?label=release&color=2f6feb" alt="最新リリース"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="最新リリース"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="CI のステータス"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS、Windows、Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="Rust と GPUI で構築">
@@ -19,11 +19,11 @@
 </p>
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
   &nbsp;
-  <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Windows 版をダウンロード"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-windows.svg" height="56" alt="Windows 版をダウンロード"></a>
   &nbsp;
-  <a href="https://download.quiet.md/latest/quiet-md-x86_64.AppImage"><img src="docs/images/download-linux.svg" height="56" alt="Linux 版をダウンロード"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-linux.svg" height="56" alt="Linux 版をダウンロード"></a>
 </p>
 
 <p align="center">
@@ -52,25 +52,25 @@
 ## ダウンロード
 
 <p align="center">
-  <a href="https://download.quiet.md/latest/quiet-md-macos-arm64.zip"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-macos.svg" height="56" alt="macOS 版をダウンロード"></a>
   &nbsp;
-  <a href="https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe"><img src="docs/images/download-windows.svg" height="56" alt="Windows 版をダウンロード"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-windows.svg" height="56" alt="Windows 版をダウンロード"></a>
   &nbsp;
-  <a href="https://download.quiet.md/latest/quiet-md-x86_64.AppImage"><img src="docs/images/download-linux.svg" height="56" alt="Linux 版をダウンロード"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-linux.svg" height="56" alt="Linux 版をダウンロード"></a>
 </p>
 
 | プラットフォーム | パッケージ | 要件 |
 |---|---|---|
-| **macOS**（Apple シリコン） | [quiet-md-macos-arm64.zip](https://download.quiet.md/latest/quiet-md-macos-arm64.zip) | macOS 13 以降 |
-| **Windows**（x64） | [quiet-md-windows-x64-setup.exe](https://download.quiet.md/latest/quiet-md-windows-x64-setup.exe) | Windows 10 バージョン 1809 以降 |
-| **Linux**（x86_64、試験的） | [quiet-md-x86_64.AppImage](https://download.quiet.md/latest/quiet-md-x86_64.AppImage) | glibc 2.35 以降（Ubuntu 22.04 以降） |
-| **macOS**（Intel） | [quiet-md-macos-x86_64.zip](https://download.quiet.md/latest/quiet-md-macos-x86_64.zip) | macOS 13 以降 |
+| **macOS**（Apple シリコン） | [quiet-md-macos-arm64.zip](https://github.com/iuxt/quiet-md/releases/latest) | macOS 13 以降 |
+| **Windows**（x64） | [quiet-md-windows-x64-setup.exe](https://github.com/iuxt/quiet-md/releases/latest) | Windows 10 バージョン 1809 以降 |
+| **Linux**（x86_64、試験的） | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases/latest) | glibc 2.35 以降（Ubuntu 22.04 以降） |
+| **macOS**（Intel） | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases/latest) | macOS 13 以降 |
 
 - **macOS**: 展開して、`quiet.md.app` をアプリケーションフォルダーにドラッグします。アプリは Apple によって署名・公証されています。
 - **Windows**: インストーラーを実行します。デフォルトでは現在のユーザーだけにインストールされ、アンインストールしてもノートが削除されることはありません。初回の起動時に SmartScreen が表示された場合は、**詳細情報 → 実行** をクリックしてください。
 - **Linux**（試験的）: `chmod +x quiet-md-*.AppImage` を実行してから起動します。FUSE がない場合は `--appimage-extract-and-run` を付けてください。AppImage 0.1.10 以降はアプリ内更新に対応します。以前の Linux 版からは一度手動でインストールしてください。現在の対話的なテストは Wayland 上の Omarchy のみです。詳しくは [Linux の説明](CONTRIBUTING.md#linux-experimental)を参照してください。
 
-[Quiet.md](https://quiet.md/?lang=en) からもダウンロードできます。すべてのリリースとその SHA-256 チェックサムは [GitHub Releases](https://github.com/s1dashu/quiet-md/releases) にあります。
+このフォークのダウンロードと更新元は [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) です。最初のフォーク版は手動でインストールし、以降はアプリ内で署名済み更新をダウンロードし、保存・再起動後にインストールできます。自動確認は「設定 › 一般」で無効にできます。公開には独立した Minisign 鍵とプラットフォーム署名が必要です。[更新と公開の説明](docs/UPDATES.md)を参照してください。
 
 初回の起動時に、表示言語、ライブラリの場所、クイックノートのショートカットを選び、Obsidian、Logseq、iA Writer、Typora のノートをコピーして取り込めます。空のライブラリには **Getting started** ガイドが入ります。主な機能を 10 分で紹介するツアーです。既存のノートが上書きされることはありません。
 
