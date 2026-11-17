@@ -1361,6 +1361,7 @@ pub(crate) fn localize(text: &str, english: bool) -> &str {
         "本文暂未引用其它文档" => "No linked documents yet",
         "查看更多" => "Show more",
         "当前为阅读模式，请切换为编辑模式后重试" => "Switch to editing mode to make changes.",
+        "回收站文档恢复后才能编辑" => "Restore this document from Trash to edit it.",
         "表情符号" => "Emoji",
         "动物" => "Animals",
         "食物" => "Food",

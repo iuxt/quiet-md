@@ -253,6 +253,7 @@ pub struct Editor {
     /// 版本历史 preview: this snapshot is not the live document. Only the
     /// hint text differs from 阅读模式.
     pub preview: bool,
+    pub trashed: bool,
     /// The 版本历史 drawer is open: Esc closes it (the window's capture
     /// handler never sees Esc — the editor's key binding takes it first).
     pub history_drawer: bool,
@@ -470,6 +471,7 @@ impl Editor {
             markdown: false,
             ro_doc: None,
             preview: false,
+            trashed: false,
             history_drawer: false,
             diff_marks: None,
             info: Default::default(),

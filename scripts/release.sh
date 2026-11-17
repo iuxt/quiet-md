@@ -26,9 +26,10 @@ else
 fi
 lipo "$binary" -verify_arch "$arch"
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-out=${RELEASE_OUT:-$(mktemp -d "$PWD/dist-release.XXXXXX")}
+out=${RELEASE_OUT:-$PWD/dist-release}
 mkdir -p "$out"
 app="$out/quiet.md.app"
+rm -rf "$app" "$out/AppIcon.iconset"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$binary" "$app/Contents/MacOS/"
 # Kept beside the package, not in it: resolves the addresses a panic logs

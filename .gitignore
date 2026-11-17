@@ -7,5 +7,6 @@
 !/shared-mock/library/
 !/shared-mock/guides/
 
+/dist-release
 /dist-release.*
 .wrangler/

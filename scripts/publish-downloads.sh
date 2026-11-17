@@ -1,7 +1,7 @@
 #!/bin/bash
 # Upload release packages to the download.quiet.md R2 bucket: an immutable copy under v<version>/ and the
 # fixed latest/ link the site and README point at. Pass the macOS ZIP, the Windows installer, or both:
-#   scripts/publish-downloads.sh dist-release.XXXX/quiet-md-0.1.2-macos-arm64.zip dist/windows/signed/quiet-md-0.1.2-windows-x64-setup.exe
+#   scripts/publish-downloads.sh dist-release/quiet-md-0.1.2-macos-arm64.zip dist/windows/signed/quiet-md-0.1.2-windows-x64-setup.exe
 # Each package is signed with minisign (MINISIGN_KEY, default ~/.minisign/quiet-md.key) and checked against
 # packaging/update-key.pub; latest/update-<platform>.json, written last, is what the app's updater reads.
 # The key's password comes from the login keychain when stored there once, else minisign asks:

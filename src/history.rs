@@ -233,6 +233,7 @@ impl Workspace {
 
     /// 保存当前版本: bypasses the interval; identical text still adds nothing.
     pub fn save_version_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.trash_document { return }
         if !self.flush(cx) { return }
         let Some(h) = self.history.as_ref() else { return };
         let id = h.id.clone();
@@ -282,6 +283,7 @@ impl Workspace {
     }
 
     pub fn restore_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.trash_document { return }
         let Some((id, name)) = self.history.as_ref().and_then(|h| h.selected.clone().map(|n| (h.id.clone(), n))) else { return };
         let doc = match self.store.restore_version(&id, &name) {
             Ok(d) => d,
@@ -412,8 +414,8 @@ impl Workspace {
                 )
                 .child(crate::ui::secondary_button("history-back", crate::settings::tr("返回当前", "Back to now"))
                     .on_click(cx.listener(|w, _, _, cx| w.exit_preview(cx))))
-                .child(crate::ui::primary_button("history-restore", crate::settings::tr("恢复此版本", "Restore this version"))
-                    .on_click(cx.listener(|w, _, window, cx| w.restore_selected(window, cx))))
+                .when(!self.trash_document, |d| d.child(crate::ui::primary_button("history-restore", crate::settings::tr("恢复此版本", "Restore this version"))
+                    .on_click(cx.listener(|w, _, window, cx| w.restore_selected(window, cx)))))
                 .into_any_element(),
         )
     }
@@ -513,9 +515,9 @@ impl Workspace {
                     })))
             .children(rows);
         let footer = div().flex_none().border_t_1().border_color(Theme::line_divider()).px(px(14.)).py(px(10.)).flex().flex_col().gap(px(6.))
-            .child(crate::ui::secondary_button("history-snapshot", crate::settings::tr("保存当前版本", "Save a version"))
+            .when(!self.trash_document, |d| d.child(crate::ui::secondary_button("history-snapshot", crate::settings::tr("保存当前版本", "Save a version"))
                 .w_full()
-                .on_click(cx.listener(|w, _, window, cx| w.save_version_now(window, cx))))
+                .on_click(cx.listener(|w, _, window, cx| w.save_version_now(window, cx)))))
             .child(div().flex().items_center().gap(px(14.))
                 // These act on the version being previewed: dim them when
                 // there is none (the drawer is open on an empty list, or the

@@ -441,6 +441,13 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
         assert!(tree.get_path(Path::new(&format!(".quiet/trash/{id}.{ext}"))).is_err());
     }
     assert!(b.git_pull(&Auth::default()).unwrap()); assert!(b.list().is_empty()); assert_eq!(b.list_trash()[0].id, folder);
+    assert_eq!(b.load_trash(&xml).unwrap().title.text, "XML");
+    assert_eq!(b.load_trash(&md).unwrap().title.text, "Markdown");
+    assert!(!b.load_trash(&md).unwrap().asset_sources().is_empty());
+    for id in [&xml, &md] {
+        let versions = b.git_versions(id).unwrap(); assert!(!versions.is_empty());
+        for version in versions { assert!(b.version_document(id, &version.name).is_ok()); }
+    }
     assert!(!b.restore(&folder).unwrap()); assert!(b.list_trash().is_empty());
     for (id, ext, bytes) in &bodies { assert_eq!(std::fs::read(second.0.join(format!("notes/{id}.{ext}"))).unwrap(), *bytes); }
     assert_eq!(b.list().iter().find(|e| e.id == xml).unwrap().meta.parent.as_deref(), Some(nested.as_str()));

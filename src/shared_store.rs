@@ -30,6 +30,9 @@ impl SharedStore {
     pub fn create_from(&mut self, doc: &Document) -> Result<String> { self.0.borrow_mut().create_from(doc) }
     pub fn size_of(&self, id: &str, doc: &Document) -> u64 { self.0.borrow_mut().size_of(id, doc) }
     pub fn list_trash(&mut self) -> Vec<TrashEntry> { self.0.borrow_mut().list_trash() }
+    pub fn list_trash_in(&mut self, parent: Option<&str>) -> Vec<TrashEntry> { self.0.borrow_mut().list_trash_in(parent) }
+    pub fn trash_meta(&self, id: &str) -> Option<Meta> { self.0.borrow().trash_meta(id) }
+    pub fn load_trash(&self, id: &str) -> Result<Document> { self.0.borrow().load_trash(id) }
     pub fn restore(&mut self, id: &str) -> Result<bool> { self.0.borrow_mut().restore(id) }
     pub fn set_width(&mut self, id: &str, width: PageWidth) -> Result<()> { self.0.borrow_mut().set_width(id, width) }
     pub fn update_meta(&mut self, id: &str, f: impl FnOnce(&mut Meta)) -> Result<()> { self.0.borrow_mut().update_meta(id, f) }

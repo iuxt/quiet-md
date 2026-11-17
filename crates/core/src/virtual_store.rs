@@ -4,7 +4,7 @@ use crate::manifest::{Deleted, Manifest, FILE, NOTES};
 
 impl Store {
     pub(super) fn manifest_title(&self, id: &str, doc: &mut Document) {
-        if self.virtual_folders() && let Some(meta) = self.index.get(id).filter(|m| !m.local()) && let Some(title) = &meta.name && doc.title.text != *title {
+        if self.virtual_folders() && let Some(meta) = self.index.get(id).or_else(|| self.trash.get(id).map(|t| &t.meta)).filter(|m| !m.local()) && let Some(title) = &meta.name && doc.title.text != *title {
             doc.title = crate::model::RichText::plain(title);
         }
     }

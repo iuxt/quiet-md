@@ -178,10 +178,10 @@ jobs:
         with:
           name: release-macos
           path: |
-            dist-release.*/quiet-md-*-macos-arm64.zip
-            dist-release.*/quiet-md-*-macos-arm64.zip.sha256
-            dist-release.*/quiet-md-*-macos-x86_64.zip
-            dist-release.*/quiet-md-*-macos-x86_64.zip.sha256
+            dist-release/quiet-md-*-macos-arm64.zip
+            dist-release/quiet-md-*-macos-arm64.zip.sha256
+            dist-release/quiet-md-*-macos-x86_64.zip
+            dist-release/quiet-md-*-macos-x86_64.zip.sha256
           if-no-files-found: error
           retention-days: 7
 

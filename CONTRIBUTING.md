@@ -72,7 +72,7 @@ scripts/release.sh
 MACOS_TARGET=x86_64-apple-darwin scripts/release.sh
 ```
 
-Each run keeps its output in a separate `dist-release.*` directory. Intel ZIPs use `macos-x86_64`; Apple Silicon ZIPs keep `macos-arm64`. CI builds both on its existing ARM runner and verifies the binary architectures and signatures. `SIGNING_IDENTITY=-` skips notarization and creates ad-hoc signed `-unsigned.zip` validation packages, which must not be distributed and are rejected by `publish-downloads.sh`.
+Each run reuses `dist-release/` (override with `RELEASE_OUT`), rebuilding the app bundle and icon set. Packages and debug symbols retain their version and architecture in the filename; rebuilding the same version and architecture overwrites those files. Run builds sequentially when sharing an output directory. Intel ZIPs use `macos-x86_64`; Apple Silicon ZIPs keep `macos-arm64`. CI builds both on its existing ARM runner and verifies the binary architectures and signatures. `SIGNING_IDENTITY=-` skips notarization and creates ad-hoc signed `-unsigned.zip` validation packages, which must not be distributed and are rejected by `publish-downloads.sh`.
 
 ### Windows
 

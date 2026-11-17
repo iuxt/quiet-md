@@ -27,7 +27,7 @@ impl Editor {
     }
 
     fn read_only_hint(&self) -> &'static str {
-        if self.preview { PREVIEW_HINT } else { READ_ONLY_HINT }
+        if self.preview { PREVIEW_HINT } else if self.trashed { "回收站文档恢复后才能编辑" } else { READ_ONLY_HINT }
     }
 
     pub fn set_read_only(&mut self, on: bool, cx: &mut Context<Self>) {

@@ -50,6 +50,8 @@ main.rs ─ 窗口
 
 版本历史的界面沿用 Google Docs / 飞书那一套：抽屉在右、正文就地变成所选快照的只读预览、改动是可关掉的高亮层。为此 `Workspace` 多一个 `preview: Option<Preview>`，它持有进入预览前那份完整的 `Core`（文档、光标、选区、撤销栈），返回时整体放回去。预览期间 `flush`、`schedule_save`、`sync_document` 全部短路：编辑器里装的是历史正文，写盘或同步给兄弟窗口都会把它当成当前文档。
 
+回收站文件夹按原父级逐层浏览，文章通过 `Store::load_trash` 只读加载，不建立编辑冲突基线。`trash_document` 在应用层阻止保存、同步和切换编辑模式，存储层也拒绝保存回收站正文。历史抽屉复用普通文章的实现，本地快照按文章状态从 `history/` 或 `history-trash/` 读取，Git 历史仍按 UUID 查询；恢复文章后重新打开可编辑正文。
+
 差异分两层：`changes.rs` 按块做 LCS，回答「这一版哪些块是新加的、哪些被改写」，用来给正文上色；`diff.rs` 按行做 LCS，只用来算抽屉每行的 `+N 行 −M 行`。规则见 FORMAT.md。
 
 Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机编辑后检查：

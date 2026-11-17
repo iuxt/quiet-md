@@ -53,6 +53,46 @@ fn virtual_tree_delete_restore_and_undo_preserve_structure_and_bytes() {
 }
 
 #[test]
+fn trash_folders_open_documents_and_history_without_restoring_or_writing_bodies() {
+    let lib = Library::new(); let mut s = lib.open();
+    let folder = s.create_folder("Deleted folder", None).unwrap(); let nested = s.create_folder("Nested", Some(&folder)).unwrap();
+    let xml = s.create_from_in(&doc("Stored title"), Some(&nested)).unwrap();
+    s.rename(&xml, "Manifest title").unwrap();
+    let md = s.create_markdown_in(&doc("Markdown title"), "# Heading\n\n![Image](../.assets/picture.png)\n", Some(&nested)).unwrap();
+    let ids = [&xml, &md];
+    let bodies: Vec<_> = ids.iter().map(|id| (s.file_path(id).unwrap(), std::fs::read(s.file_path(id).unwrap()).unwrap())).collect();
+    for id in ids { assert!(s.save_version_now(id).unwrap()); }
+    s.delete(&folder, None).unwrap();
+    let manifest = std::fs::read(lib.0.join("quiet.json")).unwrap();
+    let mut reopened = lib.open();
+    assert!(reopened.list().is_empty()); assert_eq!(reopened.list_trash()[0].id, folder);
+    assert_eq!(reopened.list_trash_in(Some(&folder))[0].id, nested);
+    assert_eq!(reopened.list_trash_in(Some(&nested)).len(), 2);
+    assert!(reopened.load_trash(&folder).is_err());
+    assert_eq!(reopened.load_trash(&xml).unwrap().title.text, "Manifest title");
+    let markdown = reopened.load_trash(&md).unwrap();
+    assert_eq!(markdown.title.text, "Markdown title"); assert!(markdown.plain_text().contains("Heading"));
+    assert!(markdown.asset_sources()[0].ends_with("/.assets/picture.png"));
+    for id in [&xml, &md] {
+        let versions = reopened.versions(id); assert_eq!(versions.len(), 1);
+        let name = &versions[0].name;
+        assert!(!reopened.version_document(id, name).unwrap().title.text.is_empty());
+        assert!(reopened.version_diff(id, name, None).is_ok());
+        reopened.set_version_label(id, name, Some("Before deletion")).unwrap();
+        assert_eq!(reopened.versions(id)[0].label.as_deref(), Some("Before deletion"));
+        assert!(reopened.save_version_now(id).is_err()); assert!(reopened.restore_version(id, name).is_err());
+        assert!(reopened.save(id, &doc("Must not write")).is_err());
+    }
+    assert_eq!(std::fs::read(lib.0.join("quiet.json")).unwrap(), manifest);
+    for (path, bytes) in bodies { assert_eq!(std::fs::read(path).unwrap(), bytes); }
+    let name = reopened.versions(&md)[0].name.clone(); reopened.delete_version(&md, &name).unwrap();
+    assert!(reopened.versions(&md).is_empty());
+    reopened.restore(&folder).unwrap();
+    assert_eq!(reopened.versions(&xml)[0].label.as_deref(), Some("Before deletion"));
+    assert_eq!(reopened.load(&xml).unwrap().title.text, "Manifest title");
+}
+
+#[test]
 fn metadata_is_authoritative_and_other_handles_reload_it() {
     let lib = Library::new(); let mut a = lib.open(); let mut b = lib.open();
     let id = a.create_from(&doc("Original")).unwrap(); let folder = b.create_folder("Virtual", None).unwrap();

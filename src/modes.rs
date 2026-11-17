@@ -76,12 +76,13 @@ fn section(title: &'static str) -> Div {
 impl Workspace {
     /// The open document is in 阅读模式.
     pub fn reading(&self) -> bool {
-        self.current.as_ref().and_then(|id| self.entries.iter().find(|e| &e.id == id)).is_some_and(|e| e.meta.reading)
+        self.trash_document || self.current.as_ref().and_then(|id| self.entries.iter().find(|e| &e.id == id)).is_some_and(|e| e.meta.reading)
     }
 
     pub fn set_mode(&mut self, reading: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.mode_menu = false;
         cx.notify();
+        if self.trash_document || self.preview.is_some() { return }
         let Some(id) = self.current.clone() else { return };
         if self.reading() == reading {
             return;

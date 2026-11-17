@@ -280,6 +280,8 @@ pub struct Workspace {
     pub store: SharedStore,
     pub entries: Vec<Entry>,
     pub current: Option<String>,
+    pub(crate) trash_document: bool,
+    pub(crate) trash_folder: Option<String>,
     pub editor: Option<Entity<Editor>>,
     pub search: Entity<TextField>,
     /// Keyboard highlight inside search results.
@@ -428,7 +430,7 @@ impl Workspace {
             cx.observe_window_appearance(window, |this, _, cx| if crate::settings::sync_dark(cx) { crate::settings::refresh_all(this, cx); }),
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
-                    if let Some(id) = &this.current { crate::quick_note::used(id, cx); }
+                    if !this.trash_document && let Some(id) = &this.current { crate::quick_note::used(id, cx); }
                     if !this.store.file_task_busy() { this.entries = this.store.list(); this.sort(); }
                     crate::update::check_if_stale(cx); cx.notify();
                 }
@@ -485,6 +487,7 @@ impl Workspace {
                     // Not mid-rename: the row under the field would be rebuilt.
                     if w.rename.is_some() || w.move_dlg.is_some() || w.store.file_task_busy() { return false }
                     w.entries = w.store.list();
+                    if w.view == View::Trash { w.trash = w.store.list_trash_in(w.trash_folder.as_deref()); }
                     w.sort();
                     cx.notify();
                     true
@@ -528,6 +531,8 @@ impl Workspace {
             store,
             entries,
             current: None,
+            trash_document: false,
+            trash_folder: None,
             editor: None,
             search,
             search_sel: None,
@@ -627,11 +632,14 @@ impl Workspace {
         // editor is swapped out.
         self.remember_scroll(cx);
         if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.open_folder(id, window, cx); }
+        let trash_meta = self.store.trash_meta(id);
+        if trash_meta.as_ref().is_some_and(|m| m.folder.is_some()) { return self.open_trash_folder(Some(id), cx); }
+        let trashed = trash_meta.is_some();
         if self.view != View::Doc {
             self.view = View::Doc;
             cx.notify();
         }
-        if self.current.as_deref() == Some(id) {
+        if self.current.as_deref() == Some(id) && self.trash_document == trashed {
             return true;
         }
         let target = id.to_string();
@@ -641,7 +649,7 @@ impl Workspace {
             return false;
         }
         let shared = !self.document_peers(id, window, cx).is_empty();
-        let doc = match self.store.load_for_edit(id, shared) {
+        let doc = match if trashed { self.store.load_trash(id) } else { self.store.load_for_edit(id, shared) } {
             Ok(d) => d,
             Err(e) => {
                 self.show_toast_kind(ToastKind::Error, &crate::localized_format!("无法打开文档：{}", "Could not open document: {}", crate::settings::diagnostic(&e.to_string())), cx);
@@ -649,7 +657,7 @@ impl Workspace {
                 return false;
             }
         };
-        let meta = self.entries.iter().find(|e| e.id == id).map(|e| e.meta.clone());
+        let meta = self.entries.iter().find(|e| e.id == id).map(|e| e.meta.clone()).or(trash_meta);
         let modified = meta.as_ref().map_or_else(crate::time::now, |m| m.modified);
         let width = meta.as_ref().map(|m| m.width).unwrap_or_default();
         let pinned = meta.as_ref().is_some_and(|m| !m.catalogue_closed);
@@ -660,12 +668,13 @@ impl Workspace {
             if let Some(m) = &meta {
                 e.created = m.created;
                 e.info = m.info;
-                e.set_read_only(m.reading, cx);
+                e.set_read_only(trashed || m.reading, cx);
             }
+            e.trashed = trashed;
             e
         });
         // Reuse the live state, including unsaved edits and undo history.
-        if let Some(peer) = self.document_peers(id, window, cx).first() {
+        if let Some(peer) = self.document_peers(id, window, cx).first().filter(|_| !trashed) {
             let core = peer.read(cx).core.clone();
             editor.update(cx, |e, cx| e.receive_document(&core, cx));
         }
@@ -735,8 +744,8 @@ impl Workspace {
             && self.document_peers(previous, window, cx).is_empty() { self.store.forget_loaded(previous); }
         self.editor = Some(editor);
         self.current = Some(id.to_string());
-        crate::quick_note::used(id, cx);
-        self.reveal_in_tree(id);
+        self.trash_document = trashed;
+        if !trashed { crate::quick_note::used(id, cx); self.reveal_in_tree(id); }
         self.sync_sub_pages(cx);
         self.status = SaveStatus::Idle;
         self.row_menu = None;
@@ -896,6 +905,7 @@ impl Workspace {
         // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
         if view != View::Doc { self.remember_scroll(cx) }
         if view == View::Trash {
+            self.trash_folder = None;
             self.trash = self.store.list_trash();
         }
         self.view = view;
@@ -996,7 +1006,7 @@ impl Workspace {
         cx.windows().into_iter().filter(|w| w.window_id() != window.window_handle().window_id())
             .filter_map(|w| w.downcast::<Workspace>())
             .filter_map(|w| w.update(cx, |ws, _, _| {
-                (ws.current.as_deref() == Some(id)).then(|| ws.editor.clone()).flatten()
+                (ws.current.as_deref() == Some(id) && !ws.trash_document && ws.preview.is_none()).then(|| ws.editor.clone()).flatten()
             }).ok().flatten()).collect()
     }
 
@@ -1011,7 +1021,7 @@ impl Workspace {
     pub(crate) fn sync_document(&mut self, window: &Window, cx: &mut Context<Self>) {
         // The previewed snapshot is not the live document: never hand it to a
         // sibling window.
-        if self.preview.is_some() { return }
+        if self.preview.is_some() || self.trash_document { return }
         let (Some(id), Some(editor)) = (self.current.clone(), self.editor.clone()) else { return };
         let peers = self.document_peers(&id, window, cx);
         if peers.is_empty() { return; }
@@ -1024,14 +1034,14 @@ impl Workspace {
                     entry.icon = core.doc.icon.clone();
                 }
                 // Every remaining view can save the latest state if its sibling closes.
-                if ws.current.as_deref() == Some(&id) { ws.unsaved = true; }
+                if ws.current.as_deref() == Some(&id) && !ws.trash_document && ws.preview.is_none() { ws.unsaved = true; }
                 cx.notify();
             });
         }
     }
 
     fn schedule_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.preview.is_some() { return }
+        if self.preview.is_some() || self.trash_document { return }
         self.status = SaveStatus::Saving;
         if !self.unsaved || self.dirty_since.is_none() {
             self.dirty_since = Some(Instant::now());
@@ -1080,7 +1090,7 @@ impl Workspace {
         self.save_task = None;
         // 版本历史 preview: the editor holds an older snapshot, so writing it
         // would overwrite the live document with history.
-        if self.preview.is_some() { return true }
+        if self.preview.is_some() || self.trash_document { return true }
         if !self.unsaved {
             return true;
         }
@@ -1304,6 +1314,7 @@ impl Workspace {
 
     /// `pane_w`: the width the header spans, to fold the breadcrumbs when narrow.
     fn top_bar(&self, pane_w: f32, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.trash_document { return self.trash_document_header(cx) }
         let title = self
             .editor
             .as_ref()
@@ -1562,6 +1573,7 @@ impl Render for Workspace {
                 .flex_col()
                 .child(self.top_bar(f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. }, cx))
                 .children(self.render_history_banner(cx))
+                .children(self.render_trash_banner(cx))
                 .child(
                     div()
                         .flex_1()

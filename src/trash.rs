@@ -74,16 +74,81 @@ pub(crate) fn empty_state(illus: &'static str, text: &'static str) -> Div {
 }
 
 impl Workspace {
+    pub(crate) fn open_trash_folder(&mut self, id: Option<&str>, cx: &mut Context<Self>) -> bool {
+        if id.is_some_and(|id| self.store.trash_meta(id).is_none_or(|m| m.folder.is_none())) { return false }
+        self.close_history(cx);
+        self.trash_folder = id.map(str::to_string);
+        self.trash = self.store.list_trash_in(id);
+        self.view = crate::app::View::Trash;
+        self.trash_menu = None;
+        self.doc_menu = false;
+        self.mode_menu = false;
+        cx.notify();
+        true
+    }
+
+    fn trash_breadcrumbs(&self, folder: Option<&str>, cx: &mut Context<Self>) -> Div {
+        let mut chain = vec![];
+        let mut parent = folder.map(str::to_string);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(id) = parent {
+            if !seen.insert(id.clone()) { break }
+            let Some(meta) = self.store.trash_meta(&id) else { break };
+            let Some(name) = meta.folder else { break };
+            chain.push((id, name)); parent = meta.parent;
+        }
+        let mut crumbs = div().min_w_0().flex().items_center().gap(px(6.))
+            .child(div().id("trash-root").no_drag().cursor_pointer().text_size(px(13.)).text_color(Theme::text_caption())
+                .hover(|s| s.text_color(Theme::primary())).child(crate::settings::text("回收站"))
+                .on_click(cx.listener(|w, _, _, cx| { w.open_trash_folder(None, cx); })));
+        for (id, title) in chain.into_iter().rev() {
+            let key = SharedString::from(format!("trash-crumb-{id}"));
+            crumbs = crumbs.child(icon("chevron-right", 12., Theme::icon()))
+                .child(div().id(key).no_drag().min_w_0().truncate().cursor_pointer().text_size(px(13.))
+                    .text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::primary())).child(ui_text(title))
+                    .on_click(cx.listener(move |w, _, _, cx| { w.open_trash_folder(Some(&id), cx); })));
+        }
+        crumbs
+    }
+
+    pub(crate) fn trash_document_header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let parent = self.current.as_ref().and_then(|id| self.store.trash_meta(id)).and_then(|m| m.parent);
+        let title = self.editor.as_ref().map(|e| display_title(&e.read(cx).core.doc.title.text)).unwrap_or_default();
+        let crumbs = self.trash_breadcrumbs(parent.as_deref(), cx)
+            .child(icon("chevron-right", 12., Theme::icon()))
+            .child(div().min_w_0().truncate().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).child(ui_text(title)));
+        page_header_with(self, crumbs, 18., cx)
+            .child(crate::ui::header_icon("trash-history", "restore").tip(crate::settings::tr("版本历史", "Version history"), None)
+                .on_click(cx.listener(|w, _, window, cx| {
+                    if let Some(id) = w.current.clone() { w.open_history(&id, window, cx); }
+                })))
+            .child(secondary_button("trash-restore", crate::settings::text("恢复")).ml(px(8.)).no_drag()
+                .on_click(cx.listener(|w, _, _, cx| { w.confirm = w.current.clone().map(Confirm::Restore); cx.notify(); })))
+    }
+
+    pub(crate) fn render_trash_banner(&self, _cx: &mut Context<Self>) -> Option<AnyElement> {
+        (self.trash_document && self.preview.is_none()).then(|| div().flex_none().px(px(18.)).py(px(8.))
+            .text_size(px(12.)).text_color(Theme::text_caption()).bg(Theme::fill_hover())
+            .child(crate::settings::tr("此文档在回收站中，恢复后可编辑", "This document is in Trash. Restore it to edit."))
+            .into_any_element())
+    }
+
     /// Where a trashed page goes back to: its parent if that page is live.
     fn trash_location(&self, t: &TrashEntry) -> String {
         t.parent
             .as_ref()
             .and_then(|p| self.entries.iter().find(|e| &e.id == p))
-            .map_or_else(|| crate::settings::label("我的文档"), |e| display_title(&e.title))
+            .map(|e| display_title(&e.title))
+            .or_else(|| t.parent.as_ref().and_then(|p| self.store.trash_meta(p)).and_then(|m| m.folder).map(|title| display_title(&title)))
+            .unwrap_or_else(|| crate::settings::label("我的文档"))
     }
 
     pub(crate) fn render_trash(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let header = page_header(self, "回收站", 26., cx).child(
+        let header = if self.trash_folder.is_some() {
+            let crumbs = self.trash_breadcrumbs(self.trash_folder.as_deref(), cx);
+            page_header_with(self, crumbs, 26., cx)
+        } else { page_header(self, "回收站", 26., cx) };
+        let header = header.child(
             crate::ui::header_icon("trash-search", "search")
                 .tip_label(crate::shortcuts::keys(crate::settings::text("搜索(⌘ + J)")).into(), crate::ui::TipSide::Below)
                 .on_click(cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(crate::app::FocusSearch), cx))),
@@ -119,6 +184,7 @@ impl Workspace {
         let mut list = div().id("trash-list").flex_1().min_h_0().overflow_y_scroll().px(px(24.)).pb(px(24.));
         for (i, t) in self.trash.iter().enumerate() {
             let (id, id2) = (t.id.clone(), t.id.clone());
+            let open_id = t.id.clone();
             let menu_open = self.trash_menu.as_ref().is_some_and(|(m, _, _)| *m == t.id);
             let title = display_title(&t.title);
             let more = div()
@@ -146,6 +212,8 @@ impl Workspace {
                     .items_center()
                     .when(i > 0, |d| d.border_t_1().border_color(list_line()))
                     .hover(row_hover)
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |w, _, window, cx| w.open(&open_id, window, cx)))
                     .when(menu_open, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
                     .on_mouse_down(
                         MouseButton::Right,
@@ -163,6 +231,7 @@ impl Workspace {
                             .items_center()
                             .child(match &t.icon {
                                 Some(e) => div().size(px(24.)).mr(px(10.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(e.clone()),
+                                None if t.meta.folder.is_some() => div().size(px(24.)).mr(px(10.)).flex_none().child(icon("folder", 20., Theme::icon())),
                                 None => doc_icon(),
                             })
                             .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title))),
@@ -188,6 +257,9 @@ impl Workspace {
 
     pub(crate) fn render_trash_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let (id, pos, corner) = self.trash_menu.clone()?;
+        let open_id = id.clone();
+        let history_id = id.clone();
+        let folder = self.store.trash_meta(&id).is_some_and(|m| m.folder.is_some());
         // The context menu: 32pt rows on the quiet hover fill.
         let item = |key: &'static str, ic: &'static str, label: &'static str, color: Hsla| {
             let g = SharedString::from(key);
@@ -205,6 +277,14 @@ impl Workspace {
                 w.trash_menu = None;
                 cx.notify();
             }))
+            .child(item("tm-open", "folder", crate::settings::tr("打开", "Open"), Theme::text()).on_click(cx.listener(move |w, _, window, cx| {
+                w.trash_menu = None;
+                w.open(&open_id, window, cx);
+            })))
+            .when(!folder, |d| d.child(item("tm-history", "restore", crate::settings::tr("版本历史", "Version history"), Theme::text()).on_click(cx.listener(move |w, _, window, cx| {
+                w.trash_menu = None;
+                if w.try_open(&history_id, window, cx) { w.open_history(&history_id, window, cx); }
+            }))))
             .child(item("tm-restore", "restore", crate::settings::text("恢复"), Theme::text()).on_click(cx.listener(move |w, _, _, cx| {
                 w.trash_menu = None;
                 w.confirm = Some(Confirm::Restore(id.clone()));
@@ -217,7 +297,7 @@ impl Workspace {
         )
     }
 
-    fn restore_doc(&mut self, id: &str, cx: &mut Context<Self>) {
+    fn restore_doc(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         let file_before = self.store.track_file_changes();
         match self.store.restore(id) {
             Ok(moved) => {
@@ -233,7 +313,10 @@ impl Workspace {
         self.entries = self.store.list();
         self.sort();
         self.sync_sub_pages(cx);
-        self.trash = self.store.list_trash();
+        if self.trash_folder.as_ref().is_some_and(|id| self.store.trash_meta(id).is_none()) { self.trash_folder = None; }
+        self.trash = self.store.list_trash_in(self.trash_folder.as_deref());
+        if self.view == crate::app::View::Doc && self.trash_document && self.current.as_ref().is_some_and(|id| self.store.trash_meta(id).is_none())
+            && let Some(current) = self.current.clone() { self.open(&current, window, cx); }
         self.show_store_warnings(cx);
         self.remember_files(file_before, crate::settings::tr("恢复", "Restore"));
     }
@@ -385,7 +468,7 @@ impl Workspace {
                                 }
                                 w.delete_docs(&ids, window, cx);
                             }
-                            Confirm::Restore(id) => w.restore_doc(&id, cx),
+                            Confirm::Restore(id) => w.restore_doc(&id, window, cx),
                             Confirm::Refs { show, no_ask } => {
                                 if no_ask {
                                     let mut s = w.store.settings();

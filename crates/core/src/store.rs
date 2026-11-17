@@ -215,6 +215,7 @@ pub struct Trashed {
 #[derive(Clone, Debug)]
 pub struct TrashEntry {
     pub id: String,
+    pub meta: Meta,
     pub title: String,
     pub icon: Option<String>,
     pub deleted: u64,
@@ -871,7 +872,7 @@ impl Store {
         }
     }
 
-    pub fn is_markdown(&self, id: &str) -> bool { self.index.get(id).is_some_and(|m| m.markdown) }
+    pub fn is_markdown(&self, id: &str) -> bool { self.index.get(id).or_else(|| self.trash.get(id).map(|t| &t.meta)).is_some_and(|m| m.markdown) }
 
     /// The folder of a 本机文件, which its images are relative to.
     fn base(&self, id: &str) -> Option<PathBuf> {
@@ -884,7 +885,7 @@ impl Store {
 
     /// A Markdown document's title: its file name.
     fn markdown_title(&self, id: &str) -> String {
-        let Some(m) = self.index.get(id) else { return String::new() };
+        let Some(m) = self.index.get(id).or_else(|| self.trash.get(id).map(|t| &t.meta)) else { return String::new() };
         match &m.path {
             Some(p) => std::path::Path::new(p).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(),
             None => m.name.clone().unwrap_or_default(),
@@ -1441,6 +1442,7 @@ impl Store {
 
     /// `save_now`, a new id going into folder `parent`.
     fn save_in(&mut self, id: &str, doc: &Document, parent: Option<&str>) -> Result<Meta> {
+        anyhow::ensure!(!self.trash.contains_key(id), "回收站文档恢复后才能编辑");
         let new = !self.index.contains_key(id);
         if new {
             let t = now();
@@ -1746,6 +1748,22 @@ impl Store {
     /// ride along). Files trashed by older versions are adopted and kept
     /// until restored, regardless of deletion time.
     pub fn list_trash(&mut self) -> Vec<TrashEntry> {
+        self.list_trash_in(None)
+    }
+
+    pub fn trash_meta(&self, id: &str) -> Option<Meta> { self.trash.get(id).map(|t| t.meta.clone()) }
+
+    /// Read without restoring the document or establishing an editable baseline.
+    pub fn load_trash(&self, id: &str) -> Result<Document> {
+        let meta = self.trash.get(id).context("回收站中没有这篇文档")?;
+        anyhow::ensure!(meta.meta.folder.is_none(), "文件夹不能作为文档打开");
+        let mut doc = self.parse_doc(id, &std::fs::read_to_string(self.trash_path(id))?)?;
+        self.manifest_title(id, &mut doc);
+        Ok(doc)
+    }
+
+    /// Root deletions, or the immediate children of a deleted folder.
+    pub fn list_trash_in(&mut self, parent: Option<&str>) -> Vec<TrashEntry> {
         let _lock = match self.begin_write() {
             Ok(lock) => Some(lock),
             Err(e) => { self.warnings.push(format!("无法锁定文档库：{e}")); None }
@@ -1802,11 +1820,15 @@ impl Store {
         let mut out: Vec<TrashEntry> = self
             .trash
             .iter()
-            .filter(|(_, t)| t.root.as_ref().is_none_or(|r| !self.trash.contains_key(r)))
+            .filter(|(_, t)| match parent {
+                Some(p) => t.meta.parent.as_deref() == Some(p),
+                None => t.root.as_ref().is_none_or(|r| !self.trash.contains_key(r)),
+            })
             .map(|(id, t)| {
                 let doc = if t.meta.markdown || t.meta.folder.is_some() { Document::default() } else { std::fs::read_to_string(self.trash_path(id)).ok().and_then(|x| docxml::parse(&x).ok()).unwrap_or_default() };
                 TrashEntry {
                     id: id.clone(),
+                    meta: t.meta.clone(),
                     title: t.meta.folder.clone().or_else(|| t.meta.name.clone()).unwrap_or_else(|| doc.title.text.clone()),
                     icon: doc.icon.clone(),
                     deleted: t.deleted,
@@ -1949,14 +1971,14 @@ impl Store {
     }
 
     /// 版本历史: snapshots of one document, newest first.
-    pub fn versions(&self, id: &str) -> Vec<crate::versions::Version> { crate::versions::list(&self.history_base(), id, false) }
+    pub fn versions(&self, id: &str) -> Vec<crate::versions::Version> { crate::versions::list(&self.history_base(), id, self.trash.contains_key(id)) }
 
     pub fn version_text(&self, id: &str, name: &str) -> Result<String> {
         if let Some(commit) = git_store::git_commit_name(name) { return crate::git::LibraryRepo::open(&self.root)?.revision(commit, id); }
-        crate::versions::read(&self.history_base(), id, name, false)
+        crate::versions::read(&self.history_base(), id, name, self.trash.contains_key(id))
     }
 
-    pub fn delete_version(&self, id: &str, name: &str) -> Result<()> { crate::versions::remove(&self.history_base(), id, name, false) }
+    pub fn delete_version(&self, id: &str, name: &str) -> Result<()> { crate::versions::remove(&self.history_base(), id, name, self.trash.contains_key(id)) }
 
     /// Parse a snapshot into a document, for 另存副本.
     pub fn version_document(&self, id: &str, name: &str) -> Result<Document> {
@@ -1979,7 +2001,7 @@ impl Store {
         let a_ms = git_store::version_ms(name);
         let (b, b_ms) = match baseline {
             Some(other) => (self.version_text(id, other)?, git_store::version_ms(other)),
-            None => (std::fs::read_to_string(self.path(id))?, u64::MAX),
+            None => (std::fs::read_to_string(if self.trash.contains_key(id) { self.trash_path(id) } else { self.path(id) })?, u64::MAX),
         };
         let (old, new) = if a_ms < b_ms { (a.as_str(), b.as_str()) } else { (b.as_str(), a.as_str()) };
         Ok(crate::diff::diff(old, new, self.is_markdown(id)))
@@ -1987,12 +2009,13 @@ impl Store {
 
     /// 命名版本: set or clear a snapshot's name.
     pub fn set_version_label(&self, id: &str, name: &str, label: Option<&str>) -> Result<()> {
-        crate::versions::set_label(&self.history_base(), id, name, label, false)
+        crate::versions::set_label(&self.history_base(), id, name, label, self.trash.contains_key(id))
     }
 
     /// Restore never loses the present: the current on-disk text becomes a
     /// snapshot first, then the chosen version is parsed for `save` to write.
     pub fn restore_version(&self, id: &str, name: &str) -> Result<Document> {
+        anyhow::ensure!(!self.trash.contains_key(id), "回收站文档恢复后才能编辑");
         let text = self.version_text(id, name)?;
         let current = std::fs::read_to_string(self.path(id)).unwrap_or_default();
         let ext = if self.is_markdown(id) { "md" } else { "xml" };
@@ -2005,6 +2028,7 @@ impl Store {
     /// `false` means the text matched the newest snapshot, so nothing was
     /// written — the caller can say so instead of silently doing nothing.
     pub fn save_version_now(&self, id: &str) -> Result<bool> {
+        anyhow::ensure!(!self.trash.contains_key(id), "回收站文档恢复后才能编辑");
         let text = std::fs::read_to_string(self.path(id))?;
         let ext = if self.is_markdown(id) { "md" } else { "xml" };
         let before = self.versions(id).len();
@@ -2195,7 +2219,7 @@ mod tests {
         s.save(&id, &restored).unwrap();
         assert!(s.versions(&id).len() >= 2);
         s.delete(&id, None).unwrap();
-        assert!(s.versions(&id).is_empty());
+        assert!(!s.versions(&id).is_empty());
         assert!(lib.0.join(".quiet").join("history-trash").join(&id).is_dir());
         s.restore(&id).unwrap();
         assert!(!s.versions(&id).is_empty());
