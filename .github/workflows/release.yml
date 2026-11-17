@@ -45,7 +45,6 @@ jobs:
         run: |
           python3 - <<'PY'
           import importlib.util, os, subprocess
-          from pathlib import Path
           spec = importlib.util.spec_from_file_location('release', 'scripts/publish-github-release.py')
           release = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(release)
@@ -61,8 +60,6 @@ jobs:
               raise SystemExit('The local release tag must point at main HEAD')
           if release.run('gh', 'api', f'repos/{release.REPO}/commits/{tag}', '--jq', '.sha', capture=True) != head:
               raise SystemExit('Push the matching release tag before running this workflow')
-          if not Path(f'docs/releases/{version}.md').is_file():
-              raise SystemExit(f'Missing docs/releases/{version}.md')
           exists = subprocess.run(['gh', 'release', 'view', tag, '--repo', release.REPO], capture_output=True)
           if exists.returncode == 0:
               raise SystemExit('This release already exists; assets are never overwritten')
@@ -312,7 +309,10 @@ jobs:
               if any(len(matches) != 1 for matches in paths):
                   raise SystemExit('Expected exactly one package for each platform')
               command = [sys.executable, 'scripts/publish-github-release.py', '--publish', 'dist/github',
-                         '--key', str(key), '--notes', f'docs/releases/{version}.md']
+                         '--key', str(key)]
+              notes = Path(f'docs/releases/{version}.md')
+              if notes.is_file():
+                  command.extend(['--notes', str(notes)])
               if os.environ['PUBLISH_LATEST'] != 'true':
                   command.append('--draft')
               subprocess.run(command + [str(matches[0]) for matches in paths], check=True)

@@ -63,6 +63,22 @@ class ReleaseTests(unittest.TestCase):
             release.verify_signature(self.packages[0], signature, self.root / "key.pub")
         run.assert_not_called()
 
+    def test_publish_cli_accepts_optional_notes(self):
+        notes = self.root / "notes.md"
+        notes.write_text("Release notes")
+        output = self.root / "prepared"
+        for selected in [None, notes]:
+            command = ["publish-github-release.py", "--publish", str(output), "--draft"]
+            if selected is not None:
+                command.extend(["--notes", str(selected)])
+            command.extend(map(str, self.packages))
+            with patch.object(sys, "argv", command), patch.object(release, "prepare", return_value=[]) as prepare, \
+                    patch.object(release, "publish") as publish:
+                release.main()
+            prepare.assert_called_once()
+            publish.assert_called_once_with(output.resolve(), [], self.version,
+                                            selected.resolve() if selected is not None else None, draft=True)
+
     def test_missing_or_corrupt_uploaded_asset_keeps_release_draft(self):
         output = self.root / "assets"
         output.mkdir()
@@ -120,6 +136,7 @@ class ReleaseTests(unittest.TestCase):
             (output / (source.name + ".sha256")).write_text(item["sha256"])
             (output / f"update-{platform}.json").write_text(json.dumps({"version": self.version}))
         for draft in [True, False]:
+            notes = self.root / "notes.md" if draft else None
             commands = []
 
             def run(*args, capture=False):
@@ -138,10 +155,15 @@ class ReleaseTests(unittest.TestCase):
             with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
                     patch.object(release, "public_key", return_value=self.root / "key.pub"), patch.object(release, "verify_signature") as verify, \
                     patch.object(release, "https_download", side_effect=download) as public_download:
-                release.publish(output, sorted(output.iterdir()), self.version, self.root / "notes.md", draft=draft)
+                release.publish(output, sorted(output.iterdir()), self.version, notes, draft=draft)
             self.assertEqual(verify.call_count, 4 if draft else 8)
             self.assertEqual(public_download.call_count, 0 if draft else 20)
             self.assertEqual(any(c[:3] == ("gh", "release", "edit") for c in commands), not draft)
+            create = next(c for c in commands if c[:3] == ("gh", "release", "create"))
+            self.assertEqual("--generate-notes" in create, notes is None)
+            self.assertEqual("--notes-file" in create, notes is not None)
+            if notes is not None:
+                self.assertEqual(create[create.index("--notes-file") + 1], str(notes))
 
     @unittest.skipUnless(shutil.which("minisign"), "minisign is required for the encrypted-key integration test")
     def test_encrypted_key_signs_all_platforms_without_a_terminal(self):

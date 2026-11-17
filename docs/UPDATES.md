@@ -123,7 +123,7 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 
 `--dry-run` 不签名、不写文件、不联网；`--prepare` 只在本地生成 16 项资产（每个平台的包、SHA-256、Minisign 签名和清单），没有私钥时也可使用包旁已经存在且验签通过的 `.minisig`。已有输出目录一律拒绝覆盖。私钥从命令指定路径或 `MINISIGN_KEY` 读取，不复制进产物。
 
-如选择本地手动发布，应先停用 Actions Release 工作流，避免推送 tag 后与自动发布争用同一版本。发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交公钥和源码、创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`，加上 `--notes docs/releases/<version>.md`。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
+如选择本地手动发布，应先停用 Actions Release 工作流，避免推送 tag 后与自动发布争用同一版本。发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交公钥和源码、创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`；可选加上 `--notes docs/releases/<version>.md` 使用自定义发布说明，省略时由 GitHub 自动生成。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
 
 ## GitHub Actions Release
 
@@ -155,7 +155,7 @@ gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
 
 一次新版本的操作顺序：
 
-1. 用 `python3 scripts/version.py bump-patch` 递增版本（也支持 `bump-minor` / `bump-major`），脚本同步 `VERSION`、两个 `Cargo.toml` 和 `Cargo.lock`。更新 `src/changelog.rs` 并创建 `docs/releases/<version>.md`，完成检查后按正常 Git 流程提交、推送到 `main`。**要测试更新，新版本必须高于已安装版本。**
+1. 用 `python3 scripts/version.py bump-patch` 递增版本（也支持 `bump-minor` / `bump-major`），脚本同步 `VERSION`、两个 `Cargo.toml` 和 `Cargo.lock`。更新 `src/changelog.rs`；`docs/releases/<version>.md` 为可选的自定义发布说明，存在时优先使用，不存在时由 GitHub 自动生成。完成检查后按正常 Git 流程提交、推送到 `main`。**要测试更新，新版本必须高于已安装版本。**
 2. 为当前 `main` 提交创建并推送匹配的 tag（示例版本号需替换）：
 
    ```sh
@@ -171,7 +171,7 @@ gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
 gh workflow run release.yml --repo iuxt/quiet-md --ref main -f tag=v0.2.0 -f publish=true
 ```
 
-预检要求 tag 指向当前 `main` 提交、tag 严格为与两个 `Cargo.toml` 一致的 `vMAJOR.MINOR.PATCH`、发布说明存在、公钥有效、所需 Secrets 完整、Minisign 私钥实际签名能通过仓库公钥验签；失败会在昂贵的平台构建前结束。三个平台任务固定检出预检得到的同一提交，分别完成完整检查、打包与平台签名；macOS 在同一个 runner 顺序构建两种架构并公证。只有所有平台成功后才汇总生成 16 项更新资产，创建 draft、重新下载并逐项校验。tag 推送自动发布为 Latest；手动运行则按 `publish` 的值保留 draft 或发布为 Latest。只有最终汇总任务具备 Release 写权限。
+预检要求 tag 指向当前 `main` 提交、tag 严格为与两个 `Cargo.toml` 一致的 `vMAJOR.MINOR.PATCH`、公钥有效、所需 Secrets 完整、Minisign 私钥实际签名能通过仓库公钥验签；失败会在昂贵的平台构建前结束。三个平台任务固定检出预检得到的同一提交，分别完成完整检查、打包与平台签名；macOS 在同一个 runner 顺序构建两种架构并公证。只有所有平台成功后才汇总生成 16 项更新资产，创建 draft、重新下载并逐项校验。tag 推送自动发布为 Latest；手动运行则按 `publish` 的值保留 draft 或发布为 Latest。只有最终汇总任务具备 Release 写权限。
 
 所有发布使用同一个并发组，不取消已经开始的签名或上传；已有 Release 和资产拒绝覆盖。草稿验证后如要在同版本运行正式发布，先由维护者检查并删除已有草稿，再重新触发；工作流不会自动删除它，也不会替换已经公开的版本。构建产物保留 7 天，最终更新资产额外保留 14 天；实际 Release 资源长期保留。
 

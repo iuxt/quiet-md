@@ -153,7 +153,7 @@ def https_download(url, path, limit):
             stream.write(chunk)
 
 
-def publish(output, assets, release, notes, draft=False):
+def publish(output, assets, release, notes=None, draft=False):
     if shutil.which("gh") is None:
         raise ValueError("Install and authenticate gh before publishing")
     if run("git", "status", "--porcelain", capture=True):
@@ -166,7 +166,8 @@ def publish(output, assets, release, notes, draft=False):
         raise ValueError("The remote release tag must also point at HEAD")
     run(sys.executable, ROOT / "scripts/check.py")
     # Do not update/overwrite an existing release or its assets.
-    run("gh", "release", "create", tag, "--repo", REPO, "--verify-tag", "--draft", "--title", tag, "--notes-file", notes)
+    notes_args = ["--notes-file", notes] if notes is not None else ["--generate-notes"]
+    run("gh", "release", "create", tag, "--repo", REPO, "--verify-tag", "--draft", "--title", tag, *notes_args)
     run("gh", "release", "upload", tag, "--repo", REPO, *assets)
     with tempfile.TemporaryDirectory(prefix="quiet-release-check-") as temp:
         downloaded = Path(temp)
@@ -200,7 +201,7 @@ def main():
     mode.add_argument("--publish", type=Path, metavar="NEW_DIRECTORY", help="Prepare assets, upload a verified draft, then publish")
     parser.add_argument("--draft", action="store_true", help="With --publish, leave the verified release as a draft")
     parser.add_argument("--key", type=Path, default=Path(os.environ["MINISIGN_KEY"]) if "MINISIGN_KEY" in os.environ else None)
-    parser.add_argument("--notes", type=Path, help="Release notes; required for --publish")
+    parser.add_argument("--notes", type=Path, help="Release notes file; omit to generate notes with GitHub")
     args = parser.parse_args()
     if args.draft and not args.publish:
         raise ValueError("--draft requires --publish")
@@ -209,13 +210,13 @@ def main():
     if args.dry_run:
         print(json.dumps({p: {k: str(v) if isinstance(v, Path) else v for k, v in item.items()} for p, item in items.items()}, indent=2))
         return
-    if args.publish and (args.notes is None or not args.notes.is_file()):
-        raise ValueError("--publish requires --notes pointing to a release-notes file")
+    if args.publish and args.notes is not None and not args.notes.is_file():
+        raise ValueError("--notes must point to a release-notes file")
     output = (args.publish or args.prepare).resolve()
     assets = prepare(items, output, args.key.expanduser().resolve() if args.key else None)
     print(f"Prepared {len(assets)} assets in {output}")
     if args.publish:
-        publish(output, assets, release, args.notes.resolve(), draft=args.draft)
+        publish(output, assets, release, args.notes.resolve() if args.notes is not None else None, draft=args.draft)
 
 
 if __name__ == "__main__":
