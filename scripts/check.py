@@ -12,6 +12,7 @@ def cargo(*args, env=None):
 subprocess.run([sys.executable, "scripts/version.py"], check=True)
 subprocess.run([sys.executable, "scripts/test_version.py"], check=True)
 subprocess.run([sys.executable, "scripts/test_publish_github_release.py"], check=True)
+subprocess.run([sys.executable, "scripts/test_sign_local_macos.py"], check=True)
 cargo("test", "--release", "--workspace", "--locked")
 cargo("test", "--release", "--locked", "-p", "fdl_core", "library_round_trips", "--", "--ignored",
       env={**os.environ, "FDL_ROUNDTRIP_DIR": str(Path("shared-mock/library").resolve())})

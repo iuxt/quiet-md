@@ -13,7 +13,7 @@ pub(crate) struct GitPanel {
 }
 
 #[derive(Clone)]
-pub(crate) enum Action { Enable, Refresh, Configure, Commit, Push, Pull, Clone(std::path::PathBuf) }
+pub(crate) enum Action { Enable, Refresh, Configure, Commit, Push, Pull, Stage(String), Unstage(String), Discard(String), Clone(std::path::PathBuf) }
 
 impl Workspace {
     pub(crate) fn init_git_panel(&mut self, cx: &mut Context<Self>) {
@@ -58,7 +58,7 @@ impl Workspace {
         let message = panel.message.read(cx).text.clone();
         let Some(guard) = self.store.begin_file_task() else { return };
         let mut writer = self.store.tree_writer();
-        let reload = matches!(action, Action::Enable | Action::Pull);
+        let reload = matches!(action, Action::Enable | Action::Pull | Action::Discard(_));
         let task = cx.background_executor().spawn(async move {
             let result = (|| -> anyhow::Result<_> {
                 if let Action::Clone(path) = &action {
@@ -77,6 +77,9 @@ impl Workspace {
                     },
                     Action::Push => { repo.push(&auth)?; tr("已推送到远端", "Pushed to remote").to_string() },
                     Action::Pull => { writer.git_pull(&auth)?; tr("已与远端同步", "Up to date with remote").to_string() },
+                    Action::Stage(path) => { writer.git_stage(&path, true)?; String::new() },
+                    Action::Unstage(path) => { writer.git_stage(&path, false)?; String::new() },
+                    Action::Discard(path) => { writer.git_discard(&path)?; tr("已丢弃未暂存的修改", "Unstaged changes discarded").to_string() },
                     _ => String::new(),
                 };
                 Ok((Some(repo.status()?), notice, None))
@@ -122,7 +125,10 @@ impl Workspace {
                 if let Ok(doc) = self.store.load_for_edit(&id, false) && let Some(editor) = &self.editor {
                     editor.update(cx, |e, cx| e.receive_document(&Core::new(doc), cx));
                 }
-            } else { self.current = None; self.editor = None; self.show_view(crate::app::View::Home, cx); }
+            } else {
+                self.current = None; self.editor = None;
+                if self.view != crate::app::View::Git { self.show_view(crate::app::View::Home, cx); }
+            }
         }
         cx.notify();
     }

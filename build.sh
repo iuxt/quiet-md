@@ -21,7 +21,7 @@ trap 'exit 143' TERM
 
 echo "== 打包本机应用"
 out=${RELEASE_OUT:-$PWD/dist-release}
-RELEASE_OUT="$out" SIGNING_IDENTITY="${SIGNING_IDENTITY:--}" scripts/release.sh
+RELEASE_OUT="$out" SIGNING_IDENTITY="${SIGNING_IDENTITY:-local}" scripts/release.sh
 app="$out/quiet.md.app"
 [ -x "$app/Contents/MacOS/quiet_md" ] || { echo "build.sh: 应用包中缺少可执行文件。" >&2; exit 1; }
 

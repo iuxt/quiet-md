@@ -25,7 +25,24 @@ impl Store {
     }
     pub fn git_commit(&mut self, message: &str) -> Result<Option<String>> {
         let _lock = self.begin_write()?;
-        crate::git::LibraryRepo::open(&self.root)?.commit(message)
+        let repo = crate::git::LibraryRepo::open(&self.root)?;
+        if repo.status()?.changes.iter().any(|c| c.staged) { repo.commit_staged(message) } else { repo.commit(message) }
+    }
+
+    pub fn git_stage(&mut self, path: &str, stage: bool) -> Result<()> {
+        let _lock = self.begin_write()?;
+        let repo = crate::git::LibraryRepo::open(&self.root)?;
+        if stage { repo.stage(path) } else { repo.unstage(path) }
+    }
+
+    pub fn git_discard(&mut self, path: &str) -> Result<()> {
+        let lock = self.begin_write()?;
+        crate::git::LibraryRepo::open(&self.root)?.discard(path)?;
+        self.parsed.clear();
+        self.loaded.borrow_mut().clear(); self.loaded_titles.borrow_mut().clear();
+        drop(lock);
+        let _lock = self.begin_write()?;
+        Ok(())
     }
 
     pub fn git_versions(&self, id: &str) -> Result<Vec<crate::versions::Version>> {

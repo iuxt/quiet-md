@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zlib
 
 here = Path(__file__).resolve().parent
 seed = runpy.run_path(str(here / "git_sync.py"))
@@ -46,19 +47,19 @@ click 1205 150
 move 1220 800
 wait 400
 shot source-diff
-click 380 295
+click 380 347
 move 1220 800
 wait 500
 shot added-markdown
-click 380 350
+click 380 427
 move 1220 800
 wait 500
 shot metadata-diff
-click 380 180
+click 380 187
 move 1220 800
 wait 500
 shot binary-change
-click 380 235
+click 380 267
 move 1220 800
 wait 500
 type SHOULD_NOT_WRITE
@@ -84,3 +85,86 @@ for name in ("text-diff", "source-diff", "added-markdown", "metadata-diff", "bin
     assert (run / f"{name}.png").is_file(), name
 assert "panicked" not in (run / "log").read_text()
 print(f"Git changes: readonly diff, text/source, Markdown, metadata, binary, narrow window and commit verified; screenshots: {run}")
+
+def replay(name, steps):
+    script = work / f"{name}.txt"
+    script.write_text("resize 1280 860\nwait 1400\nmove 1220 800\nclick 110 98\nwait 900\n" + steps)
+    target = work / name
+    subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), str(target)],
+                   check=True, timeout=60, env=dict(os.environ, FDL_NOBLINK="1"))
+    assert "panicked" not in (target / "log").read_text()
+    return target
+
+def object_bytes(repo, oid):
+    return zlib.decompress((repo / "objects" / oid[:2] / oid[2:]).read_bytes()).split(b"\0", 1)[1]
+
+def committed_files(repo):
+    commit = (repo / "refs/heads/main").read_text().strip()
+    tree = object_bytes(repo, commit).splitlines()[0].split()[1].decode()
+    def walk(oid, prefix=""):
+        data = object_bytes(repo, oid)
+        files = {}
+        while data:
+            header, data = data.split(b"\0", 1)
+            mode, name = header.split(b" ", 1)
+            child, data = data[:20].hex(), data[20:]
+            path = prefix + name.decode()
+            if mode == b"40000":
+                files.update(walk(child, path + "/"))
+            else:
+                files[path] = object_bytes(repo, child)
+        return files
+    return walk(tree)
+
+selected = replay("stage-selected", """click 476 267
+wait 700
+move 1220 800
+shot staged
+click 476 267
+wait 700
+move 1220 800
+shot unstaged
+click 476 267
+wait 700
+click 390 788
+type Commit selected file
+click 400 832
+move 1220 800
+wait 1200
+shot selected-committed
+""")
+files = committed_files(selected / "lib/.git")
+assert files[f"notes/{doc_id}.xml"].decode() == body, "The + button must stage the selected body"
+assert f"notes/{new['filename']}" not in files, "Unstaged Markdown must stay uncommitted"
+assert ".assets/attachment.bin" not in files, "Unstaged attachment must stay uncommitted"
+assert len(json.loads(files["quiet.json"])["notes"]) == 1, "Unstaged metadata must stay uncommitted"
+print(f"Git staging: +, unstage and selected-file commit verified; screenshots: {selected}")
+
+discarded = replay("discard-tracked", """click 504 267
+move 1220 800
+wait 300
+shot discard-confirmation
+click 690 495
+wait 200
+click 504 267
+wait 200
+click 774 495
+move 1220 800
+wait 900
+shot discarded
+""")
+assert (discarded / f"lib/notes/{doc_id}.xml").read_text() == seed["body"], "Discard must restore the indexed body"
+assert (discarded / "lib/.git/refs/heads/main").read_text() == head_before, "Discard must not change HEAD"
+assert (discarded / f"lib/notes/{new['filename']}").is_file(), "Discard must leave other files alone"
+
+removed = replay("discard-new-note", """click 504 347
+wait 300
+click 774 495
+move 1220 800
+wait 900
+shot removed-new-note
+""")
+assert not (removed / f"lib/notes/{new['filename']}").exists(), "Discard must delete an untracked note"
+assert len(json.loads((removed / "lib/quiet.json").read_text())["notes"]) == 1, "Discard must remove the new manifest entry"
+assert (removed / f"lib/notes/{doc_id}.xml").read_text() == body, "Discard must preserve other edits"
+print(f"Git discard: confirmation, tracked restore and new-note removal verified; screenshots: {discarded}, {removed}")

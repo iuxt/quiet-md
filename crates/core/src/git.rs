@@ -7,6 +7,7 @@ use std::{collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}};
 mod lfs;
 mod transport;
 mod changes;
+mod staging;
 pub use changes::ChangePreview;
 pub use lfs::Pointer;
 #[cfg(test)] mod tests;
@@ -29,7 +30,7 @@ impl Auth {
 #[derive(Clone, Default)]
 pub struct Config { pub name: String, pub email: String, pub remote: String, pub branch: String, pub lfs_url: String, pub ssh_key: String, pub lfs_ca_info: String }
 #[derive(Clone, Debug)]
-pub struct Change { pub path: String, pub kind: char }
+pub struct Change { pub path: String, pub kind: char, pub staged: bool, pub unstaged: bool }
 #[derive(Clone, Debug, Default)]
 pub struct Status { pub branch: String, pub remote: String, pub head: Option<String>, pub changes: Vec<Change> }
 #[derive(Clone, Debug)]
@@ -152,7 +153,9 @@ impl LibraryRepo {
         let mut index = Index::new()?;
         let lfs = lfs::Lfs::new(self.repo.path());
         for path in self.files()? {
-            let bytes = crate::store::read_bounded(&safe_path(&self.root, &path)?, crate::store::EXPORT_FILE_LIMIT)?;
+            let file = safe_path(&self.root, &path)?;
+            if !file.exists() { continue }
+            let bytes = crate::store::read_bounded(&file, crate::store::EXPORT_FILE_LIMIT)?;
             let content = if path.starts_with(".assets/") {
                 let pointer = if let Some(p) = Pointer::parse(&bytes)? {
                     lfs.read(&p).context("工作区存在未下载的 LFS 指针，未提交")?; p
@@ -171,11 +174,17 @@ impl LibraryRepo {
         let head = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
         let before = head.as_ref().map(|c| c.tree()).transpose()?;
         let after = self.repo.find_tree(self.working_tree(false)?)?;
-        let diff = self.repo.diff_tree_to_tree(before.as_ref(), Some(&after), None)?;
-        let changes = diff.deltas().map(|d| Change {
-            path: d.new_file().path().or_else(|| d.old_file().path()).unwrap_or(Path::new("")).to_string_lossy().into_owned(),
-            kind: match d.status() { git2::Delta::Added => 'A', git2::Delta::Deleted => 'D', _ => 'M' },
-        }).collect();
+        let index = self.index_tree()?;
+        let mut changes = BTreeMap::new();
+        for (staged, from, to) in [(true, before.as_ref(), &index), (false, Some(&index), &after)] {
+            for delta in self.repo.diff_tree_to_tree(from, Some(to), None)?.deltas() {
+                let path = delta.new_file().path().or_else(|| delta.old_file().path()).context("Git 变更缺少路径")?.to_string_lossy().into_owned();
+                let change = changes.entry(path.clone()).or_insert(Change { path, kind: 'M', staged: false, unstaged: false });
+                change.kind = match delta.status() { git2::Delta::Added => 'A', git2::Delta::Deleted => 'D', _ => 'M' };
+                if staged { change.staged = true; } else { change.unstaged = true; }
+            }
+        }
+        let changes = changes.into_values().collect();
         Ok(Status { branch: config.branch, remote: config.remote, head: head.map(|c| c.id().to_string()), changes })
     }
 

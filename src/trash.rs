@@ -354,6 +354,11 @@ impl Workspace {
                 true,
             ),
             Confirm::Restore(_) => (crate::settings::text("确认恢复？").to_string(), crate::settings::text("确认后将恢复至原位置").to_string(), crate::settings::text("恢复"), false),
+            Confirm::GitDiscard(path) => (
+                crate::settings::tr("丢弃这个文件的修改？", "Discard changes to this file?").to_string(),
+                crate::localized_format!("将丢弃 {} 未暂存的修改，已暂存的内容会保留。新增文件会被删除，新增文章也会从清单移除。此操作无法撤销。", "Unstaged changes to {} will be discarded; staged content is kept. New files are deleted and new notes are removed from the manifest. This cannot be undone.", path),
+                crate::settings::tr("丢弃修改", "Discard changes"), true,
+            ),
             Confirm::Refs { show: false, .. } => (
                 crate::settings::text("是否隐藏引用列表？").to_string(),
                 crate::settings::text("选择隐藏后，协作者将无法查看本文的引用列表。如需重新显示，可点击文档右上角的更多按钮“...”，打开“显示引用列表”开关。").to_string(),
@@ -469,6 +474,7 @@ impl Workspace {
                                 w.delete_docs(&ids, window, cx);
                             }
                             Confirm::Restore(id) => w.restore_doc(&id, window, cx),
+                            Confirm::GitDiscard(path) => w.git_action(crate::git::Action::Discard(path), window, cx),
                             Confirm::Refs { show, no_ask } => {
                                 if no_ask {
                                     let mut s = w.store.settings();

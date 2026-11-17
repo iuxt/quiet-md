@@ -17,6 +17,86 @@ fn configure(repo: &LibraryRepo, remote: &Path) {
 }
 
 #[test]
+fn staged_commits_keep_the_snapshot_and_leave_other_changes_uncommitted() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let first = store.create_from(&doc("First")).unwrap(); let second = store.create_from(&doc("Second")).unwrap();
+    let a = format!("notes/{first}.xml"); let b = format!("notes/{second}.xml");
+    let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
+    let original = std::fs::read_to_string(lib.0.join(&a)).unwrap();
+    let staged = original.replace("First", "Staged");
+    std::fs::write(lib.0.join(&a), &staged).unwrap(); store.git_stage(&a, true).unwrap();
+    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == a && c.staged && !c.unstaged));
+    std::fs::write(lib.0.join(&a), original.replace("First", "Later")).unwrap();
+    let other = std::fs::read_to_string(lib.0.join(&b)).unwrap().replace("Second", "Unstaged");
+    std::fs::write(lib.0.join(&b), &other).unwrap();
+    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == a && c.staged && c.unstaged));
+    let commit = store.git_commit("selected").unwrap().unwrap();
+    assert_eq!(repo.revision(&commit, &first).unwrap(), staged);
+    assert!(repo.revision(&commit, &second).unwrap().contains("Second"));
+    assert_eq!(repo.status().unwrap().changes.len(), 2);
+    store.git_discard(&a).unwrap();
+    assert_eq!(std::fs::read_to_string(lib.0.join(&a)).unwrap(), staged);
+    assert_eq!(std::fs::read_to_string(lib.0.join(&b)).unwrap(), other);
+    store.git_stage(&b, true).unwrap(); store.git_stage(&b, false).unwrap();
+    assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged));
+    // A staged change still exists when the worktree has been put back to HEAD.
+    store.git_stage(&b, true).unwrap();
+    let head = repo.repo.head().unwrap().peel_to_commit().unwrap().id().to_string();
+    std::fs::write(lib.0.join(&b), repo.revision(&head, &second).unwrap()).unwrap();
+    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == b && c.staged && c.unstaged));
+    store.git_discard(&b).unwrap();
+    assert_eq!(std::fs::read_to_string(lib.0.join(&b)).unwrap(), other);
+    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == b && c.staged && !c.unstaged));
+}
+
+#[test]
+fn discard_restores_deleted_files_and_removes_new_notes_without_broken_metadata() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let id = store.create_from(&doc("Keep")).unwrap(); let path = format!("notes/{id}.xml");
+    let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
+    let original = std::fs::read(lib.0.join(&path)).unwrap();
+    std::fs::remove_file(lib.0.join(&path)).unwrap();
+    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == path && c.kind == 'D'));
+    store.git_discard(&path).unwrap();
+    assert_eq!(std::fs::read(lib.0.join(&path)).unwrap(), original);
+    let added = store.create_from(&doc("Remove")).unwrap(); let new_path = format!("notes/{added}.xml");
+    assert!(store.git_discard(MANIFEST).is_err(), "Restoring metadata must not orphan a new note that the scanner would re-adopt");
+    store.git_discard(&new_path).unwrap();
+    assert!(!lib.0.join(&new_path).exists());
+    assert!(!store.list().iter().any(|e| e.id == added));
+    assert!(store.list().iter().any(|e| e.id == id));
+    std::fs::write(lib.0.join("unmanaged.txt"), "keep").unwrap();
+    for path in ["../outside", ".git/config", "unmanaged.txt"] {
+        assert!(store.git_discard(path).is_err()); assert!(store.git_stage(path, true).is_err());
+    }
+    assert_eq!(std::fs::read_to_string(lib.0.join("unmanaged.txt")).unwrap(), "keep");
+}
+
+#[test]
+fn staging_assets_uses_lfs_and_incomplete_staged_libraries_do_not_commit() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let id = store.create_from(&doc("First")).unwrap(); let path = format!("notes/{id}.xml");
+    let repo = lib.git(); configure(&repo, &Library::new().0);
+    repo.stage(&path).unwrap();
+    assert!(store.git_commit("incomplete").is_err()); assert!(repo.repo.head().is_err());
+    repo.unstage(&path).unwrap();
+    assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged));
+    repo.commit("initial").unwrap();
+    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
+    std::fs::write(lib.0.join(".assets/test.bin"), b"original image").unwrap();
+    repo.stage(".assets/test.bin").unwrap();
+    std::fs::write(lib.0.join(".assets/test.bin"), b"later image").unwrap();
+    store.git_discard(".assets/test.bin").unwrap();
+    assert_eq!(std::fs::read(lib.0.join(".assets/test.bin")).unwrap(), b"original image");
+    let commit = store.git_commit("asset").unwrap().unwrap();
+    let tree = repo.repo.find_commit(Oid::from_str(&commit).unwrap()).unwrap().tree().unwrap();
+    let blob = repo.repo.find_blob(tree.get_path(Path::new(".assets/test.bin")).unwrap().id()).unwrap();
+    assert!(Pointer::parse(blob.content()).unwrap().is_some());
+    std::fs::write(lib.0.join(".assets/new.bin"), b"new").unwrap();
+    store.git_discard(".assets/new.bin").unwrap(); assert!(!lib.0.join(".assets/new.bin").exists());
+}
+
+#[test]
 fn uuid_names_metadata_titles_links_and_trash_survive_reopen() {
     let lib = Library::new();
     std::fs::create_dir_all(lib.0.join(".quiet")).unwrap();

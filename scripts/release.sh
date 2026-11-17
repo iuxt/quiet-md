@@ -2,13 +2,15 @@
 # Build, sign, notarize and package this checkout; never launches the app.
 # MACOS_TARGET=x86_64-apple-darwin cross-compiles Intel on Apple Silicon.
 # SIGNING_IDENTITY=- creates an ad-hoc signed, unnotarized CI package only.
+# SIGNING_IDENTITY=local reuses a private local identity, without notarization.
 # RELEASE_OUT lets build.sh select the package directory before building.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${SIGNING_IDENTITY:?Set SIGNING_IDENTITY to your Developer ID Application identity}"
-if [ "$SIGNING_IDENTITY" != - ]; then
-  : "${NOTARY_PROFILE:?Set NOTARY_PROFILE to a notarytool keychain profile}"
-fi
+case "$SIGNING_IDENTITY" in
+  -|local) ;;
+  *) : "${NOTARY_PROFILE:?Set NOTARY_PROFILE to a notarytool keychain profile}" ;;
+esac
 export MACOSX_DEPLOYMENT_TARGET=13.0
 target=${MACOS_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}
 case "$target" in
@@ -70,16 +72,16 @@ cat > "$app/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 plutil -lint "$app/Contents/Info.plist"
-if [ "$SIGNING_IDENTITY" = - ]; then
-  codesign --force --sign - "$app"
-else
-  codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$app"
-fi
+case "$SIGNING_IDENTITY" in
+  local) python3 scripts/sign-local-macos.py "$app" ;;
+  -) codesign --force --sign - "$app" ;;
+  *) codesign --force --options runtime --timestamp --sign "$SIGNING_IDENTITY" "$app" ;;
+esac
 codesign --verify --deep --strict --verbose=2 "$app"
 suffix=
-if [ "$SIGNING_IDENTITY" = - ]; then
+if [ "$SIGNING_IDENTITY" = - ] || [ "$SIGNING_IDENTITY" = local ]; then
   suffix=-unsigned
-  echo "CI package only: ad-hoc signed, without notarization; do not publish."
+  echo "Local/CI package only: without notarization; do not publish."
 else
   ditto -c -k --keepParent "$app" "$out/notarization.zip"
   notary_args=(--keychain-profile "$NOTARY_PROFILE")

@@ -1,5 +1,5 @@
 //! Working-tree browser and read-only, line-level comparisons.
-use crate::{app::{View, Workspace}, git::Action, settings::tr, theme::{self, Theme}, ui::{self, TipExt, TitleBarExt}};
+use crate::{app::{View, Workspace}, git::Action, settings::tr, theme::{self, Theme}, ui::{self, TipExt}};
 use fdl_core::{diff::Kind, git::LibraryRepo, store::Store};
 use gpui::{prelude::FluentBuilder, *};
 
@@ -33,15 +33,12 @@ impl Workspace {
     }
 
     pub(crate) fn render_git(&self, cx: &mut Context<Self>) -> AnyElement {
-        let header = crate::trash::page_header(self, tr("Git 变更", "Git changes"), 26., cx)
-            .child(div().flex_1())
-            .child(ui::secondary_button("git-panel-settings", tr("配置 Git", "Configure Git"))
-                .no_drag().on_click(cx.listener(|w, _, _, cx| w.open_settings(crate::settings::Page::Git, cx))))
-            .child(ui::secondary_button("git-panel-refresh", tr("刷新状态", "Refresh status"))
-                .no_drag().ml(px(8.)).mr(px(20.)).on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Refresh, window, cx))));
+        let header = crate::trash::page_header(self, tr("Git 变更", "Git changes"), 26., cx);
         let Some(p) = &self.git else { return div().child(header).into_any_element() };
         let status = p.status.as_ref();
         let count = status.map_or(0, |s| s.changes.len());
+        let staged = status.map_or(0, |s| s.changes.iter().filter(|c| c.staged).count());
+        let busy = self.store.file_task_busy() || self.tree_writes_pending();
         let mut files = div().id("git-files").flex_1().min_h_0().overflow_y_scroll().p(px(8.));
         if let Some(status) = status {
             for (i, change) in status.changes.iter().enumerate() {
@@ -56,14 +53,33 @@ impl Workspace {
                     _ => (tr("修改", "Modified"), Theme::primary()),
                 };
                 let selected = p.selected.as_deref() == Some(&path);
+                let stage_path = path.clone(); let unstage_path = path.clone(); let discard_path = path.clone();
+                let can_discard = change.unstaged && (change.kind != 'A'
+                    || !matches!(path.as_str(), "quiet.json" | ".quiet/format.json" | ".gitattributes" | ".gitignore"));
                 files = files.child(div().id(("git-file", i)).w_full().min_h(px(58.)).px(px(10.)).py(px(9.)).flex().items_center().gap(px(9.))
                     .rounded(px(7.)).cursor_pointer().when(selected, |d| d.bg(Theme::block_selected()))
-                    .when(!selected, |d| d.hover(|s| s.bg(Theme::fill_hover()))).tip(&path, None)
+                    .when(!selected, |d| d.hover(|s| s.bg(Theme::fill_hover())))
                     .child(ui::icon("file-text", 16., Theme::icon()))
                     .child(div().flex_1().min_w_0().flex().flex_col().gap(px(4.))
-                        .child(div().truncate().text_size(px(13.)).text_color(Theme::text()).child(title))
-                        .child(div().truncate().text_size(px(10.)).text_color(Theme::text_caption()).child(path.clone())))
-                    .child(div().flex_none().text_size(px(11.)).text_color(color).child(label))
+                        .child(div().id(("git-file-title", i)).truncate().text_size(px(13.)).text_color(Theme::text()).child(title).tip(&path, None))
+                        .child(div().id(("git-file-path", i)).truncate().text_size(px(10.)).text_color(Theme::text_caption()).child(path.clone()).tip(&path, None))
+                        .child(div().flex().items_center().gap(px(6.))
+                            .child(div().text_size(px(10.)).text_color(color).child(label))
+                            .when(change.staged, |d| d.child(div().text_size(px(10.)).text_color(Theme::diff_added())
+                                .child(if change.unstaged { tr("部分已暂存", "Partly staged") } else { tr("已暂存", "Staged") })))))
+                    .child(div().flex_none().flex().items_center().gap(px(2.))
+                        .when(change.unstaged, |d| d.child(tool(("git-stage", i), "plus", tr("暂存修改", "Stage changes"), !busy)
+                            .when(!busy, |d| d.on_click(cx.listener(move |w, _, window, cx| {
+                                cx.stop_propagation(); w.git_action(Action::Stage(stage_path.clone()), window, cx);
+                            })))))
+                        .when(change.staged, |d| d.child(tool(("git-unstage", i), "minus", tr("取消暂存", "Unstage changes"), !busy)
+                            .when(!busy, |d| d.on_click(cx.listener(move |w, _, window, cx| {
+                                cx.stop_propagation(); w.git_action(Action::Unstage(unstage_path.clone()), window, cx);
+                            })))))
+                        .child(tool(("git-discard", i), "undo", tr("丢弃未暂存的修改", "Discard unstaged changes"), !busy && can_discard)
+                            .when(!busy && can_discard, |d| d.on_click(cx.listener(move |w, _, _, cx| {
+                                cx.stop_propagation(); w.confirm = Some(crate::app::Confirm::GitDiscard(discard_path.clone())); cx.notify();
+                            })))))
                     .on_click(cx.listener(move |w, _, window, cx| w.select_git_change(path.clone(), window, cx))));
             }
         }
@@ -74,16 +90,22 @@ impl Workspace {
         }
         let branch = status.map(|s| s.branch.clone()).unwrap_or_else(|| "—".into());
         let left = div().w(px(256.)).max_w(relative(0.45)).flex_none().h_full().flex().flex_col().border_r_1().border_color(Theme::line_border())
-            .child(div().h(px(48.)).flex_none().px(px(18.)).flex().items_center().justify_between()
-                .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).child(tr("变更文件", "Changed files")))
-                .child(div().text_size(px(11.)).text_color(Theme::text_caption()).child(count.to_string())))
+            .child(div().h(px(48.)).flex_none().px(px(14.)).flex().items_center().gap(px(6.))
+                .child(tool("git-panel-refresh", "restore", tr("刷新状态", "Refresh status"), !busy)
+                    .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Refresh, window, cx)))))
+                .child(tool("git-panel-pull", "import", tr("拉取", "Pull"), !busy)
+                    .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Pull, window, cx)))))
+                .child(tool("git-panel-push", "export", tr("推送", "Push"), !busy)
+                    .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Push, window, cx)))))
+                .child(div().flex_1())
+                .child(div().id("git-change-count").text_size(px(11.)).text_color(Theme::text_caption()).child(count.to_string()).tip(tr("变更文件", "Changed files"), None)))
             .child(files)
             .child(div().flex_none().p(px(14.)).border_t_1().border_color(Theme::line_border()).flex().flex_col().gap(px(10.))
-                .child(div().text_size(px(11.)).text_color(Theme::text_caption()).child(tr("提交文档库中的全部变更", "Commit all library changes")))
+                .child(div().text_size(px(11.)).text_color(Theme::text_caption()).child(if staged > 0 { tr("仅提交已暂存的变更", "Commit staged changes only") } else { tr("提交文档库中的全部变更", "Commit all library changes") }))
                 .child(div().px(px(9.)).py(px(7.)).border_1().border_color(Theme::line_border()).rounded(px(6.)).child(p.message.clone()))
-                .child(ui::primary_button("git-panel-commit", tr("提交本地变更", "Commit local changes"))
-                    .when(count == 0, |d| d.opacity(0.45))
-                    .when(count > 0, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Commit, window, cx))))));
+                .child(ui::primary_button("git-panel-commit", if staged > 0 { tr("提交已暂存变更", "Commit staged changes") } else { tr("提交本地变更", "Commit local changes") })
+                    .when(count == 0 || busy, |d| d.opacity(0.45))
+                    .when(count > 0 && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Commit, window, cx))))));
         let mut diff = div().flex_1().min_w_0().h_full().flex().flex_col();
         if let Some(preview) = &p.preview {
             let lines = if p.source { preview.source.as_ref().unwrap_or(&preview.lines) } else { &preview.lines };
@@ -136,9 +158,7 @@ impl Workspace {
         }
         div().size_full().flex().flex_col().text_color(Theme::text()).child(header)
             .child(div().flex_none().min_h(px(44.)).px(px(20.)).py(px(7.)).flex().flex_wrap().items_center().gap(px(10.)).border_b_1().border_color(Theme::line_border())
-                .child(div().flex_1().text_size(px(12.)).text_color(Theme::text_caption()).child(format!("{branch} · {}", tr("本地工作区", "Local working tree"))))
-                .child(ui::secondary_button("git-panel-pull", tr("拉取", "Pull")).on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Pull, window, cx))))
-                .child(ui::secondary_button("git-panel-push", tr("推送", "Push")).on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Push, window, cx)))))
+                .child(div().flex_1().text_size(px(12.)).text_color(Theme::text_caption()).child(format!("{branch} · {}", tr("本地工作区", "Local working tree")))))
             .children(p.error.as_ref().map(|e| div().px(px(20.)).py(px(10.)).text_size(px(12.)).text_color(Theme::danger()).child(e.clone())))
             .children(p.notice.as_ref().map(|n| div().px(px(20.)).py(px(8.)).text_size(px(12.)).text_color(Theme::text_caption()).child(n.clone())))
             .child(div().flex_1().min_h_0().flex().child(left).child(diff)).into_any_element()
@@ -150,4 +170,13 @@ fn empty(text: &'static str) -> Div {
 }
 fn number(n: Option<usize>) -> Div {
     div().w(px(42.)).flex_none().pr(px(10.)).text_right().text_color(Theme::text_caption()).child(n.map(|n| n.to_string()).unwrap_or_default())
+}
+
+fn tool(id: impl Into<ElementId>, icon: &'static str, label: &'static str, enabled: bool) -> Stateful<Div> {
+    div().id(id).size(px(26.)).flex_none().flex().items_center().justify_center().rounded(px(5.)).tip(label, None)
+        .child(if icon == "undo" { svg().path("editor-icons/undo.svg").size(px(16.)).flex_none().text_color(Theme::icon()) }
+            else { ui::icon(icon, 16., Theme::icon()) })
+        .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())))
+        .when(!enabled, |d| d.opacity(0.35))
+        .on_click(|_, _, cx| cx.stop_propagation())
 }

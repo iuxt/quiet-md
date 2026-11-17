@@ -44,7 +44,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 `python3 tools/harness/git_ssh.py` 使用临时 SSH / 自签 TLS 服务器验证自定义端口、加密私钥、known_hosts 校验、LFS CA、上传确认及推送 / 克隆 / 拉取；需要 Python `paramiko`，系统 Git 仅作为测试服务端。
 
-`python3 tools/harness/git_changes.py` 在临时 Git 库中验证文件列表、正文 / 源码对比、Markdown / JSON / 附件、只读保护、窄窗口与整库提交后的空状态。
+`python3 tools/harness/git_changes.py` 在临时 Git 库中验证文件列表、正文 / 源码对比、Markdown / JSON / 附件、只读保护、窄窗口、整库与单文件暂存提交，以及确认后恢复已跟踪文件、移除新增文章和对应清单。
 
 `python3 tools/harness/trash.py` 在临时文档库中验证回收站嵌套文件夹浏览、XML / Markdown 只读打开、本地历史预览、历史另存副本及恢复后编辑，并核对查看期间正文与历史未被改写。
 

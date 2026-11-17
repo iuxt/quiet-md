@@ -221,6 +221,7 @@ pub enum Confirm {
     Delete { ids: Vec<String>, batch: bool },
     /// 回收站 → 恢复.
     Restore(String),
+    GitDiscard(String),
     /// 隐藏引用列表 (with 不再提示) / 显示引用列表.
     Refs { show: bool, no_ask: bool },
     /// The open document could not be written before it was to be replaced
