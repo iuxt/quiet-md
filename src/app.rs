@@ -1531,7 +1531,7 @@ impl Render for Workspace {
             let vs = window.viewport_size();
             if f32::from(vs.width) < min_w - 0.5 && !window.is_fullscreen() { window.resize(size(px(min_w), vs.height)); }
         }
-        let sidebar = if self.sidebar_open { Some(if matches!(self.view, View::Settings | View::Trash) { self.render_settings_sidebar(window, cx) } else { self.render_sidebar(window, cx) }) } else { None };
+        let sidebar = if self.sidebar_open { Some(if self.view == View::Settings { self.render_settings_sidebar(window, cx) } else { self.render_sidebar(window, cx) }) } else { None };
         let row_menu = self.render_row_menu(window, cx);
         let resize = self.sidebar_open.then(|| self.render_resize_handle(window, cx));
         let resize_overlay = self.render_resize_overlay(cx);

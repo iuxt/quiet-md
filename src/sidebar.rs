@@ -73,6 +73,11 @@ pub(crate) fn footer_slot(row: impl IntoElement) -> Div {
     div().pt(px(6.)).pb(px(10.)).px(px(SB_X)).child(row)
 }
 
+pub(crate) fn footer_icon(id: &'static str, glyph: &'static str) -> Stateful<Div> {
+    div().id(id).flex_none().size(px(ROW_H)).flex().items_center().justify_center().rounded(px(ROW_R)).cursor_pointer()
+        .hover(|s| s.bg(Theme::sidebar_hover())).child(icon(glyph, ROW_ICON, Theme::icon()))
+}
+
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Check {
     Off,
@@ -101,6 +106,20 @@ pub(crate) fn checkbox(state: Check, disabled: bool, group: &'static str) -> Div
 }
 
 impl Workspace {
+    pub(crate) fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> Div {
+        footer_slot(div().flex().items_center().justify_end().gap(px(4.))
+            .child(footer_icon("ft-trash", "bin").tip(crate::settings::tr("回收站", "Trash"), None)
+                .when(self.view == View::Trash, |d| d.bg(Theme::sidebar_selected()))
+                .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Trash, cx))))
+            .child(if self.view == View::Settings {
+                footer_icon("ft-back", "arrow-left").tip(crate::settings::tr("返回", "Back"), Some("Esc"))
+                    .on_click(cx.listener(|w, _, _, cx| w.close_settings(cx)))
+            } else {
+                footer_icon("ft-settings", "settings-gear").tip(crate::settings::tr("设置", "Settings"), Some(crate::shortcuts::hint("workspace::OpenSettings", "⌘ + ,")))
+                    .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Settings, cx)))
+            }))
+    }
+
     /// Sidebar width for the current window: the dragged width, kept between
     /// 268 and min(800, window − 540).
     pub(crate) fn sidebar_w(&self, window: &Window) -> f32 {
@@ -207,7 +226,6 @@ impl Workspace {
             }
         }
 
-        // The footer holds one row: 设置 (存储管理 and 回收站 live in 设置).
         // The 批量操作 toolbar keeps the footer glyphs: bare on the sidebar, a rounded fill on hover.
         let footer_btn = |id: &'static str, name: &'static str, tip: &'static str, enabled: bool, on: bool| {
             let group = SharedString::from(format!("{id}-slot"));
@@ -236,16 +254,12 @@ impl Workspace {
                 )
         };
         let some = self.batch.as_ref().is_some_and(|b| !b.is_empty());
-        // 设置; in 设置 the same row reads 返回 (`settings.rs`), so one spot toggles.
         let footer = div()
             .flex_none()
             .flex()
             .flex_col()
             .when(self.batch.is_none(), |d| {
-                d.child(footer_slot(
-                    footer_row("ft-settings", "settings-gear", crate::settings::tr("设置", "Settings"))
-                        .on_click(cx.listener(|w, _, _, cx| w.show_view(View::Settings, cx))),
-                ))
+                d.child(self.render_sidebar_footer(cx))
             })
             // 批量操作 toolbar: 创建副本 | 移动到 | 删除, minus the cloud ones.
             .when(self.batch.is_some(), |d| {

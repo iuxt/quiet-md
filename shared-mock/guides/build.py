@@ -11,7 +11,7 @@ Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{button:Action|url|text|color}}  inline button (OpenLink / DuplicatePage)
 Assets under guides/assets are copied to <out>/.assets/guides.
 
-The output is a FORMAT 6 library: virtual folder identities in quiet.json,
+The output is a FORMAT 7 library: virtual folder identities in quiet.json,
 fixed notes/<UUID>.xml bodies and relative document links.
 """
 import datetime as dt, json, re, shutil, sys, time, uuid
@@ -151,7 +151,7 @@ for k, parent, _ in order:
                   "createdAt": stamp(meta["created"]), "updatedAt": stamp(meta["modified"]), "options": options})
 manifest = {"version": 2, "folders": sorted(folders, key=lambda f: f["id"]), "notes": sorted(notes, key=lambda n: n["id"]), "trash": []}
 (out / "quiet.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-(out / ".quiet" / "format.json").write_text('{\n  "format": 6\n}')
+(out / ".quiet" / "format.json").write_text('{\n  "format": 7\n}')
 shutil.copytree(here / "assets", out / ".assets" / "guides")
 (out / ".assets" / "guides" / "covers").mkdir()
 for name in sorted(covers):

@@ -99,12 +99,19 @@ pub fn state(cx: &App) -> State { cx.try_global::<Updater>().map_or(State::Idle,
 
 #[cfg(feature = "devtools")]
 pub(crate) fn check_script_state(expected: &str, cx: &App) {
+    let (expected, feedback) = expected.split_once(' ').map_or((expected, None), |(s, f)| (s, Some(f)));
     let state = match state(cx) {
         State::Idle => "idle", State::Unsupported => "unsupported", State::Checking => "checking", State::Current => "current",
         State::Available(_) => "available", State::Downloading(_) => "downloading", State::Ready(..) => "ready",
         State::Installing(_) => "installing", State::Failed(_) => "failed",
     };
     assert_eq!(state, expected);
+    if let Some(feedback) = feedback {
+        let visible = cx.windows().into_iter().filter_map(|w| w.downcast::<crate::app::Workspace>()).any(|w| {
+            w.read(cx).is_ok_and(|ws| ws.toast.as_ref().is_some_and(|(_, _, t)| t.elapsed() < Duration::from_millis(2700)))
+        });
+        assert_eq!(visible, feedback == "feedback", "update feedback: {feedback}");
+    }
     eprintln!("update-state: {state}");
 }
 
@@ -143,7 +150,10 @@ pub fn check(manual: bool, cx: &mut App) {
         Check::Busy => return,
         Check::Joined => { if manual { set(State::Checking, cx); } return },
         Check::Wait => {
-            if manual { set(State::Failed(crate::settings::tr("更新服务暂时拒绝请求，请稍后重试", "The update service is busy. Try again later.").into()), cx); }
+            if manual {
+                let state = State::Failed(crate::settings::tr("更新服务暂时拒绝请求，请稍后重试", "The update service is busy. Try again later.").into());
+                report(&state, cx); set(state, cx);
+            }
             return
         },
         Check::Start => {},
@@ -156,6 +166,7 @@ pub fn check(manual: bool, cx: &mut App) {
             let u = cx.global_mut::<Updater>();
             let manual = u.manual;
             let Some(state) = u.complete(result) else { return };
+            if manual { report(&state, cx); }
             if let State::Available(m) = &state && !manual && cx.global::<Updater>().told.as_ref() != Some(&m.version) {
                 cx.global_mut::<Updater>().told = Some(m.version.clone());
                 announce(&m.version, cx);
@@ -163,6 +174,24 @@ pub fn check(manual: bool, cx: &mut App) {
             set(state, cx);
         });
     }).detach();
+}
+
+pub(crate) fn unsupported_message() -> &'static str {
+    crate::settings::tr("这个版本不能自动更新，请从 github.com/iuxt/quiet-md/releases 下载新版本。", "This copy cannot update itself. Download from github.com/iuxt/quiet-md/releases.")
+}
+
+/// A repeated manual check must still give feedback when its result is unchanged.
+fn report(state: &State, cx: &mut App) {
+    let (kind, msg) = match state {
+        State::Unsupported => (crate::ui::ToastKind::Info, unsupported_message()),
+        State::Current => (crate::ui::ToastKind::Success, crate::settings::tr("已是最新版本", "Quiet.md is up to date")),
+        State::Failed(e) => (crate::ui::ToastKind::Error, e.as_str()),
+        State::Available(m) => { announce(&m.version, cx); return },
+        _ => return,
+    };
+    let window = cx.active_window().or_else(|| cx.windows().first().copied()).and_then(|w| w.downcast::<crate::app::Workspace>());
+    let msg = msg.to_string();
+    cx.defer(move |cx| if let Some(w) = window { let _ = w.update(cx, |ws, _, cx| ws.show_toast_kind(kind, &msg, cx)); });
 }
 
 /// A toast in the front window: the version and the sidebar's 更新 pill.

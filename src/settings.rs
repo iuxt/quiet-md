@@ -311,9 +311,8 @@ impl Page {
     }
 }
 
-/// The sidebar list, one evenly spaced run (six rows need no unlabelled
-/// groups); `None` is 回收站 (its own view, shown with this sidebar).
-const NAV: [Option<Page>; 6] = [Some(Page::General), Some(Page::Appearance), Some(Page::Shortcuts), Some(Page::Library), None, Some(Page::About)];
+/// The sidebar list, one evenly spaced run.
+const NAV: [Page; 5] = [Page::General, Page::Appearance, Page::Shortcuts, Page::Library, Page::About];
 
 // ---- controls (switch on the accent, 30pt buttons, grouped rows)
 
@@ -756,18 +755,16 @@ impl Workspace {
     }
 
     pub(crate) fn render_settings_sidebar(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let current = (self.view == View::Settings).then_some(self.settings_page);
-        let in_trash = self.view == View::Trash;
-        let nav_row = |page: Option<Page>, cx: &mut Context<Self>| {
-            let on = if page.is_some() { page == current } else { in_trash };
-            let (title, icon) = page.map_or((tr("回收站", "Trash"), "bin"), |p| (p.title(), p.icon()));
+        let nav_row = |page: Page, cx: &mut Context<Self>| {
+            let on = page == self.settings_page;
+            let (title, icon) = (page.title(), page.icon());
             div().id(SharedString::from(format!("settings-nav-{page:?}"))).h(px(sb::ROW_H)).flex().items_center().pl(px(6.)).pr(px(4.)).rounded(px(sb::ROW_R))
                 .text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).cursor_pointer()
                 .when(on, |d| d.bg(Theme::sidebar_selected()).text_color(Theme::text()))
                 .when(!on, |d| d.text_color(Theme::sidebar_text()).hover(|s| s.bg(Theme::sidebar_hover())))
                 .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().mr(px(9.)).child(ui::icon(icon, sb::ROW_ICON, Theme::icon())))
                 .child(title)
-                .on_click(cx.listener(move |w, _, _, cx| match page { Some(p) => w.open_settings(p, cx), None => w.show_view(View::Trash, cx) }))
+                .on_click(cx.listener(move |w, _, _, cx| w.open_settings(page, cx)))
         };
         div().w(px(self.sidebar_w(window))).h_full().flex_none().flex().flex_col().text_color(Theme::text()).font_family(theme::UI_FONT)
             .child(div().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().pl(px(theme::TRAFFIC_LIGHTS_W)).pr(px(12.)).title_bar().child(self.header_navigation(cx))
@@ -779,10 +776,8 @@ impl Workspace {
                 .child(div().h(px(sb::SECTION_H)).pl(px(4.)).pt(px((sb::SECTION_TOP + sb::SECTION_H) / 2. - sb::ROW_H / 2.))
                     .child(div().px(px(4.)).text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).font_weight(FontWeight::SEMIBOLD).text_color(Theme::sidebar_section()).child(tr("设置", "Settings"))))
                 .child(div().flex().flex_col().gap(px(sb::ROW_GAP)).children(NAV.iter().map(|p| nav_row(*p, cx)).collect::<Vec<_>>())))
-            // Where 设置 was: 返回, back to the page 设置 was opened from.
             .child(div().flex_1())
-            .child(sb::footer_slot(sb::footer_row("ft-back", "arrow-left", tr("返回", "Back")).tip(tr("返回", "Back"), Some("Esc"))
-                .on_click(cx.listener(|w, _, _, cx| w.close_settings(cx)))))
+            .child(self.render_sidebar_footer(cx))
             .into_any_element()
     }
 
@@ -986,8 +981,6 @@ impl Workspace {
                     .child(button("reveal-library", reveal).on_click(|_, _, cx| cx.reveal_path(&crate::store::Store::root_dir())))
                     // A test run's library (`QUIET_MD_HOME`) is fixed: a restart would lose it.
                     .when(std::env::var_os("QUIET_MD_HOME").is_none(), |d| d.child(button("change-library", tr("更改…", "Change…")).on_click(cx.listener(|w, _, _, cx| w.pick_library(cx)))))).into_any_element(),
-                row(tr("回收站", "Trash"), desc(tr("删除的文档会一直保留，可随时恢复。", "Deleted documents are kept until you restore them.")),
-                    button("open-trash", tr("打开", "Open")).on_click(cx.listener(|w, _, _, cx| w.show_view(View::Trash, cx)))).into_any_element(),
                 row(tr("版本历史", "Version history"),
                     desc(tr("每篇文档保留的历史版本数（1–30 份）", "Snapshots kept for each document (1–30)")),
                     div().flex_none().flex().items_center().gap(px(12.))
@@ -1062,7 +1055,7 @@ fn update_row(cx: &mut Context<Workspace>) -> Div {
     let state = crate::update::state(cx);
     let (title, detail): (SharedString, Option<SharedString>) = match &state {
         State::Idle => (tr("软件更新", "Software update").into(), None),
-        State::Unsupported => (tr("软件更新", "Software update").into(), desc(tr("这个版本不能自动更新，请从 github.com/iuxt/quiet-md/releases 下载新版本。", "This copy cannot update itself. Download from github.com/iuxt/quiet-md/releases."))),
+        State::Unsupported => (tr("软件更新", "Software update").into(), desc(crate::update::unsupported_message())),
         State::Checking => (tr("正在检查更新…", "Checking for updates…").into(), None),
         State::Current => (tr("已是最新版本", "Quiet.md is up to date").into(), None),
         State::Available(m) => (crate::localized_format!("新版本 {} 可用", "Version {} is available", m.version).into(), desc(tr("下载完成后会先保存所有文档，再自动重启安装。", "After downloading, Quiet.md saves all documents and restarts to install."))),

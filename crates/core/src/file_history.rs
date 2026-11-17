@@ -113,7 +113,7 @@ impl Store {
             match (from, to) {
                 (Some(_), None) => {
                     anyhow::ensure!(!self.index.iter().any(|(id, m)| m.parent.as_deref() == Some(&c.id) && !deleted.contains(id.as_str())), "文件夹里有后来新增的内容，不能撤销创建");
-                    anyhow::ensure!(!self.trash.contains_key(&c.id) && !self.trash_path(&c.id).try_exists()?, "回收站存在冲突，未覆盖");
+                    anyhow::ensure!(!self.trash.contains_key(&c.id) && (self.virtual_folders() || !self.trash_path(&c.id).try_exists()?), "回收站存在冲突，未覆盖");
                     projected.remove(&c.id);
                 }
                 (None, Some(target)) => {

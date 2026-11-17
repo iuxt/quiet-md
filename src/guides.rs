@@ -119,7 +119,7 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// The seeded library opens as it is (FORMAT 4, no migration): every
+    /// The seeded library opens as it is (current format, no migration): every
     /// guide listed in its folder, links resolved to the documents, names
     /// following the store's rules.
     #[test]

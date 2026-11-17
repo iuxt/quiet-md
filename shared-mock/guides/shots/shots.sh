@@ -10,8 +10,8 @@ work=$(mktemp -d /tmp/quiet-shots.XXXXXX)
 python3 shared-mock/guides/build.py "$work/lib" >/dev/null
 # seen_version: no 已更新到 card over the sidebar.
 ver=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-printf '{"english":true,"theme":"feishu","feishu":true,"seen_version":"%s"}\n' "$ver" > "$work/lib/preferences.json"
-printf '{"sidebar_width":240}\n' > "$work/lib/settings.json"
+printf '{"english":true,"theme":"feishu","feishu":true,"seen_version":"%s"}\n' "$ver" > "$work/lib/.quiet/preferences.json"
+printf '{"sidebar_width":240}\n' > "$work/lib/.quiet/settings.json"
 sed 's/^SHOT \(.*\)$/deskshot \1 48/' shared-mock/guides/shots/steps.txt > "$work/steps.txt"
 swiftc -O shared-mock/guides/backdrop.swift -o "$work/backdrop" 2>/dev/null
 wall=$(swift -e 'import AppKit; print(NSWorkspace.shared.desktopImageURL(for: NSScreen.screens[0])!.path)' 2>/dev/null)

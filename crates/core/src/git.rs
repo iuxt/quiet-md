@@ -477,9 +477,9 @@ fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, Metadata>> {
             entries.insert(format!("notes/{}", note.filename), Metadata { id: note.id, extra });
         }
         for deleted in shared.trash {
-            if let Some(filename) = deleted.filename {
+            if let Some(path) = deleted.body_rel() {
                 let mut extra = deleted.extra; extra.insert("title".into(), deleted.title.into());
-                entries.insert(format!(".quiet/trash/{filename}"), Metadata { id: deleted.id, extra });
+                entries.insert(path, Metadata { id: deleted.id, extra });
             }
         }
         return Ok(entries);
@@ -547,6 +547,6 @@ fn validate_tree(repo: &Repository, files: &BTreeMap<String, Oid>) -> Result<()>
     let marker = repo.find_blob(*files.get(".quiet/format.json").context("远端缺少格式标记")?)?;
     let marker: serde_json::Value = serde_json::from_slice(marker.content())?;
     let format = marker["format"].as_u64();
-    ensure!(format == Some(if virtual_manifest { 6 } else { 5 }), "远端文档库格式不兼容");
+    ensure!(format == Some(if virtual_manifest { crate::store::FORMAT as u64 } else { 5 }), "远端文档库格式不兼容");
     Ok(())
 }

@@ -1,4 +1,4 @@
-//! Library storage: FORMAT 6 virtual folders in quiet.json, fixed notes/<UUID> bodies.
+//! Library storage: FORMAT 7 virtual folders in quiet.json, fixed notes/<UUID> bodies.
 //! FORMAT 4/5 physical folders and older layouts remain readable for migration.
 
 use crate::docxml;
@@ -319,8 +319,9 @@ struct Batch { lock: Option<WriteLock>, depth: u32, index: std::cell::Cell<bool>
 /// a change would make older builds misread the library. 4: real folders,
 /// files named by title, internal data in `.quiet/`. 5: opt-in UUID names
 /// with shared metadata for Git. 6: virtual folders, one quiet.json,
-/// fixed notes/<UUID> body paths regardless of Git.
-pub const FORMAT: u32 = 6;
+/// fixed notes/<UUID> body paths regardless of Git. 7: trash changes only
+/// metadata; deleted bodies keep their notes/ paths.
+pub const FORMAT: u32 = 7;
 /// The hidden folder holding the library's own data.
 pub const INTERNAL: &str = ".quiet";
 /// The hidden folder holding pasted and inserted images and attachments.
@@ -697,6 +698,7 @@ impl Store {
     /// Open the library at `root` in the layout it has; never moves it.
     pub fn open_at(root: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&root)?;
+        anyhow::ensure!(reread::<FormatMarker>(&root.join(".quiet/format.json")).is_none_or(|m| m.format != 6), "请先手动处理旧版回收站并更新文档库格式标记");
         virtual_migrate::recover(&root)?;
         let mut warnings = vec![];
         let internal = root.join(INTERNAL);
@@ -724,7 +726,8 @@ impl Store {
             }
         }
         let base = if flat { root.clone() } else { internal.clone() };
-        let trash = load_json(&base.join("trash").join("index.json"), "回收站索引", &mut warnings);
+        let trash = if !flat && reread::<FormatMarker>(&marker).is_some_and(|m| m.format == FORMAT) { HashMap::new() }
+            else { load_json(&base.join("trash").join("index.json"), "回收站索引", &mut warnings) };
         let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, manifest: None, warnings, migrated: None, loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
         if flat {
             store.index = load_json(&base.join("index.json"), "文档索引", &mut store.warnings);
@@ -984,6 +987,7 @@ impl Store {
         // Another copy moved it to the new layout meanwhile: nothing more is written here.
         anyhow::ensure!(!self.flat || !self.root.join(INTERNAL).join("format.json").exists(), "文档库已升级到新格式，请重新打开 Quiet.md");
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(self.internal().join("format.json"))?)?;
+        anyhow::ensure!(marker.format != 6, "请先手动处理旧版回收站并更新文档库格式标记");
         anyhow::ensure!(marker.format <= FORMAT, "这个文档库由更新版本的 Quiet.md 创建，请升级后再打开");
         // An unreadable index is not judged here (that is `open`'s job): the
         // version in memory is written back unchanged.
@@ -1714,9 +1718,10 @@ impl Store {
         d
     }
 
-    /// A trashed document's file, `<id>.xml` / `<id>.md`; a folder's, `<id>/`.
+    /// Virtual libraries always keep trashed bodies at their fixed notes/ paths.
     fn trash_path(&self, id: &str) -> PathBuf {
         let meta = self.trash.get(id).map(|t| &t.meta).or_else(|| self.index.get(id));
+        if self.virtual_folders() { return self.abs(&format!("notes/{id}.{}", if meta.is_some_and(|m| m.markdown) { "md" } else { "xml" })) }
         let dir = self.internal().join("trash");
         match meta {
             Some(m) if m.folder.is_some() => dir.join(id),
@@ -1745,52 +1750,54 @@ impl Store {
             Ok(lock) => Some(lock),
             Err(e) => { self.warnings.push(format!("无法锁定文档库：{e}")); None }
         };
-        let dir = self.internal().join("trash");
-        let _ = std::fs::create_dir_all(&dir);
-        let mut dirty = false;
-        let mut on_disk = HashSet::new();
-        // Unreadable folder: list what the index knows, and leave it alone.
-        let listed = std::fs::read_dir(&dir);
-        let mut readable = listed.is_ok();
-        if let Ok(rd) = listed && !self.virtual_folders() {
-            for entry in rd {
-                let e = match entry {
-                    Ok(e) => e,
-                    Err(e) => {
-                        readable = false;
-                        self.warnings.push(format!("回收站目录读取不完整：{e}"));
+        if !self.virtual_folders() {
+            let dir = self.internal().join("trash");
+            let _ = std::fs::create_dir_all(&dir);
+            let mut dirty = false;
+            let mut on_disk = HashSet::new();
+            // Unreadable folder: list what the index knows, and leave it alone.
+            let listed = std::fs::read_dir(&dir);
+            let mut readable = listed.is_ok();
+            if let Ok(rd) = listed {
+                for entry in rd {
+                    let e = match entry {
+                        Ok(e) => e,
+                        Err(e) => {
+                            readable = false;
+                            self.warnings.push(format!("回收站目录读取不完整：{e}"));
+                            continue;
+                        }
+                    };
+                    let p = e.path();
+                    if p.is_dir() {
+                        if let Some(id) = p.file_name().and_then(|s| s.to_str()) { on_disk.insert(id.to_string()); }
                         continue;
                     }
-                };
-                let p = e.path();
-                if p.is_dir() {
-                    if let Some(id) = p.file_name().and_then(|s| s.to_str()) { on_disk.insert(id.to_string()); }
-                    continue;
+                    let markdown = match p.extension().and_then(|s| s.to_str()) { Some("xml") => false, Some("md") => true, _ => continue };
+                    let Some(id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else { continue };
+                    if !self.trash.contains_key(&id) {
+                        let t = e
+                            .metadata()
+                            .ok()
+                            .and_then(|m| m.modified().ok())
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or_else(now);
+                        let meta = Meta { created: t, modified: t, markdown, name: markdown.then(|| "未命名".into()), ..Default::default() };
+                        self.trash.insert(id.clone(), Trashed { meta, deleted: now(), root: None });
+                        dirty = true;
+                    }
+                    on_disk.insert(id);
                 }
-                let markdown = match p.extension().and_then(|s| s.to_str()) { Some("xml") => false, Some("md") => true, _ => continue };
-                let Some(id) = p.file_stem().and_then(|s| s.to_str()).map(str::to_string) else { continue };
-                if !self.trash.contains_key(&id) {
-                    let t = e
-                        .metadata()
-                        .ok()
-                        .and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or_else(now);
-                    let meta = Meta { created: t, modified: t, markdown, name: markdown.then(|| "未命名".into()), ..Default::default() };
-                    self.trash.insert(id.clone(), Trashed { meta, deleted: now(), root: None });
-                    dirty = true;
-                }
-                on_disk.insert(id);
             }
-        }
-        if readable && !self.virtual_folders() {
-            let before = self.trash.len();
-            self.trash.retain(|id, t| t.meta.folder.is_some() || on_disk.contains(id));
-            dirty |= self.trash.len() != before;
-        }
-        if dirty && _lock.is_some() && let Err(e) = self.save_trash() {
-            self.warnings.push(format!("回收站索引保存失败：{e}"));
+            if readable {
+                let before = self.trash.len();
+                self.trash.retain(|id, t| t.meta.folder.is_some() || on_disk.contains(id));
+                dirty |= self.trash.len() != before;
+            }
+            if dirty && _lock.is_some() && let Err(e) = self.save_trash() {
+                self.warnings.push(format!("回收站索引保存失败：{e}"));
+            }
         }
         let mut out: Vec<TrashEntry> = self
             .trash

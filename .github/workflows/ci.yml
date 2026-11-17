@@ -1,15 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    # Docs-only pushes skip CI. Pull requests run all required check jobs,
-    # but skip expensive compilation and packaging if only docs/site files changed.
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'site/**'
-  pull_request:
+  # Validation builds are manual; version tags build and publish via release.yml.
   workflow_dispatch:
 
 permissions:

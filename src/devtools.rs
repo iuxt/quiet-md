@@ -3,6 +3,7 @@
 //! (default /tmp). One step per line:
 //!   wait <ms> | key <keystroke> | type <text> | move x y | click x y |
 //!   dclick x y | rclick x y | drag x1 y1 x2 y2 | shot <name> | burst <name> n |
+//!   frame <name> <step> (capture the step's first frame without yielding) |
 //!   mark <text> (IME composition) | commit <text> | nkey <letter> (a real
 //!   key press through AppKit, so the active input method sees it) |
 //!   activate (make the window key; takes focus) | quit |
@@ -643,6 +644,13 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
             }) {
                 Ok(()) => eprintln!("devtools: saved {path}"),
                 Err(e) => eprintln!("devtools: capture failed: {e}"),
+            }
+        }
+        "frame" => {
+            if let Some((name, step)) = rest.trim().split_once(' ') {
+                let (cmd, args) = step.split_once(' ').unwrap_or((step, ""));
+                run(cmd, args, window, cx);
+                run("shot", name, window, cx);
             }
         }
         "shot" => {

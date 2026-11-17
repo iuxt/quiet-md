@@ -43,12 +43,12 @@ fn virtual_tree_delete_restore_and_undo_preserve_structure_and_bytes() {
     let bytes = std::fs::read(&path).unwrap();
     let journal = s.track_file_changes(); s.delete(&root, None).unwrap(); let changes = journal.take();
     assert_eq!(changes.len(), 3); assert!(lib.manifest().notes.is_empty()); assert_eq!(lib.manifest().trash.len(), 3);
-    assert!(!path.exists()); assert_eq!(s.list_trash().len(), 1);
+    assert!(path.is_file()); assert_eq!(s.list_trash().len(), 1);
     s.apply_file_history(&changes, false).unwrap(); assert_eq!(std::fs::read(&path).unwrap(), bytes);
     assert_eq!(s.index[&id].parent.as_deref(), Some(child.as_str())); assert_eq!(s.index[&child].parent.as_deref(), Some(root.as_str()));
     s.apply_file_history(&changes, true).unwrap(); s.restore(&root).unwrap(); assert_eq!(std::fs::read(&path).unwrap(), bytes);
     s.delete(&root, None).unwrap(); assert_eq!(lib.manifest().trash.len(), 3);
-    assert!(s.list().is_empty()); assert!(!path.exists());
+    assert!(s.list().is_empty()); assert!(path.is_file());
     assert_eq!(std::fs::read(s.trash_path(&id)).unwrap(), bytes);
 }
 
@@ -82,7 +82,7 @@ fn invalid_manifests_are_rejected_and_unknown_fields_survive_writes() {
 }
 
 #[test]
-fn legacy_physical_library_migrates_titles_links_images_and_trash_with_backup() {
+fn legacy_physical_library_migrates_titles_links_images_with_backup() {
     let lib = Library::new(); std::fs::create_dir_all(lib.0.join(".quiet")).unwrap();
     std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
     let mut s = lib.open(); let root = s.create_folder("Physical", None).unwrap(); let nested = s.create_folder("Child", Some(&root)).unwrap();
@@ -91,7 +91,6 @@ fn legacy_physical_library_migrates_titles_links_images_and_trash_with_backup() 
     let md = s.create_markdown_in(&doc("Markdown"), "", Some(&root)).unwrap();
     let source = format!("---\nkeep: true\n---\n[XML](Child/{id}.xml#part)\n\n![image](../.assets/image.png)\n\n`[code](Child/{id}.xml)`\n\n[ref][n]\n\n[n]: Child/{id}.xml\n");
     std::fs::write(s.file_path(&md).unwrap(), &source).unwrap();
-    let gone = s.create_from_in(&doc("Deleted"), Some(&nested)).unwrap(); s.delete(&gone, None).unwrap();
     let original_path = s.file_path(&id).unwrap(); let original = std::fs::read(&original_path).unwrap();
     s.use_virtual_folders().unwrap(); assert!(s.virtual_folders()); assert!(!original_path.exists());
     assert_eq!(std::fs::read(s.file_path(&id).unwrap()).unwrap(), original); assert_eq!(s.index[&id].parent.as_deref(), Some(nested.as_str()));
@@ -101,10 +100,8 @@ fn legacy_physical_library_migrates_titles_links_images_and_trash_with_backup() 
     assert!(text.starts_with("---\nkeep: true\n---\n")); assert_eq!(s.load(&md).unwrap().title.text, "Markdown");
     let backup = std::fs::read_dir(lib.0.join(".quiet")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("before-virtual-6-")).unwrap().path();
     assert_eq!(std::fs::read(backup.join(original_path.strip_prefix(&lib.0).unwrap())).unwrap(), original);
-    assert!(!lib.0.join("Physical").exists()); assert_eq!(lib.manifest().trash.len(), 1);
-    s.restore(&gone).unwrap(); assert_eq!(s.load(&gone).unwrap().title.text, "Deleted");
-    assert_eq!(s.index[&gone].parent.as_deref(), Some(nested.as_str())); assert!(!s.git_enabled());
-    s.use_virtual_folders().unwrap(); assert_eq!(lib.manifest().notes.len(), 3);
+    assert!(!lib.0.join("Physical").exists()); assert!(lib.manifest().trash.is_empty()); assert!(!s.git_enabled());
+    s.use_virtual_folders().unwrap(); assert_eq!(lib.manifest().notes.len(), 2);
 }
 
 #[test]
@@ -183,7 +180,7 @@ fn virtual_library_keeps_local_file_names_and_reuses_its_body_cache() {
 }
 
 #[test]
-fn old_trash_keeps_bodies_metadata_and_history_until_restored() {
+fn trash_keeps_bodies_metadata_and_history_until_restored() {
     let lib = Library::new(); let mut s = lib.open();
     let root = s.create_folder("Root", None).unwrap(); let child = s.create_folder("Child", Some(&root)).unwrap();
     let xml = s.create_from_in(&doc("XML"), Some(&child)).unwrap();
@@ -198,10 +195,54 @@ fn old_trash_keeps_bodies_metadata_and_history_until_restored() {
     for _ in 0..2 {
         let trash = s.list_trash(); assert_eq!(trash.len(), 1); assert_eq!(trash[0].id, root); assert_eq!(trash[0].deleted, 1);
         assert!(s.list().is_empty()); assert_eq!(std::fs::read(lib.0.join("quiet.json")).unwrap(), metadata);
-        for (id, path, bytes) in &bodies { assert!(!path.exists()); assert_eq!(std::fs::read(s.trash_path(id)).unwrap(), *bytes); }
+        for (id, path, bytes) in &bodies { assert!(path.is_file()); assert_eq!(std::fs::read(s.trash_path(id)).unwrap(), *bytes); }
     }
     assert_eq!(crate::versions::list(&s.history_base(), &xml, true).len(), 1);
     assert!(!s.restore(&root).unwrap()); assert!(s.list_trash().is_empty());
     for (id, path, bytes) in bodies { assert_eq!(std::fs::read(path).unwrap(), bytes); assert_eq!(s.index[&id].parent.as_deref(), Some(child.as_str())); }
     assert_eq!(s.index[&child].parent.as_deref(), Some(root.as_str())); assert_eq!(s.versions(&xml).len(), 1);
+}
+
+#[test]
+fn trash_changes_only_metadata_and_never_readopts_bodies() {
+    for markdown in [false, true] {
+        let lib = Library::new(); let mut a = lib.open(); let mut b = lib.open();
+        let id = if markdown { a.create_markdown(&doc("Markdown"), "# Keep body\n").unwrap() } else { a.create_from(&doc("XML")).unwrap() };
+        let path = a.file_path(&id).unwrap(); let bytes = std::fs::read(&path).unwrap();
+        let metadata = std::fs::metadata(&path).unwrap();
+        let check_body = || {
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), metadata.modified().unwrap());
+            #[cfg(unix)] { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&path).unwrap().ino(), metadata.ino()); }
+        };
+        a.delete(&id, None).unwrap(); check_body();
+        let manifest = lib.manifest(); assert!(manifest.notes.is_empty());
+        assert_eq!(manifest.trash[0].body_rel().unwrap(), format!("notes/{}.{}", id, if markdown { "md" } else { "xml" }));
+        assert!(!lib.0.join(".quiet/trash").exists());
+        assert!(a.list().is_empty()); assert!(b.list().is_empty()); assert_eq!(b.list_trash()[0].id, id);
+        let mut reopened = lib.open(); assert!(reopened.list().is_empty()); assert_eq!(reopened.list_trash()[0].id, id); check_body();
+        reopened.restore(&id).unwrap(); check_body();
+        assert!(a.list_trash().is_empty()); assert_eq!(b.list()[0].id, id);
+    }
+}
+
+#[test]
+fn old_trash_requires_manual_handling_without_moving_files() {
+    let lib = Library::new(); std::fs::create_dir_all(lib.0.join(".quiet")).unwrap();
+    std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
+    let mut s = lib.open(); let id = s.create_from(&doc("Old trash")).unwrap(); s.delete(&id, None).unwrap();
+    let path = s.trash_path(&id); let bytes = std::fs::read(&path).unwrap();
+    let index = std::fs::read(lib.0.join(".quiet/trash/index.json")).unwrap();
+    assert!(s.use_virtual_folders().unwrap_err().to_string().contains("手动处理旧版回收站"));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes); assert_eq!(std::fs::read(lib.0.join(".quiet/trash/index.json")).unwrap(), index);
+    assert!(!lib.0.join("quiet.json").exists());
+}
+
+#[test]
+fn format_six_requires_manual_handling_without_changing_the_marker() {
+    let lib = Library::new(); let _s = lib.open();
+    let marker = lib.0.join(".quiet/format.json"); std::fs::write(&marker, b"{\"format\":6}").unwrap();
+    let bytes = std::fs::read(lib.0.join("quiet.json")).unwrap();
+    assert!(Store::open_at(lib.0.clone()).err().unwrap().to_string().contains("手动处理旧版回收站"));
+    assert_eq!(std::fs::read(&marker).unwrap(), b"{\"format\":6}"); assert_eq!(std::fs::read(lib.0.join("quiet.json")).unwrap(), bytes);
 }

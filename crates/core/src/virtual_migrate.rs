@@ -17,8 +17,8 @@ impl Store {
         let lock = self.begin_write()?;
         if self.virtual_folders() { return Ok(()) }
         let original_index = self.index.clone();
-        let original_trash = self.trash.clone();
-        let mut index = original_index.clone(); let mut trash = original_trash.clone();
+        anyhow::ensure!(self.trash.is_empty(), "请先手动处理旧版回收站");
+        let mut index = original_index.clone(); let trash = HashMap::new();
         let mut paths = HashMap::new();
         for (id, meta) in &mut index {
             if meta.local() { continue }
@@ -26,15 +26,6 @@ impl Store {
             meta.name = Some(self.load(id)?.title.text);
             let rel = format!("{NOTES}/{id}.{}", ext_of(meta));
             paths.insert(meta.rel.clone(), rel.clone()); meta.rel = rel; meta.stable_name = true;
-        }
-        for (id, saved) in &mut trash {
-            if saved.meta.folder.is_some() { saved.meta.rel.clear(); continue }
-            let source = self.trash_path(id);
-            if saved.meta.name.is_none() && source.is_file() && !saved.meta.markdown {
-                saved.meta.name = Some(docxml::parse(&std::fs::read_to_string(source)?)?.title.text);
-            }
-            let rel = format!("{NOTES}/{id}.{}", ext_of(&saved.meta));
-            paths.insert(saved.meta.rel.clone(), rel.clone()); saved.meta.rel = rel; saved.meta.stable_name = true;
         }
         let mut outputs = vec![];
         // Resolve XML mentions before replacing the physical path index.
@@ -45,32 +36,13 @@ impl Store {
             } else {
                 let mut doc = self.parse_doc(id, &text)?;
                 layout::each_inline(&mut doc, &mut |inline| {
-                    if let Some(link) = inline.doc_link().cloned() && let Some(target) = index.get(&link.id).or_else(|| trash.get(&link.id).map(|t| &t.meta)) {
+                    if let Some(link) = inline.doc_link().cloned() && let Some(target) = index.get(&link.id) {
                         inline.xml = docxml::doc_link_href_xml(&layout::relative(NOTES, &target.rel), &link.title);
                     }
                 });
                 docxml::serialize(&doc)
             };
             outputs.push((old.rel.clone(), index[id].rel.clone(), out));
-        }
-        for (id, old) in original_trash.iter().filter(|(_, t)| t.meta.folder.is_none()) {
-            let rel = format!(".quiet/trash/{id}.{}", ext_of(&old.meta));
-            if !self.abs(&rel).is_file() { continue }
-            let text = std::fs::read_to_string(self.abs(&rel))?;
-            let out = if old.meta.markdown {
-                super::git_store::rebase_markdown_links(&text, parent_rel(&old.meta.rel), NOTES, &paths, true)
-            } else {
-                let mut doc = docxml::parse(&text)?;
-                layout::each_inline(&mut doc, &mut |inline| {
-                    let Some(link) = inline.doc_link().cloned() else { return };
-                    let href = docxml::doc_link_href(&inline.xml);
-                    let target = href.and_then(|h| layout::resolve(parent_rel(&old.meta.rel), &h)).and_then(|p| paths.get(&p))
-                        .or_else(|| index.get(&link.id).map(|m| &m.rel)).or_else(|| trash.get(&link.id).map(|t| &t.meta.rel));
-                    if let Some(target) = target { inline.xml = docxml::doc_link_href_xml(&layout::relative(NOTES, target), &link.title); }
-                });
-                docxml::serialize(&doc)
-            };
-            outputs.push((rel.clone(), rel, out));
         }
         let backup = format!(".quiet/before-virtual-6-{}", uuid::Uuid::new_v4());
         let state = Migration { backup, originals: outputs.iter().map(|(p, _, _)| p.clone()).collect(),
@@ -83,7 +55,7 @@ impl Store {
             let target = crate::git::safe_path(&self.root, path)?;
             anyhow::ensure!(!target.exists() || original_set.contains(path), "迁移目标已存在，未覆盖：{path}");
         }
-        for rel in state.originals.iter().map(String::as_str).chain([".quiet/index.json", ".quiet/trash/index.json", ".quiet/format.json", FILE]) {
+        for rel in state.originals.iter().map(String::as_str).chain([".quiet/index.json", ".quiet/format.json", FILE]) {
             let from = crate::git::safe_path(&self.root, rel)?;
             if !from.is_file() { continue }
             let to = self.root.join(&state.backup).join(rel);
@@ -129,7 +101,7 @@ fn finish(root: &Path, state: &Migration) -> Result<()> {
     }
     let mut folders = state.folders.clone(); folders.sort_by_key(|p| std::cmp::Reverse(p.len()));
     for rel in folders { let _ = std::fs::remove_dir(crate::git::safe_path(root, &rel)?); }
-    for rel in [".quiet/index.json", ".quiet/trash/index.json"] { let _ = std::fs::remove_file(root.join(rel)); let _ = std::fs::remove_file(root.join(format!("{rel}.bak"))); }
+    let _ = std::fs::remove_file(root.join(".quiet/index.json")); let _ = std::fs::remove_file(root.join(".quiet/index.json.bak"));
     std::fs::remove_file(root.join(JOURNAL))?; Ok(())
 }
 
@@ -166,7 +138,7 @@ mod tests {
             let state = Migration { backup: ".quiet/before-virtual-6-test".into(), originals: vec!["Old/note.xml".into()],
                 destinations: vec![to.clone()], folders: vec!["Old".into()], marker: b"{\"format\":5}".to_vec(), manifest: None };
             save_json(&root.join(JOURNAL), &state).unwrap();
-            std::fs::write(root.join(".quiet/format.json"), if committed { b"{\"format\":6}" } else { b"{\"format\":5}" }).unwrap();
+            std::fs::write(root.join(".quiet/format.json"), if committed { b"{\"format\":7}" } else { b"{\"format\":5}" }).unwrap();
             recover(&root).unwrap(); assert!(!root.join(JOURNAL).exists());
             if committed {
                 assert!(!root.join("Old").exists()); assert_eq!(std::fs::read_to_string(root.join(to)).unwrap(), body);

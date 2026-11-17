@@ -127,7 +127,7 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 
 ## GitHub Actions Release
 
-[Release 工作流](../.github/workflows/release.yml) 在推送 `v*` tag 时自动触发，校验通过后发布为正式 Latest；普通分支 push 和 PR 不发布。也保留在 `main` 上手动触发的入口，可选择只生成草稿。先把工作流提交并推送到 `main`，确保待发布 tag 对应的提交包含该工作流，再在仓库 Settings › Secrets and variables › Actions 配置下列 **Repository secrets**（不是普通 variables）：
+[Release 工作流](../.github/workflows/release.yml) 在推送 `v*` tag 时自动构建，校验通过后发布为正式 Latest；普通分支 push 和 PR 不触发构建或发布。[CI 工作流](../.github/workflows/ci.yml) 仅供手动运行验证构建。Release 也保留在 `main` 上手动触发的入口，可选择只生成草稿。先把工作流提交并推送到 `main`，确保待发布 tag 对应的提交包含该工作流，再在仓库 Settings › Secrets and variables › Actions 配置下列 **Repository secrets**（不是普通 variables）：
 
 | Secret | 值 |
 |---|---|

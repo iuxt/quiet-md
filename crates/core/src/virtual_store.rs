@@ -1,11 +1,6 @@
-//! FORMAT 6: virtual folders, one shared manifest, fixed notes/<UUID> files.
+//! FORMAT 7: virtual folders, one shared manifest, fixed notes/<UUID> files.
 use super::*;
 use crate::manifest::{Deleted, Manifest, FILE, NOTES};
-
-const TRANSACTION: &str = ".quiet/virtual-transaction.json";
-
-#[derive(Serialize, Deserialize)]
-struct FileTransaction { before: Manifest, after: Manifest, moves: Vec<(String, String)> }
 
 impl Store {
     pub(super) fn manifest_title(&self, id: &str, doc: &mut Document) {
@@ -26,7 +21,6 @@ impl Store {
     }
 
     pub(super) fn reload_virtual(&mut self) -> Result<()> {
-        self.recover_virtual_files()?;
         let path = crate::git::safe_path(&self.root, FILE)?;
         let manifest = match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Manifest::parse(&b)) {
             Ok(m) => m,
@@ -47,7 +41,7 @@ impl Store {
         }
         self.trash = manifest.trash.iter().map(|t| (t.id.clone(), Trashed { meta: Manifest::deleted_meta(t), deleted: t.deleted, root: t.root.clone() })).collect();
         self.manifest = Some(manifest);
-        for rel in [NOTES, ".quiet/trash"] { std::fs::create_dir_all(crate::git::safe_path(&self.root, rel)?)?; }
+        std::fs::create_dir_all(crate::git::safe_path(&self.root, NOTES)?)?;
         Ok(())
     }
 
@@ -101,7 +95,8 @@ impl Store {
     }
 
     fn adopt_virtual_notes(&mut self) -> Result<()> {
-        let known: HashSet<_> = self.index.values().filter(|m| !m.local() && m.folder.is_none()).map(|m| m.rel.clone()).collect();
+        let known: HashSet<_> = self.index.values().filter(|m| !m.local() && m.folder.is_none()).map(|m| m.rel.clone())
+            .chain(self.manifest.iter().flat_map(|m| &m.trash).filter_map(|t| t.body_rel())).collect();
         let mut dirty = false;
         for entry in std::fs::read_dir(self.root.join(NOTES))? {
             let entry = entry?;
@@ -129,15 +124,15 @@ impl Store {
     }
 
     pub(super) fn trash_virtual(&mut self, items: &[(String, Option<String>)], record: bool) -> Result<()> {
-        let mut index = self.index.clone(); let mut trash = self.trash.clone(); let mut moves = vec![]; let mut before = vec![];
+        let mut index = self.index.clone(); let mut trash = self.trash.clone(); let mut before = vec![];
         for (id, root) in items {
             let meta = index.remove(id).context("文档或文件夹不存在")?;
             if record { before.push((id.clone(), self.file_state(id))); }
-            if meta.folder.is_none() { moves.push((meta.rel.clone(), format!(".quiet/trash/{id}.{}", ext_of(&meta)))); }
+            if meta.folder.is_none() { anyhow::ensure!(crate::git::safe_path(&self.root, &meta.rel)?.is_file(), "正文文件不存在：{}", meta.rel); }
             anyhow::ensure!(!trash.contains_key(id), "回收站 UUID 冲突，未覆盖");
             trash.insert(id.clone(), Trashed { meta, deleted: now(), root: root.clone() });
         }
-        self.commit_virtual_files(index, trash, moves)?;
+        self.commit_virtual_metadata(index, trash)?;
         for (id, _) in items { self.forget_loaded(id); crate::versions::move_to_trash(&self.history_base(), id); }
         for (id, state) in before { self.record_file_change(&id, state); }
         Ok(())
@@ -149,75 +144,23 @@ impl Store {
         let mut saved = trash.remove(id).context("恢复内容已不在回收站")?;
         saved.meta.parent = parent;
         if let Some((order, root)) = place { saved.meta.order = order; saved.meta.root_order = root; }
-        let moves = if saved.meta.folder.is_none() { vec![(format!(".quiet/trash/{id}.{}", ext_of(&saved.meta)), saved.meta.rel.clone())] } else { vec![] };
+        if saved.meta.folder.is_none() { anyhow::ensure!(crate::git::safe_path(&self.root, &saved.meta.rel)?.is_file(), "正文文件不存在：{}", saved.meta.rel); }
         index.insert(id.to_string(), saved.meta);
-        self.commit_virtual_files(index, trash, moves)?;
+        self.commit_virtual_metadata(index, trash)?;
         crate::versions::restore_from_trash(&self.history_base(), id);
         self.record_file_change(id, None);
         Ok(())
     }
 
-    fn commit_virtual_files(&mut self, index: HashMap<String, Meta>, trash: HashMap<String, Trashed>, moves: Vec<(String, String)>) -> Result<()> {
+    fn commit_virtual_metadata(&mut self, index: HashMap<String, Meta>, trash: HashMap<String, Trashed>) -> Result<()> {
         if self.batch.index.get() { self.save_virtual()?; self.batch.index.set(false); }
-        let before = Manifest::parse(&std::fs::read(self.root.join(FILE))?)?;
         let after = self.virtual_manifest_for(&index, &trash); after.validate()?;
-        for (from, to) in &moves {
-            let source = crate::git::safe_path(&self.root, from)?; let target = crate::git::safe_path(&self.root, to)?;
-            anyhow::ensure!(source.is_file() && target.symlink_metadata().is_err(), "正文文件状态冲突，未覆盖：{to}");
-        }
-        let transaction = FileTransaction { before, after: after.clone(), moves };
-        save_json(&self.root.join(TRANSACTION), &transaction)?;
-        let result = (|| -> Result<()> {
-            for (from, to) in &transaction.moves { std::fs::rename(self.abs(from), self.abs(to))?; }
-            self.sync_virtual_moves(&transaction.moves)?;
-            save_json(&self.root.join(FILE), &after)
-        })();
-        if result.is_err() {
+        if let Err(error) = save_json(&crate::git::safe_path(&self.root, FILE)?, &after) {
             let committed = std::fs::read(self.root.join(FILE)).is_ok_and(|b| Manifest::parse(&b).is_ok_and(|m| m == after));
-            if !committed { self.recover_virtual_files()?; return result; }
+            if !committed { return Err(error) }
         }
         self.index = index; self.trash = trash; self.manifest = Some(after);
-        let _ = std::fs::remove_file(self.root.join(TRANSACTION));
         self.save_local(&self.local_state())
-    }
-
-    fn sync_virtual_moves(&self, moves: &[(String, String)]) -> Result<()> {
-        #[cfg(unix)]
-        for dir in moves.iter().flat_map(|(from, to)| [parent_rel(from), parent_rel(to)]).collect::<HashSet<_>>() {
-            std::fs::File::open(self.abs(dir))?.sync_all()?;
-        }
-        #[cfg(not(unix))] let _ = moves;
-        Ok(())
-    }
-
-    fn recover_virtual_files(&self) -> Result<()> {
-        let path = self.root.join(TRANSACTION);
-        if !path.exists() { return Ok(()) }
-        let transaction: FileTransaction = serde_json::from_slice(&std::fs::read(&path)?)?;
-        transaction.before.validate()?; transaction.after.validate()?;
-        let files = |manifest: &Manifest| -> HashMap<String, String> {
-            manifest.notes.iter().map(|n| (format!("{NOTES}/{}", n.filename), n.id.clone()))
-                .chain(manifest.trash.iter().filter_map(|t| t.filename.as_ref().map(|f| (format!(".quiet/trash/{f}"), t.id.clone())))).collect()
-        };
-        let before = files(&transaction.before); let after = files(&transaction.after);
-        let mut sources = HashSet::new(); let mut targets = HashSet::new();
-        for (from, to) in &transaction.moves {
-            anyhow::ensure!(before.contains_key(from) && before.get(from) == after.get(to) && from != to
-                && sources.insert(from) && targets.insert(to), "文件恢复记录中的正文路径无效");
-        }
-        let current = Manifest::parse(&std::fs::read(self.root.join(FILE))?)?;
-        if current != transaction.after {
-            anyhow::ensure!(current == transaction.before, "未完成的文件操作与当前清单冲突，已保留恢复记录");
-            for (from, to) in transaction.moves.iter().rev() {
-                let source = crate::git::safe_path(&self.root, from)?; let target = crate::git::safe_path(&self.root, to)?;
-                if target.exists() {
-                    anyhow::ensure!(!source.exists(), "恢复路径已存在，未覆盖：{from}"); std::fs::rename(target, source)?;
-                }
-            }
-            self.sync_virtual_moves(&transaction.moves)?;
-        }
-        std::fs::remove_file(path)?;
-        Ok(())
     }
 }
 
@@ -225,23 +168,22 @@ impl Store {
 mod tests {
     use super::*;
     #[test]
-    fn interrupted_trash_move_rolls_back_without_losing_the_document() {
-        let root = std::env::temp_dir().join(format!("quiet-trash-recovery-{}", uuid::Uuid::new_v4()));
-        let mut store = Store::open_at(root.clone()).unwrap();
-        let id = store.create_from(&Document::default()).unwrap();
-        let mut raw: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join(FILE)).unwrap()).unwrap();
-        raw["notes"][0].as_object_mut().unwrap().remove("createdAt");
-        raw["notes"][0]["updatedAt"] = 1.into();
-        let raw = serde_json::to_vec_pretty(&raw).unwrap(); std::fs::write(root.join(FILE), &raw).unwrap();
-        let before = Manifest::parse(&raw).unwrap();
-        let body = std::fs::read(store.path(&id)).unwrap();
-        store.delete(&id, None).unwrap();
-        let after = Manifest::parse(&std::fs::read(root.join(FILE)).unwrap()).unwrap();
-        let transaction = FileTransaction { before: before.clone(), after, moves: vec![(format!("notes/{id}.xml"), format!(".quiet/trash/{id}.xml"))] };
-        // Simulate interruption after moving the body but before publishing metadata.
-        std::fs::write(root.join(FILE), &raw).unwrap(); save_json(&root.join(TRANSACTION), &transaction).unwrap();
-        let reopened = Store::open_at(root.clone()).unwrap();
-        assert_eq!(std::fs::read(reopened.path(&id)).unwrap(), body); assert!(!root.join(TRANSACTION).exists());
-        assert!(reopened.trash.is_empty()); std::fs::remove_dir_all(root).unwrap();
+    fn failed_manifest_publish_preserves_bodies_and_trash_state() {
+        for restoring in [false, true] {
+            let root = std::env::temp_dir().join(format!("quiet-trash-metadata-{}", uuid::Uuid::new_v4()));
+            let mut store = Store::open_at(root.clone()).unwrap(); let id = store.create_from(&Document::default()).unwrap();
+            let path = store.path(&id); let body = std::fs::read(&path).unwrap(); let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
+            if restoring { store.delete(&id, None).unwrap(); }
+            let bytes = std::fs::read(root.join(FILE)).unwrap();
+            let backup = root.join("quiet.json.bak"); std::fs::remove_file(&backup).unwrap(); std::fs::create_dir(&backup).unwrap();
+            let result = if restoring { store.restore(&id).map(|_| ()) } else { store.delete(&id, None) };
+            assert!(result.is_err()); assert_eq!(store.trash.contains_key(&id), restoring); assert_eq!(store.index.contains_key(&id), !restoring);
+            assert_eq!(std::fs::read(root.join(FILE)).unwrap(), bytes);
+            assert_eq!(std::fs::read(&path).unwrap(), body); assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
+            std::fs::remove_dir(&backup).unwrap();
+            let mut reopened = Store::open_at(root.clone()).unwrap();
+            assert_eq!(reopened.list_trash().len(), usize::from(restoring)); assert_eq!(reopened.list().len(), usize::from(!restoring));
+            std::fs::remove_dir_all(root).unwrap();
+        }
     }
 }

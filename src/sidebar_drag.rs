@@ -467,10 +467,8 @@ impl Workspace {
         let renaming = self.rename.as_ref().map(|r| r.id.clone());
         self.folder_drag.parents = self.entries.iter().filter_map(|e| e.meta.parent.clone()).collect();
         let high = crate::settings::motion_high();
-        // The visible list's bottom edge, in this list's coordinates (last frame's layout).
-        let visible = self.folder_drag.bounds.get();
-        let vis_bottom = visible.map_or(f32::MAX, |b| f32::from(self.list_scroll.bounds().bottom() - b.top()));
-        let vis_top = visible.map_or(f32::MIN, |_| -f32::from(self.list_scroll.offset().y));
+        // Last frame's bounds only limit how far a folding drawer animates.
+        let vis_bottom = self.folder_drag.bounds.get().map_or(f32::MAX, |b| f32::from(self.list_scroll.bounds().bottom() - b.top()));
         // ---- Step every spring; nothing below this block mutates.
         let fd = &mut self.folder_drag;
         let index: HashMap<&str, usize> = rows.iter().enumerate().map(|(i, r)| (r.entry.id.as_str(), i)).collect();
@@ -665,7 +663,6 @@ impl Workspace {
         let extra: f32 = fd.drawers.iter().map(|d| if d.opening { d.h - d.rows.len() as f32 * PITCH } else { d.h }).sum();
         fd.drawers.retain(|d| !d.done);
         let drawn: Vec<[f32; 3]> = (0..rows.len()).map(|i| { let p = fd.springs[&rows[i].entry.id].p; [p[0], p[1] + shift[i], p[2]] }).collect();
-        let on_screen = |y: f32| y + crate::sidebar::ROW_H >= vis_top && y <= vis_bottom;
         // The receiving folder's wash springs to its subtree's bounds and fades in and out.
         let zone = receiving.zip(receiving_end).map(|(start, end)| {
             let top = drawn[start][1];
@@ -717,90 +714,101 @@ impl Workspace {
             moving |= d.hover.is_some() && dwell.is_some();
         }
 
-        // ---- Build the elements, back to front.
-        let fd = &self.folder_drag;
-        let row_h = px(crate::sidebar::ROW_H);
-        let radius = px(crate::sidebar::ROW_R);
-        // Clip `el` (drawn at x, y, w) to a drawer's band, or draw it as is.
-        let clipped = |el: Stateful<Div>, x: f32, y: f32, w: f32, band: Option<(f32, f32)>| -> AnyElement {
-            match band {
-                None => el.absolute().left(px(x)).top(px(y)).w(px(w)).into_any_element(),
-                Some((lo, hi)) => div().absolute().left(px(x)).top(px(lo)).w(px(w)).h(px((hi - lo).max(0.))).overflow_hidden()
-                    .child(el.absolute().left_0().top(px(y - lo)).w(px(w))).into_any_element(),
+        // Cull after layout: scrolling is clamped here, and headings, pinned rows
+        // and window resizing have their current positions rather than stale bounds.
+        let height = ((rows.len() + usize::from(slot.is_some())) as f32 * PITCH + extra).max(0.);
+        let workspace = cx.entity();
+        let layer = canvas(move |bounds, window, cx| workspace.update(cx, |ws, cx| {
+            let fd = &ws.folder_drag;
+            fd.bounds.set(Some(bounds));
+            let viewport = window.content_mask().bounds;
+            let on_screen = |y: f32| bounds.top() + px(y + crate::sidebar::ROW_H) >= viewport.top() && bounds.top() + px(y) <= viewport.bottom();
+            let index: HashMap<&str, usize> = rows.iter().enumerate().map(|(i, r)| (r.entry.id.as_str(), i)).collect();
+            let row_h = px(crate::sidebar::ROW_H);
+            let radius = px(crate::sidebar::ROW_R);
+            // Clip `el` (drawn at x, y, w) to a drawer's band, or draw it as is.
+            let clipped = |el: Stateful<Div>, x: f32, y: f32, w: f32, band: Option<(f32, f32)>| -> AnyElement {
+                match band {
+                    None => el.absolute().left(px(x)).top(px(y)).w(px(w)).into_any_element(),
+                    Some((lo, hi)) => div().absolute().left(px(x)).top(px(lo)).w(px(w)).h(px((hi - lo).max(0.))).overflow_hidden()
+                        .child(el.absolute().left_0().top(px(y - lo)).w(px(w))).into_any_element(),
+                }
+            };
+            let mut container = div().relative().w_full().h(px(height));
+            for l in fd.leaving.values() {
+                let [x, y, w] = l.pos.p;
+                container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).opacity(l.alpha.unit())
+                    .text_color(Theme::sidebar_text()).child(row_face(&l.row.entry, false)));
             }
-        };
-        let mut container = div().relative().w_full().h(px(((rows.len() + usize::from(slot.is_some())) as f32 * PITCH + extra).max(0.)))
-            .child({ let b = fd.bounds.clone(); canvas(move |bounds, _, _| b.set(Some(bounds)), |_, _, _, _| {}).absolute().inset_0() });
-        for l in fd.leaving.values() {
-            let [x, y, w] = l.pos.p;
-            container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).opacity(l.alpha.unit())
-                .text_color(Theme::sidebar_text()).child(row_face(&l.row.entry, false)));
-        }
-        for (r, [x, y, w], band, a) in &closing {
-            if band.1 - band.0 < 0.5 { continue; }
-            if !on_screen(*y) { continue; }
-            let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(Theme::sidebar_text())
-                .child(row_face(&r.entry, self.expanded.contains(&r.entry.id)));
-            container = container.child(clipped(el, *x, *y - 4. * (1. - a), *w, Some(*band)));
-        }
-        if let Some((s, a)) = &fd.zone {
-            let [x, y, w, h] = s.p;
-            let a = a.unit();
-            container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).rounded(px(crate::sidebar::ROW_R + 3.))
-                .bg(Theme::sidebar_drop().opacity(a)));
-        }
-        if let Some((id, t)) = &dwell && let Some(&i) = index.get(id.as_str()) {
-            // Pressure building on a closed folder: a wash sweeps across it until it opens.
-            let e = 1. - (1. - t) * (1. - t);
-            let [x, y, w] = drawn[i];
-            container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w * e)).h(row_h).rounded(radius).bg(Theme::sidebar_drop_slot()));
-        }
-        if let Some(pill) = &fd.pill {
-            let [x, y, w] = pill.pos.p;
-            if on_screen(y) {
-            let i = index.get(pill.id.as_str()).copied();
-            let show = fd.fx.get(&pill.id).map_or(1., |f| f.show.unit()) * i.map_or(1., |i| reveal[i]);
-            let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(Theme::sidebar_selected().opacity(show));
-            container = container.child(clipped(el, x, y, w, i.and_then(|i| clip[i]).filter(|_| !pill.travel)));
+            for (r, [x, y, w], band, a) in &closing {
+                if band.1 - band.0 < 0.5 { continue; }
+                if !on_screen(*y) { continue; }
+                let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(Theme::sidebar_text())
+                    .child(row_face(&r.entry, ws.expanded.contains(&r.entry.id)));
+                container = container.child(clipped(el, *x, *y - 4. * (1. - a), *w, Some(*band)));
             }
-        }
-        if let Some((s, a)) = &fd.slot {
-            let [x, y, w] = s.p;
-            container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(row_h).rounded(radius).bg(Theme::sidebar_drop_slot().opacity(a.unit())));
-        }
-        let batch = self.batch.clone();
-        // Landing cards last, so a dropped folder sinks over the rows opening under it.
-        let mut order: Vec<usize> = (0..rows.len()).collect();
-        order.sort_by_key(|&i| fd.fx[&rows[i].entry.id].lift.p > 0.005);
-        for i in order {
-            let r = &rows[i];
-            let id = r.entry.id.clone();
-            let [x, y, w] = drawn[i];
-            let fx = fd.fx[&id];
-            let quiet = fd.pill.as_ref().is_some_and(|p| p.id == id) || batch.as_ref().is_some_and(|b| b.contains(&id)) || self.folder_drop_target(&id);
-            let hover = if quiet { 0. } else { fx.hover.unit() };
-            let lift = fx.lift.unit();
-            // A landing card is never clipped: it is still above the list.
-            let band = clip[i].filter(|_| lift < 0.005);
-            if band.is_some_and(|(lo, hi)| hi - lo < 0.5 || y >= hi || y + PITCH <= lo) { continue; }
-            if !on_screen(y) { continue; }
-            let a = reveal[i];
-            let hid = id.clone();
-            let el = div().id(SharedString::from(format!("frow-{id}"))).h(row_h)
-                .opacity(fx.show.unit() * a)
-                .on_hover(cx.listener(move |w, on: &bool, _, cx| {
-                    if *on { w.folder_drag.hovered = Some(hid.clone()); }
-                    else if w.folder_drag.hovered.as_ref() == Some(&hid) { w.folder_drag.hovered = None; }
-                    cx.notify();
-                }))
-                .when(lift > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius)
-                    .bg(theme::raised(Theme::bg_body()).opacity(lift)).shadow(faded(theme::shadow_panel(), lift))))
-                .when(fx.glow.unit() > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_landed().opacity(fx.glow.unit()))))
-                .when(hover > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_hover().opacity(hover))))
-                .child(self.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx));
-            // Revealed rows settle the last few pixels as they fade in.
-            container = container.child(clipped(el, x, y - 4. * (1. - a), w, band));
-        }
+            if let Some((s, a)) = &fd.zone {
+                let [x, y, w, h] = s.p;
+                let a = a.unit();
+                container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).rounded(px(crate::sidebar::ROW_R + 3.))
+                    .bg(Theme::sidebar_drop().opacity(a)));
+            }
+            if let Some((id, t)) = &dwell && let Some(&i) = index.get(id.as_str()) {
+                // Pressure building on a closed folder: a wash sweeps across it until it opens.
+                let e = 1. - (1. - t) * (1. - t);
+                let [x, y, w] = drawn[i];
+                container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w * e)).h(row_h).rounded(radius).bg(Theme::sidebar_drop_slot()));
+            }
+            if let Some(pill) = &fd.pill {
+                let [x, y, w] = pill.pos.p;
+                if on_screen(y) {
+                let i = index.get(pill.id.as_str()).copied();
+                let show = fd.fx.get(&pill.id).map_or(1., |f| f.show.unit()) * i.map_or(1., |i| reveal[i]);
+                let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(Theme::sidebar_selected().opacity(show));
+                container = container.child(clipped(el, x, y, w, i.and_then(|i| clip[i]).filter(|_| !pill.travel)));
+                }
+            }
+            if let Some((s, a)) = &fd.slot {
+                let [x, y, w] = s.p;
+                container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(row_h).rounded(radius).bg(Theme::sidebar_drop_slot().opacity(a.unit())));
+            }
+            let batch = ws.batch.clone();
+            // Landing cards last, so a dropped folder sinks over the rows opening under it.
+            let mut order: Vec<usize> = (0..rows.len()).collect();
+            order.sort_by_key(|&i| fd.fx[&rows[i].entry.id].lift.p > 0.005);
+            for i in order {
+                let r = &rows[i];
+                let id = r.entry.id.clone();
+                let [x, y, w] = drawn[i];
+                let fx = fd.fx[&id];
+                let quiet = fd.pill.as_ref().is_some_and(|p| p.id == id) || batch.as_ref().is_some_and(|b| b.contains(&id)) || ws.folder_drop_target(&id);
+                let hover = if quiet { 0. } else { fx.hover.unit() };
+                let lift = fx.lift.unit();
+                // A landing card is never clipped: it is still above the list.
+                let band = clip[i].filter(|_| lift < 0.005);
+                if band.is_some_and(|(lo, hi)| hi - lo < 0.5 || y >= hi || y + PITCH <= lo) { continue; }
+                if !on_screen(y) { continue; }
+                let a = reveal[i];
+                let hid = id.clone();
+                let el = div().id(SharedString::from(format!("frow-{id}"))).h(row_h)
+                    .opacity(fx.show.unit() * a)
+                    .on_hover(cx.listener(move |ws, on: &bool, _, cx| {
+                        if *on { ws.folder_drag.hovered = Some(hid.clone()); }
+                        else if ws.folder_drag.hovered.as_ref() == Some(&hid) { ws.folder_drag.hovered = None; }
+                        cx.notify();
+                    }))
+                    .when(lift > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius)
+                        .bg(theme::raised(Theme::bg_body()).opacity(lift)).shadow(faded(theme::shadow_panel(), lift))))
+                    .when(fx.glow.unit() > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_landed().opacity(fx.glow.unit()))))
+                    .when(hover > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_hover().opacity(hover))))
+                    .child(ws.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx));
+                // Revealed rows settle the last few pixels as they fade in.
+                container = container.child(clipped(el, x, y - 4. * (1. - a), w, band));
+            }
+            let mut element = container.into_any_element();
+            element.prepaint_as_root(bounds.origin, bounds.size.map(AvailableSpace::Definite), window, cx);
+            element
+        }), |_, mut element, window, cx| element.paint(window, cx)).w_full().h(px(height));
         if let Some(d) = self.folder_drag.active.as_ref().filter(|d| d.started) {
             let b = self.list_scroll.bounds();
             let delta = if d.at.y < b.top() + px(24.) { 1. } else if d.at.y > b.bottom() - px(24.) { -1. } else { 0. };
@@ -809,7 +817,7 @@ impl Workspace {
             }
         }
         if moving { window.request_animation_frame(); }
-        container.into_any_element()
+        layer.into_any_element()
     }
 
     /// A click on a row. A folder opens its page and unfolds, like a page does;

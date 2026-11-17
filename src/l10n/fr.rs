@@ -372,7 +372,6 @@ pub(super) const STRINGS: &[(&str, &str)] = &[
     ("恢复成功。部分文档由于原位置不存在，已恢复到“我的文档”", "Restauré. Certains documents ont été restaurés dans « Mes documents », car leur emplacement d’origine n’existe plus."),
     ("恢复成功", "Restauré"),
     ("删除的内容将移入回收站并保留，可随时恢复", "Les éléments supprimés sont conservés dans la corbeille et peuvent être restaurés à tout moment."),
-    ("删除的文档会一直保留，可随时恢复。", "Les documents supprimés sont conservés jusqu’à leur restauration."),
     ("确认恢复？", "Restaurer ?"),
     ("确认后将恢复至原位置", "Le document sera restauré à son emplacement d’origine."),
     ("是否隐藏引用列表？", "Masquer les références ?"),

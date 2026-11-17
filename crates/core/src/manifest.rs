@@ -85,6 +85,10 @@ impl Options {
         catalogue_closed: self.catalogue_closed, reading: self.reading, info: self.info, refs_hidden: self.refs_hidden, ..Default::default() } }
 }
 
+impl Deleted {
+    pub fn body_rel(&self) -> Option<String> { self.filename.as_ref().map(|f| format!("{NOTES}/{f}")) }
+}
+
 impl Manifest {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
         ensure!(bytes.len() <= 16 << 20, "文档库清单超过大小限制");
