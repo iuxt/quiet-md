@@ -81,7 +81,7 @@ check-update-state available
 shot update-available
 key cmd-,
 wait 300
-click 120 254
+click 120 260
 wait 300
 shot update-settings
 key escape
@@ -94,7 +94,7 @@ wait 5000
 check-update-state failed
 key cmd-,
 wait 300
-click 120 254
+click 120 260
 wait 300
 shot update-rejected
 check-save-safety setup

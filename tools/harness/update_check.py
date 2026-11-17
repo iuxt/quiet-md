@@ -66,8 +66,8 @@ try:
             'appearance': 'light', 'language': 'zh', 'english': False, 'seen_version': version,
             'auto_update': False, 'quick_hotkey': False, 'remote_images': False,
         }))
-        script = ['resize 1200 900', 'move 1150 850', 'wait 3500', 'click 60 875',
-                  'wait 300', 'click 120 254', 'wait 300', 'check-update-state idle silent']
+        script = ['resize 1200 900', 'move 1150 850', 'wait 3500', 'key cmd-,',
+                  'wait 300', 'click 120 260', 'wait 300', 'check-update-state idle silent']
         for attempt in range(2):
             script += ['click 1015 368']
             if case != 'unsupported' and not (case == 'rate-limited' and attempt == 1):

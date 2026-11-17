@@ -141,8 +141,7 @@ impl Workspace {
 
     pub(crate) fn render_git_settings(&self, cx: &mut Context<Self>) -> AnyElement {
         let enabled = self.store.with(|s| s.git_enabled());
-        let mut section = div().w_full().flex().flex_col().gap(px(12.))
-            .child(crate::settings::caption(tr("Git 备份与同步", "Git backup and sync")))
+        let mut section = div().w_full().px(px(16.)).py(px(14.)).flex().flex_col().gap(px(12.))
             .child(div().text_size(px(theme::ui_font_small())).line_height(px(19.)).text_color(Theme::text_caption()).child(if enabled {
                 tr("文章使用唯一文件名，标题与分类保存在 quiet.json，图片使用 Git LFS。", "Notes use unique filenames, metadata lives in quiet.json, and assets use Git LFS.")
             } else {
@@ -171,6 +170,6 @@ impl Workspace {
         } else {
             section = section.child(ui::secondary_button("git-settings", tr("配置 Git", "Configure Git")).on_click(cx.listener(|w, _, _, cx| { w.init_git_panel(cx); cx.notify(); })));
         }
-        section.into_any_element()
+        crate::settings::group(None, vec![section.into_any_element()]).into_any_element()
     }
 }

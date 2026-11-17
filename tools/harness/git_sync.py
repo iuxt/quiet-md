@@ -31,22 +31,25 @@ key cmd-,
 wait 300
 click 120 192
 wait 300
-click 560 411
+shot library-settings
+click 120 223
+wait 300
+click 560 190
 type Git UI Tester
-click 880 411
+click 880 190
 type ui@example.invalid
-click 880 617
+click 880 396
 type ui-secret-token
-click 600 480
+click 600 259
 type ssh://git@example.invalid:2222/notes.git
-click 600 685
+click 600 464
 type /tmp/quiet-ui-test-key
-click 600 754
+click 600 533
 type ui-secret-passphrase
-click 600 822
+click 600 601
 type /tmp/quiet-ui-test-ca.crt
 shot masked-token
-click 470 858
+click 470 644
 wait 1200
 shot enabled
 key escape
@@ -58,7 +61,7 @@ type First UI commit
 click 400 872
 wait 1500
 shot committed
-key cmd-,
+click 970 24
 wait 300
 shot settings-after-commit
 key escape
@@ -98,6 +101,6 @@ assert "/tmp/quiet-ui-test-key" in config and "/tmp/quiet-ui-test-ca.crt" in con
 commit = (repo / "refs/heads/main").read_text().strip()
 contents = zlib.decompress((repo / "objects" / commit[:2] / commit[2:]).read_bytes())
 assert b"First UI commit" in contents and b"Git UI Tester <ui@example.invalid>" in contents
-for name in ("masked-token", "enabled", "committed", "settings-after-commit", "article-menu", "git-history", "returned"):
+for name in ("library-settings", "masked-token", "enabled", "committed", "settings-after-commit", "article-menu", "git-history", "returned"):
     assert (run / f"{name}.png").is_file(), name
 print(f"Git UI: UUID migration, author, commit, SSH key/CA settings, secret privacy and readonly history verified; screenshots: {run}")

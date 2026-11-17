@@ -288,7 +288,7 @@ pub(crate) fn watch_themes(cx: &mut Context<Workspace>) {
 // ---- the view
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Page { #[default] General, Appearance, Shortcuts, Library, About }
+pub enum Page { #[default] General, Appearance, Shortcuts, Library, Git, About }
 
 impl Page {
     fn title(self) -> &'static str {
@@ -297,6 +297,7 @@ impl Page {
             Page::Appearance => tr("外观", "Appearance"),
             Page::Shortcuts => tr("快捷键", "Shortcuts"),
             Page::Library => tr("文档库", "Documents"),
+            Page::Git => tr("Git 备份与同步", "Git backup and sync"),
             Page::About => tr("关于", "About"),
         }
     }
@@ -306,13 +307,14 @@ impl Page {
             Page::Appearance => "palette",
             Page::Shortcuts => "keyboard",
             Page::Library => "storage",
+            Page::Git => "storage",
             Page::About => "info",
         }
     }
 }
 
 /// The sidebar list, one evenly spaced run.
-const NAV: [Page; 5] = [Page::General, Page::Appearance, Page::Shortcuts, Page::Library, Page::About];
+const NAV: [Page; 6] = [Page::General, Page::Appearance, Page::Shortcuts, Page::Library, Page::Git, Page::About];
 
 // ---- controls (switch on the accent, 30pt buttons, grouped rows)
 
@@ -744,7 +746,7 @@ impl Workspace {
     pub(crate) fn open_settings(&mut self, page: Page, cx: &mut Context<Self>) {
         self.cancel_shortcut_recording(cx);
         self.settings_page = page;
-        if page == Page::Library { self.init_git_panel(cx); }
+        if page == Page::Git { self.init_git_panel(cx); }
         self.theme_menu = None;
         self.lang_menu = None;
         self.pref_menu = None;
@@ -813,6 +815,7 @@ impl Workspace {
             Page::Appearance => self.appearance_page(cx),
             Page::Shortcuts => self.shortcut_settings(cx),
             Page::Library => self.library_page(cx),
+            Page::Git => self.render_git_settings(cx),
             Page::About => self.about_page(cx),
         };
         div().flex_1().min_w_0().h_full().flex().flex_col().bg(Theme::bg_body()).text_color(Theme::text()).font_family(theme::UI_FONT)
@@ -988,7 +991,6 @@ impl Workspace {
                         .child(div().w(px(40.)).flex().items_center().justify_center().text_size(px(theme::ui_font())).text_color(Theme::text()).child(self.history_limit.to_string()))
                         .child(button("history-plus", "+").on_click(cx.listener(|w, _, window, cx| w.change_history_limit(1, window, cx))))).into_any_element(),
             ]))
-            .child(self.render_git_settings(cx))
             .into_any_element()
     }
 

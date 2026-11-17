@@ -36,7 +36,7 @@ impl Workspace {
         let header = crate::trash::page_header(self, tr("Git 变更", "Git changes"), 26., cx)
             .child(div().flex_1())
             .child(ui::secondary_button("git-panel-settings", tr("配置 Git", "Configure Git"))
-                .no_drag().on_click(cx.listener(|w, _, _, cx| w.open_settings(crate::settings::Page::Library, cx))))
+                .no_drag().on_click(cx.listener(|w, _, _, cx| w.open_settings(crate::settings::Page::Git, cx))))
             .child(ui::secondary_button("git-panel-refresh", tr("刷新状态", "Refresh status"))
                 .no_drag().ml(px(8.)).mr(px(20.)).on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Refresh, window, cx))));
         let Some(p) = &self.git else { return div().child(header).into_any_element() };
