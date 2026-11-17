@@ -72,7 +72,7 @@ fn trash_folders_open_documents_and_history_without_restoring_or_writing_bodies(
     assert_eq!(reopened.load_trash(&xml).unwrap().title.text, "Manifest title");
     let markdown = reopened.load_trash(&md).unwrap();
     assert_eq!(markdown.title.text, "Markdown title"); assert!(markdown.plain_text().contains("Heading"));
-    assert!(markdown.asset_sources()[0].ends_with("/.assets/picture.png"));
+    assert!(Path::new(&markdown.asset_sources()[0]).ends_with(".assets/picture.png"));
     for id in [&xml, &md] {
         let versions = reopened.versions(id); assert_eq!(versions.len(), 1);
         let name = &versions[0].name;

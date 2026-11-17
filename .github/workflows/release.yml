@@ -81,6 +81,7 @@ jobs:
         with:
           shared-key: release-macos
           env-vars: MACOSX_DEPLOYMENT_TARGET
+          cache-on-failure: true
       - name: Install toolchains and run checks
         run: |
           rustup component add clippy
@@ -113,6 +114,8 @@ jobs:
           ref: ${{ needs.preflight.outputs.commit }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
       - name: Build, check and package unsigned Windows installer
         shell: pwsh
         run: |
@@ -151,6 +154,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev libfreetype6-dev libwayland-dev libx11-xcb-dev libvulkan-dev libssl-dev python3 imagemagick fonts-noto-core fonts-noto-cjk
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
       - name: Check and package Linux AppImage
         run: |
           rustup component add clippy
