@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build, sign, notarize and package this checkout; never launches the app.
 # MACOS_TARGET=x86_64-apple-darwin cross-compiles Intel on Apple Silicon.
-# SIGNING_IDENTITY=- creates an ad-hoc signed, unnotarized CI package only.
+# SIGNING_IDENTITY=- creates an ad-hoc signed, unnotarized test package.
 # SIGNING_IDENTITY=local reuses a private local identity, without notarization.
 # RELEASE_OUT lets build.sh select the package directory before building.
 set -euo pipefail
@@ -81,7 +81,7 @@ codesign --verify --deep --strict --verbose=2 "$app"
 suffix=
 if [ "$SIGNING_IDENTITY" = - ] || [ "$SIGNING_IDENTITY" = local ]; then
   suffix=-unsigned
-  echo "Local/CI package only: without notarization; do not publish."
+  echo "Unnotarized package: publish only as a test prerelease for manual installation."
 else
   ditto -c -k --keepParent "$app" "$out/notarization.zip"
   notary_args=(--keychain-profile "$NOTARY_PROFILE")

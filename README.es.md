@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="Última versión"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?include_prereleases&label=release&color=2f6feb" alt="Última versión"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="Estado de CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows y Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="Hecha con Rust y GPUI">
@@ -19,11 +19,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-windows.svg" height="56" alt="Descargar para Windows"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-windows.svg" height="56" alt="Descargar para Windows"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-linux.svg" height="56" alt="Descargar para Linux"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-linux.svg" height="56" alt="Descargar para Linux"></a>
 </p>
 
 <p align="center">
@@ -52,25 +52,25 @@
 ## Descarga
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-macos.svg" height="56" alt="Descargar para macOS"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-windows.svg" height="56" alt="Descargar para Windows"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-windows.svg" height="56" alt="Descargar para Windows"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-linux.svg" height="56" alt="Descargar para Linux"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-linux.svg" height="56" alt="Descargar para Linux"></a>
 </p>
 
 | Plataforma | Paquete | Requisitos |
 |---|---|---|
-| **macOS** (Apple Silicon) | [quiet-md-macos-arm64.zip](https://github.com/iuxt/quiet-md/releases/latest) | macOS 13 o posterior |
-| **Windows** (x64) | [quiet-md-windows-x64-setup.exe](https://github.com/iuxt/quiet-md/releases/latest) | Windows 10 versión 1809 o posterior |
-| **Linux** (x86_64, experimental) | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases/latest) | glibc 2.35 o posterior (Ubuntu 22.04 o más reciente) |
-| **macOS** (Intel) | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases/latest) | macOS 13 o posterior |
+| **macOS** (Apple Silicon) | [quiet-md-macos-arm64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 o posterior |
+| **Windows** (x64) | [quiet-md-windows-x64-setup.exe](https://github.com/iuxt/quiet-md/releases) | Windows 10 versión 1809 o posterior |
+| **Linux** (x86_64, experimental) | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases) | glibc 2.35 o posterior (Ubuntu 22.04 o más reciente) |
+| **macOS** (Intel) | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 o posterior |
 
-- **macOS**: descomprime el archivo y arrastra `quiet.md.app` a Aplicaciones. La app está firmada y notarizada por Apple.
+- **macOS**: descomprime el archivo y arrastra `quiet.md.app` a Aplicaciones. La versión de prueba usa firma ad-hoc y no está notarizada por Apple.
 - **Windows**: ejecuta el instalador. Por defecto se instala solo para el usuario actual, y desinstalarla nunca borra tus notas. Si aparece SmartScreen en el primer arranque, haz clic en **Más información → Ejecutar de todas formas**.
 - **Linux** (experimental): `chmod +x quiet-md-*.AppImage` y ejecútala; sin FUSE, añade `--appimage-extract-and-run`. La AppImage admite actualizaciones desde la app a partir de la 0.1.10; las versiones de Linux anteriores necesitan una instalación manual una sola vez. Por ahora solo se ha probado a mano en Omarchy con Wayland; consulta las [notas para Linux](CONTRIBUTING.md#linux-experimental).
 
-Esta bifurcación descarga y busca actualizaciones solo en [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). Instala manualmente la primera versión; después basta con pulsar **Actualizar** una vez para descargar, verificar la firma, guardar todos los documentos y reiniciar para instalar. La comprobación automática se desactiva en Ajustes › General. La publicación requiere una clave Minisign independiente y firmas de plataforma; consulta la [guía de actualizaciones y publicación](docs/UPDATES.md).
+Las descargas actuales son **versiones de prueba gratuitas** de [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS usa firma ad-hoc sin notarización; el instalador de Windows no está firmado. Descarga e instala manualmente: estas versiones no usan el canal de actualización de la app. Cada paquete incluye una suma SHA-256. Consulta la [guía de publicación](docs/UPDATES.md).
 
 En el primer arranque eliges el idioma, dónde guardar la biblioteca y el atajo de notas rápidas, y puedes copiar tus notas de Obsidian, Logseq, iA Writer o Typora. Una biblioteca vacía recibe la guía **Getting started**: un recorrido de diez minutos por las funciones principales. Nunca sobrescribe las notas que ya tengas.
 

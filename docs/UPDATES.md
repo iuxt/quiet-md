@@ -1,6 +1,6 @@
 # GitHub 自动更新方案
 
-状态：代码已接入 GitHub Releases，并配置分叉公钥；正式发布前仍需配置 Actions 签名凭据，并完成各平台的真实安装验证。本文同时记录实现、发布步骤和验收要求。
+状态：默认使用免费测试包发布。推送版本 tag 后，Actions 构建四个平台安装包并发布为 Pre-release，不需要 Apple、Windows 或 Minisign 签名凭据。测试版只供手动下载安装，不标记 Latest，不生成自动更新清单。下文的更新协议和正式签名要求留作将来正式发布使用。
 
 ## 目标和现状
 
@@ -125,58 +125,56 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 
 如选择本地手动发布，应先停用 Actions Release 工作流，避免推送 tag 后与自动发布争用同一版本。发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交并推送公钥和源码，再运行 `python3 scripts/version.py release` 创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`；可选加上 `--notes docs/releases/<version>.md` 使用自定义发布说明，省略时由 GitHub 自动生成。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
 
-## GitHub Actions Release
+## GitHub Actions 免费测试发布
 
-[Release 工作流](../.github/workflows/release.yml) 在推送 `v*` tag 时自动构建，校验通过后发布为正式 Latest；普通分支 push 和 PR 不触发构建或发布。[CI 工作流](../.github/workflows/ci.yml) 仅供手动运行验证构建。Release 也保留在 `main` 上手动触发的入口，可选择只生成草稿。先把工作流提交并推送到 `main`，确保待发布 tag 对应的提交包含该工作流，再在仓库 Settings › Secrets and variables › Actions 配置下列 **Repository secrets**（不是普通 variables）：
+[Release 工作流](../.github/workflows/release.yml) 在推送 `v*` tag 时自动构建，发布为 GitHub **Pre-release**。不需要付费开发者账号、平台证书或 Minisign 密钥；只有最终发布任务使用 GitHub 自动提供的 `GITHUB_TOKEN` 写入 Release。普通分支 push 和 PR 不触发构建，CI 工作流保留手动验证入口。
 
-| Secret | 值 |
-|---|---|
-| `MINISIGN_SECRET_KEY_BASE64` | 与仓库公钥匹配的完整 Minisign 私钥文件，编码成单行 Base64 |
-| `MINISIGN_PASSWORD` | Minisign 私钥密码；加密私钥必须配置，无密码私钥可留空 |
-| `MACOS_CERTIFICATE_P12_BASE64` | 含 Developer ID Application 证书及私钥的 `.p12`，单行 Base64 |
-| `MACOS_CERTIFICATE_PASSWORD` | `.p12` 导出密码 |
-| `MACOS_SIGNING_IDENTITY` | 完整的 `Developer ID Application: … (TEAMID)` 身份名称 |
-| `APPLE_ID` | Apple Developer 账户邮箱 |
-| `APPLE_APP_PASSWORD` | 用于 notarytool 的 Apple 专用密码 |
-| `APPLE_TEAM_ID` | 签名证书所属 Apple Team ID |
-| `WINDOWS_CERTIFICATE_PFX_BASE64` | 含有效代码签名证书及私钥的 `.pfx`，单行 Base64 |
-| `WINDOWS_CERTIFICATE_PASSWORD` | `.pfx` 导出密码 |
-
-Windows 时间戳服务默认 `http://time.certum.pl`，可以用仓库 **Variable** `WINDOWS_TIMESTAMP_URL` 改为证书颁发方的 RFC 3161 服务。本工作流的 Windows 签名支持可导入的 PFX；硬件令牌或云签名需要替换该签名步骤，不能拿证书公钥充当 PFX 私钥。
-
-已初始化过 Minisign 密钥时不要重新生成。可在本机安装并登录 `gh` 后，直接把 Base64 通过管道写入 Secret，避免把私钥打印出来：
-
-```sh
-base64 -i ~/.minisign/quiet-md-iuxt.key | tr -d '\n' | gh secret set MINISIGN_SECRET_KEY_BASE64 --repo iuxt/quiet-md
-gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
-```
-
-第二条交互输入私钥密码。证书文件同样先编码成单行 Base64，再通过 Secrets 页面或 `gh secret set` 配置。工作流不会自动读取或上传本机密钥；私钥不进入 Git、日志或构建产物。macOS 在 runner 临时 keychain 中导入证书与公证凭据，Windows 临时导入 PFX，用完后清理。Minisign 私钥只用于预检及最终汇总签名，不交给平台构建步骤。
+- macOS：ad-hoc 签名，跳过 Apple 公证，文件名保留 `-unsigned.zip`。
+- Windows：未签名安装包，来自 `dist/windows/unsigned/`。
+- Linux：AppImage。
+- 每个平台附带 SHA-256，共 8 项资产；不生成 `.minisig` 或 `update-*.json`。SHA-256 只用于检查下载完整性，不替代签名认证。
+- 先上传草稿并重新下载、逐项比较，再公开为 Pre-release；不标记 Latest，不进入应用内更新通道。macOS 和 Windows 可能显示安全提示，测试版需要手动安装。
 
 一次新版本的操作顺序：
 
-1. 用 `python3 scripts/version.py bump-patch` 递增版本（也支持 `bump-minor` / `bump-major`），脚本同步 `VERSION`、两个 `Cargo.toml` 和 `Cargo.lock`。更新 `src/changelog.rs`；`docs/releases/<version>.md` 为可选的自定义发布说明，存在时优先使用，不存在时由 GitHub 自动生成。完成检查后按正常 Git 流程提交、推送到 `main`。**要测试更新，新版本必须高于已安装版本。**
-2. 每次发布新版本都运行以下命令，为当前 `main` 的发布提交创建并推送匹配的 Git tag；版本号直接从 `VERSION` 读取：
+1. 用 `python3 scripts/version.py bump-patch` 递增版本（也支持 `bump-minor` / `bump-major`），同步 `VERSION`、两个 `Cargo.toml` 和 `Cargo.lock`。更新 `src/changelog.rs` 和可选的 `docs/releases/<version>.md`。
+2. 运行 `scripts/check.sh`，提交并推送到 `main`，保持工作区干净。
+3. 运行 `python3 scripts/version.py release`，校验当前提交与远端 `main` 一致后，创建并推送 `v<版本号>` tag。已有 tag 不覆盖、不移动。
+4. Actions › Release 自动构建并发布测试版，在 [Releases](https://github.com/iuxt/quiet-md/releases) 手动下载。
 
-   ```sh
-   python3 scripts/version.py release
-   ```
+手动运行 Actions › Release 时，分支选择 `main`，`tag` 填已有 tag；默认生成验证过的测试草稿，勾选 `publish` 才公开为 Pre-release。若已有同版本 Release，工作流拒绝覆盖；未创建 Release 的失败任务可以重跑。所有版本使用同一个并发组，不取消正在上传的任务。
 
-   脚本先校验四份版本文件一致、工作区干净、当前分支为 `main`，并联网确认 `origin/main` 指向当前提交，再创建附注 tag 并推送。已有同版本 tag 指向其他提交时拒绝发布，不覆盖、不移动；指向相同提交时可重复运行，推送失败后也可重试。此命令不递增版本、不创建提交。
-
-3. 推送 tag 后，Actions › **Release** 自动构建、签名并发布正式 Latest，无需再点 **Run workflow**。在 Actions 中查看执行结果和 Release 链接。
-
-需要重试尚未创建 Release 的版本时，可重新运行失败的工作流，也可打开 Actions › **Release** › **Run workflow**，分支选择 `main`，`tag` 填已有 tag。手动运行时 `publish` 默认关闭，生成并下载验签通过的 Release 草稿；需要正式发布时勾选 `publish`。也可用 CLI：
+本地也可以使用相同流程，输入四个平台最终产物：
 
 ```sh
-gh workflow run release.yml --repo iuxt/quiet-md --ref main -f tag=v0.2.0 -f publish=true
+python3 scripts/publish-github-release.py --test-release --dry-run <arm64-unsigned.zip> <intel-unsigned.zip> <windows-setup.exe> <linux.AppImage>
+python3 scripts/publish-github-release.py --test-release --prepare dist/test-assets <arm64-unsigned.zip> <intel-unsigned.zip> <windows-setup.exe> <linux.AppImage>
 ```
 
-预检要求 tag 指向当前 `main` 提交、tag 严格为与两个 `Cargo.toml` 一致的 `vMAJOR.MINOR.PATCH`、公钥有效、所需 Secrets 完整、Minisign 私钥实际签名能通过仓库公钥验签；失败会在昂贵的平台构建前结束。三个平台任务固定检出预检得到的同一提交，分别完成完整检查、打包与平台签名；macOS 在同一个 runner 顺序构建两种架构并公证。只有所有平台成功后才汇总生成 16 项更新资产，创建 draft、重新下载并逐项校验。tag 推送自动发布为 Latest；手动运行则按 `publish` 的值保留 draft 或发布为 Latest。只有最终汇总任务具备 Release 写权限。
+登录 `gh` 后，将 `--prepare` 改为 `--publish` 即可上传并发布测试版；可选 `--draft` 保留草稿，`--notes docs/releases/<version>.md` 提供版本说明。脚本会自动在说明中加入测试包的签名状态与手动安装说明。输出目录必须是新目录。
 
-所有发布使用同一个并发组，不取消已经开始的签名或上传；已有 Release 和资产拒绝覆盖。草稿验证后如要在同版本运行正式发布，先由维护者检查并删除已有草稿，再重新触发；工作流不会自动删除它，也不会替换已经公开的版本。构建产物保留 7 天，最终更新资产额外保留 14 天；实际 Release 资源长期保留。
+## 正式签名发布（可选）
 
-当前本地 ad-hoc 客户端依然不能通过正式源自行更新，必须先手动安装首个同 Apple Team、内置分叉公钥和更新源的正式签名版本。Release 草稿不会被 `releases/latest/download` 发现。
+`scripts/publish-github-release.py` 不带 `--test-release` 时，保留正式签名发布模式：四个平台最终包、Minisign 签名和自动更新清单，共 16 项资产，逐项验证后才标记 Latest。该模式不由当前测试发布工作流调用。
+
+正式 macOS 包需要 Developer ID Application 证书和 Apple 公证；Windows 包需要合适的代码签名证书或云签名服务。按平台打包脚本完成签名后，使用独立 Minisign 密钥签署更新包。不要重新生成已使用的更新密钥；公钥是 `packaging/update-key.pub`，私钥保存在仓库外。
+
+恢复正式 Actions 签名发布时，需要重新接入平台签名步骤与以下 Repository secrets：
+
+| Secret | 值 |
+|---|---|
+| `MINISIGN_SECRET_KEY_BASE64` | 与仓库公钥匹配的 Minisign 私钥，单行 Base64 |
+| `MINISIGN_PASSWORD` | 私钥密码 |
+| `MACOS_CERTIFICATE_P12_BASE64` | 包含证书和私钥的 `.p12`，单行 Base64 |
+| `MACOS_CERTIFICATE_PASSWORD` | `.p12` 导出密码 |
+| `MACOS_SIGNING_IDENTITY` | `Developer ID Application: … (TEAMID)` |
+| `APPLE_ID` | 开发者账号邮箱 |
+| `APPLE_APP_PASSWORD` | Apple App 专用密码 |
+| `APPLE_TEAM_ID` | 开发者 Team ID |
+| `WINDOWS_CERTIFICATE_PFX_BASE64` | 含可导入私钥的有效 `.pfx`，单行 Base64 |
+| `WINDOWS_CERTIFICATE_PASSWORD` | `.pfx` 导出密码 |
+
+当前 Windows 签名脚本支持证书指纹；硬件令牌或云签名可能需要调整 runner 和认证步骤。只有公钥的证书不能用于签名。正式客户端和免费测试版的更新策略不同，不能通过放宽客户端验签来混用。
 
 ## 实施范围与验收
 
@@ -186,8 +184,8 @@ gh workflow run release.yml --repo iuxt/quiet-md --ref main -f tag=v0.2.0 -f pub
 | `src/app.rs` | 为正常保存退出路径接入更新完成回调，保存未完成时保留可重试状态 |
 | `src/settings.rs` | 沿用现有控件；更新错误和不支持状态文案，将手动下载指向分叉 Releases |
 | `packaging/update-key.pub` | 已配置分叉独立公钥；Actions 中的私钥必须与其匹配 |
-| `scripts/publish-github-release.py` | 资产生成、签名校验、dry-run、CI 密码输入和 draft / Latest 发布 |
-| `.github/workflows/release.yml` | 推送版本 tag 自动发布；保留手动草稿入口；四平台构建与检查、平台签名和公证、汇总发布 |
+| `scripts/publish-github-release.py` | 默认正式签名模式；`--test-release` 生成校验文件并发布测试草稿 / Pre-release |
+| `.github/workflows/release.yml` | 推送版本 tag 自动发布免费测试版；四平台构建与检查、校验文件、Pre-release；保留手动草稿入口 |
 | `CONTRIBUTING.md`、README 各语言 | 已同步更新源、手动下载、密钥和首装说明；历史发布记录保留原意 |
 
 测试应覆盖数值版本比较、旧版本 / 同版本不升级、错仓库 / tag / 平台、篡改签名或 trusted comment、恶意 URL、清单超限、包截断 / 超长、404 / 403 / 429 / 5xx / 超时，以及自动和手动检查并发。使用本地 HTTP 服务及测试密钥，验证「检查 → 下载 → 验签 → 待安装」；真实 GitHub 冒烟测试只读公开资源。

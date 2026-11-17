@@ -126,6 +126,82 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "differs"):
             release.verify_downloads(output, copied)
 
+    def test_unsigned_cli_prepares_only_packages_and_checksums(self):
+        packages = []
+        for platform, pattern in release.TEST_PLATFORMS.items():
+            path = self.root / pattern.format(version=self.version)
+            path.write_bytes(platform.encode())
+            packages.append(path)
+        before = {p.name: p.read_bytes() for p in self.root.iterdir()}
+        command = [sys.executable, release.__file__, "--test-release"]
+        plan = subprocess.run([*command, "--dry-run", *map(str, packages)], check=True, capture_output=True, text=True)
+        self.assertEqual(set(json.loads(plan.stdout)), set(release.PLATFORMS))
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
+        output = self.root / "test-assets"
+        subprocess.run([*command, "--prepare", str(output), *map(str, packages)], check=True, capture_output=True, text=True)
+        self.assertEqual({p.name for p in output.iterdir()}, {name for p in packages for name in (p.name, p.name + ".sha256")})
+        for package in packages:
+            self.assertEqual((output / package.name).read_bytes(), package.read_bytes())
+            self.assertEqual((output / (package.name + ".sha256")).read_text(), f"{release.digest(package)}  {package.name}\n")
+        with self.assertRaisesRegex(ValueError, "All four"):
+            release.inventory(packages[:-1], self.version, test_release=True)
+        Path(str(packages[0]) + ".sha256").write_text("wrong checksum")
+        with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
+            release.inventory(packages, self.version, test_release=True)
+
+    def test_unsigned_publish_never_creates_update_manifests_or_latest_release(self):
+        packages = []
+        for platform, pattern in release.TEST_PLATFORMS.items():
+            path = self.root / pattern.format(version=self.version)
+            path.write_bytes(platform.encode())
+            packages.append(path)
+        output = self.root / "test-assets"
+        assets = release.prepare_test(release.inventory(packages, self.version, test_release=True), output)
+        notes = self.root / "notes.md"
+        notes.write_text("Test version changes")
+        for draft, corrupt in [(True, False), (False, False), (False, True)]:
+            commands = []
+
+            def run(*args, capture=False):
+                commands.append(tuple(map(str, args)))
+                if args[:3] == ("git", "status", "--porcelain"):
+                    return ""
+                if capture:
+                    return "release-commit"
+                if args[:3] == ("gh", "release", "download"):
+                    destination = Path(args[args.index("--dir") + 1])
+                    shutil.copytree(output, destination, dirs_exist_ok=True)
+                    if corrupt:
+                        (destination / assets[0].name).write_bytes(b"corrupt")
+
+            def download(url, path, limit):
+                self.assertNotIn("/latest/", url)
+                shutil.copyfile(output / path.name, path)
+
+            with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
+                    patch.object(release, "public_key", side_effect=AssertionError("Unsigned releases never read signing keys")), \
+                    patch.object(release, "https_download", side_effect=download) as public_download:
+                if corrupt:
+                    with self.assertRaisesRegex(ValueError, "differs"):
+                        release.publish(output, assets, self.version, notes, draft=draft, test_release=True)
+                else:
+                    release.publish(output, assets, self.version, notes, draft=draft, test_release=True)
+            create = next(c for c in commands if c[:3] == ("gh", "release", "create"))
+            self.assertIn("--prerelease", create)
+            self.assertIn("--latest=false", create)
+            body = create[create.index("--notes") + 1]
+            self.assertIn("ad-hoc", body)
+            self.assertIn(notes.read_text(), body)
+            edits = [c for c in commands if c[:3] == ("gh", "release", "edit")]
+            self.assertEqual(len(edits), int(not draft and not corrupt))
+            if edits:
+                self.assertIn("--prerelease=true", edits[0])
+                self.assertIn("--latest=false", edits[0])
+            self.assertEqual(public_download.call_count, len(assets) if not draft and not corrupt else 0)
+        self.assertFalse(any(p.name.startswith("update-") for p in output.iterdir()))
+        with self.assertRaises(FileExistsError):
+            release.prepare_test(release.inventory(packages, self.version, test_release=True), output)
+
     def test_verified_draft_is_not_made_latest(self):
         output = self.root / "assets"
         output.mkdir()

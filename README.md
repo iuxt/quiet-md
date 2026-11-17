@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="Latest release"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?include_prereleases&label=release&color=2f6feb" alt="Latest release"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows and Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="Built with Rust and GPUI">
@@ -19,11 +19,11 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-macos.svg" height="56" alt="Download for macOS"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-macos.svg" height="56" alt="Download for macOS"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-windows.svg" height="56" alt="Download for Windows"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-windows.svg" height="56" alt="Download for Windows"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-linux.svg" height="56" alt="Download for Linux"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-linux.svg" height="56" alt="Download for Linux"></a>
 </p>
 
 <p align="center">
@@ -52,25 +52,25 @@
 ## Download
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-macos.svg" height="56" alt="Download for macOS"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-macos.svg" height="56" alt="Download for macOS"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-windows.svg" height="56" alt="Download for Windows"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-windows.svg" height="56" alt="Download for Windows"></a>
   &nbsp;
-  <a href="https://github.com/iuxt/quiet-md/releases/latest"><img src="docs/images/download-linux.svg" height="56" alt="Download for Linux"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="docs/images/download-linux.svg" height="56" alt="Download for Linux"></a>
 </p>
 
 | Platform | Package | Requirements |
 |---|---|---|
-| **macOS** (Apple Silicon) | [quiet-md-macos-arm64.zip](https://github.com/iuxt/quiet-md/releases/latest) | macOS 13 or later |
-| **Windows** (x64) | [quiet-md-windows-x64-setup.exe](https://github.com/iuxt/quiet-md/releases/latest) | Windows 10 version 1809 or later |
-| **Linux** (x86_64, experimental) | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases/latest) | glibc 2.35 or later (Ubuntu 22.04 and newer) |
-| **macOS** (Intel) | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases/latest) | macOS 13 or later |
+| **macOS** (Apple Silicon) | [quiet-md-macos-arm64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 or later |
+| **Windows** (x64) | [quiet-md-windows-x64-setup.exe](https://github.com/iuxt/quiet-md/releases) | Windows 10 version 1809 or later |
+| **Linux** (x86_64, experimental) | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases) | glibc 2.35 or later (Ubuntu 22.04 and newer) |
+| **macOS** (Intel) | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 or later |
 
-- **macOS**: unzip and drag `quiet.md.app` into Applications. The app is signed and notarized by Apple.
+- **macOS**: unzip and drag `quiet.md.app` into Applications. The test app uses ad-hoc signing and is not notarized by Apple.
 - **Windows**: run the installer. By default it installs for the current user only, and uninstalling never deletes your notes. If SmartScreen appears on first launch, click **More info → Run anyway**.
 - **Linux** (experimental): `chmod +x quiet-md-*.AppImage` and run it; without FUSE, add `--appimage-extract-and-run`. AppImage 0.1.10 and later support in-app updates; older Linux versions need a one-time manual install. Interactive testing so far covers Omarchy on Wayland; see the [Linux notes](CONTRIBUTING.md#linux-experimental).
 
-This fork downloads and checks updates only from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). Install the first fork release manually; click **Update** once for subsequent signed releases to download, verify, save all open documents and restart to install. Automatic checks can be disabled in Settings › General. Publishing requires an independent Minisign key and signed release packages; see [the update and release guide](docs/UPDATES.md).
+Current downloads are **free test prereleases** from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS packages are ad-hoc signed and unnotarized; the Windows installer is unsigned. Download and install manually; these builds do not enter the in-app update channel. Each package includes a SHA-256 checksum. See [the release guide](docs/UPDATES.md).
 
 On first launch, Quiet.md asks for the interface language, where to keep your library and the quick-note shortcut, and offers to copy in notes from Obsidian, Logseq, iA Writer or Typora. An empty library gets a **Getting started** guide — a ten-minute tour of the main features. Existing notes are never overwritten.
 

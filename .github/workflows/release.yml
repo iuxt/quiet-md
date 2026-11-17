@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       publish:
-        description: 'Publish as Latest so installed clients can discover the update'
+        description: 'Publish the unsigned test prerelease (manual download only)'
         required: true
         default: false
         type: boolean
@@ -18,7 +18,7 @@ on:
 permissions:
   contents: read
 
-# Only one release may change Latest at a time. Never cancel a signing/upload job.
+# Publish one version at a time; never cancel an upload in progress.
 concurrency:
   group: quiet-md-release
   cancel-in-progress: false
@@ -49,7 +49,6 @@ jobs:
           release = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(release)
           version = release.version()
-          release.public_key()
           tag = os.environ['RELEASE_TAG']
           if tag != f'v{version}':
               raise SystemExit(f'Tag must be v{version}, matching both Cargo.toml files')
@@ -65,52 +64,6 @@ jobs:
               raise SystemExit('This release already exists; assets are never overwritten')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'commit={head}\nversion={version}\n')
-          PY
-
-      - name: Check required signing secrets
-        env:
-          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
-          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-        run: |
-          python3 - <<'PY'
-          import os
-          required = ['MINISIGN_SECRET_KEY_BASE64', 'MACOS_CERTIFICATE_P12_BASE64', 'MACOS_CERTIFICATE_PASSWORD',
-                      'MACOS_SIGNING_IDENTITY', 'APPLE_ID', 'APPLE_APP_PASSWORD', 'APPLE_TEAM_ID',
-                      'WINDOWS_CERTIFICATE_PFX_BASE64', 'WINDOWS_CERTIFICATE_PASSWORD']
-          missing = [name for name in required if not os.environ.get(name)]
-          if missing:
-              raise SystemExit('Missing repository secrets: ' + ', '.join(missing))
-          if not os.environ['MACOS_SIGNING_IDENTITY'].startswith('Developer ID Application:'):
-              raise SystemExit('MACOS_SIGNING_IDENTITY must be a Developer ID Application identity')
-          PY
-
-      - name: Verify update signing key before building
-        env:
-          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y minisign
-          python3 - <<'PY'
-          import base64, os, subprocess, tempfile
-          from pathlib import Path
-          with tempfile.TemporaryDirectory(prefix='quiet-key-check-') as temp:
-              root = Path(temp)
-              key = root / 'update.key'
-              key.write_bytes(base64.b64decode(os.environ['MINISIGN_SECRET_KEY_BASE64'], validate=True))
-              key.chmod(0o600)
-              probe = root / 'probe'
-              probe.write_bytes(b'quiet-md release key check')
-              subprocess.run(['minisign', '-S', '-s', str(key), '-m', str(probe), '-t', probe.name],
-                             input=os.environ.get('MINISIGN_PASSWORD', '') + '\n', text=True, check=True)
-              subprocess.run(['minisign', '-V', '-q', '-p', 'packaging/update-key.pub', '-m', str(probe)], check=True)
           PY
 
   macos:
@@ -133,52 +86,20 @@ jobs:
           rustup component add clippy
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
           scripts/check.sh
-      - name: Configure temporary signing keychain
+      - name: Package both macOS architectures without notarization
         env:
-          CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: |
-          keychain="$RUNNER_TEMP/quiet-release.keychain-db"
-          keychain_password=$(openssl rand -hex 32)
-          echo "::add-mask::$keychain_password"
-          python3 - <<'PY'
-          import base64, os
-          from pathlib import Path
-          path = Path(os.environ['RUNNER_TEMP']) / 'quiet-release.p12'
-          path.write_bytes(base64.b64decode(os.environ['CERTIFICATE'], validate=True))
-          path.chmod(0o600)
-          PY
-          security create-keychain -p "$keychain_password" "$keychain"
-          security set-keychain-settings -lut 21600 "$keychain"
-          security unlock-keychain -p "$keychain_password" "$keychain"
-          security import "$RUNNER_TEMP/quiet-release.p12" -P "$CERTIFICATE_PASSWORD" -k "$keychain" -T /usr/bin/codesign -T /usr/bin/security
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -k "$keychain_password" "$keychain"
-          security list-keychains -d user -s "$keychain" login.keychain-db
-          xcrun notarytool store-credentials quiet-release --keychain "$keychain" --apple-id "$APPLE_ID" --password "$APPLE_APP_PASSWORD" --team-id "$APPLE_TEAM_ID"
-      - name: Sign and notarize both macOS architectures
-        env:
-          SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
-          NOTARY_PROFILE: quiet-release
-          NOTARY_KEYCHAIN: ${{ runner.temp }}/quiet-release.keychain-db
+          SIGNING_IDENTITY: '-'
         run: |
           MACOS_TARGET=aarch64-apple-darwin scripts/release.sh
           MACOS_TARGET=x86_64-apple-darwin scripts/release.sh
-      - name: Remove signing credentials
-        if: always()
-        run: |
-          security delete-keychain "$RUNNER_TEMP/quiet-release.keychain-db" || true
-          rm -f "$RUNNER_TEMP/quiet-release.p12"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-macos
           path: |
-            dist-release/quiet-md-*-macos-arm64.zip
-            dist-release/quiet-md-*-macos-arm64.zip.sha256
-            dist-release/quiet-md-*-macos-x86_64.zip
-            dist-release/quiet-md-*-macos-x86_64.zip.sha256
+            dist-release/quiet-md-*-macos-arm64-unsigned.zip
+            dist-release/quiet-md-*-macos-arm64-unsigned.zip.sha256
+            dist-release/quiet-md-*-macos-x86_64-unsigned.zip
+            dist-release/quiet-md-*-macos-x86_64-unsigned.zip.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -192,43 +113,27 @@ jobs:
           ref: ${{ needs.preflight.outputs.commit }}
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Build, check and sign Windows installer
+      - name: Build, check and package unsigned Windows installer
         shell: pwsh
-        env:
-          CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
-          CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          TIMESTAMP_URL: ${{ vars.WINDOWS_TIMESTAMP_URL || 'http://time.certum.pl' }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $pfx = Join-Path $env:RUNNER_TEMP 'quiet-release.pfx'
-          $certificates = @()
-          try {
-            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERTIFICATE))
-            $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
-            $certificates = @(Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password)
-            $certificate = @($certificates | Where-Object HasPrivateKey)
-            if ($certificate.Count -ne 1) { throw 'PFX must contain exactly one signing private key' }
-            $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
-            $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if (!$vs) { throw 'Visual Studio C++ tools were not found' }
-            Import-Module "$vs/Common7/Tools/Microsoft.VisualStudio.DevShell.dll"
-            Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
-            & rustup component add clippy
-            if ($LASTEXITCODE -ne 0) { throw 'Toolchain installation failed' }
-            & python scripts/check.py
-            if ($LASTEXITCODE -ne 0) { throw 'Windows checks failed' }
-            & scripts/package-windows.ps1 -Iscc "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe" -CertificateThumbprint $certificate[0].Thumbprint -TimestampUrl $env:TIMESTAMP_URL
-            if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
-          } finally {
-            foreach ($certificate in $certificates) { Remove-Item "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -DeleteKey -ErrorAction SilentlyContinue }
-            Remove-Item $pfx -ErrorAction SilentlyContinue
-          }
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vs) { throw 'Visual Studio C++ tools were not found' }
+          Import-Module "$vs/Common7/Tools/Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x64 -host_arch=x64'
+          & rustup component add clippy
+          if ($LASTEXITCODE -ne 0) { throw 'Toolchain installation failed' }
+          & python scripts/check.py
+          if ($LASTEXITCODE -ne 0) { throw 'Windows checks failed' }
+          & scripts/package-windows.ps1 -Iscc "${env:ProgramFiles(x86)}/Inno Setup 6/ISCC.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Windows packaging failed' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-windows
           path: |
-            dist/windows/signed/quiet-md-*-windows-x64-setup.exe
-            dist/windows/signed/quiet-md-*-windows-x64-setup.exe.sha256
+            dist/windows/unsigned/quiet-md-*-windows-x64-setup.exe
+            dist/windows/unsigned/quiet-md-*-windows-x64-setup.exe.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -280,49 +185,41 @@ jobs:
           env-vars: MACOSX_DEPLOYMENT_TARGET
       - name: Install release tools
         run: |
-          brew install minisign
           rustup component add clippy
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*
           path: dist/incoming
           merge-multiple: true
-      - name: Sign update packages and verify GitHub release
+      - name: Publish verified unsigned test prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-          PUBLISH_LATEST: ${{ github.event_name == 'push' || inputs.publish }}
-          MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
-          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          PUBLISH_TEST: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
-          python3 - <<'PY'
-          import base64, os, subprocess, sys, tempfile
+          python3 - <<'PYTHON'
+          import os, subprocess, sys
           from pathlib import Path
-          with tempfile.TemporaryDirectory(prefix='quiet-release-key-') as temp:
-              key = Path(temp) / 'update.key'
-              key.write_bytes(base64.b64decode(os.environ['MINISIGN_SECRET_KEY_BASE64'], validate=True))
-              key.chmod(0o600)
-              version = os.environ['RELEASE_VERSION']
-              names = [f'quiet-md-{version}-macos-arm64.zip', f'quiet-md-{version}-macos-x86_64.zip',
-                       f'quiet-md-{version}-windows-x64-setup.exe', f'quiet-md-{version}-x86_64.AppImage']
-              paths = [list(Path('dist/incoming').rglob(name)) for name in names]
-              if any(len(matches) != 1 for matches in paths):
-                  raise SystemExit('Expected exactly one package for each platform')
-              command = [sys.executable, 'scripts/publish-github-release.py', '--publish', 'dist/github',
-                         '--key', str(key)]
-              notes = Path(f'docs/releases/{version}.md')
-              if notes.is_file():
-                  command.extend(['--notes', str(notes)])
-              if os.environ['PUBLISH_LATEST'] != 'true':
-                  command.append('--draft')
-              subprocess.run(command + [str(matches[0]) for matches in paths], check=True)
-              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-                  status = 'Published as Latest' if os.environ['PUBLISH_LATEST'] == 'true' else 'Verified draft (clients cannot discover drafts)'
-                  summary.write(f'{status}: https://github.com/iuxt/quiet-md/releases/tag/v{version}\n')
-          PY
+          version = os.environ['RELEASE_VERSION']
+          names = [f'quiet-md-{version}-macos-arm64-unsigned.zip', f'quiet-md-{version}-macos-x86_64-unsigned.zip',
+                   f'quiet-md-{version}-windows-x64-setup.exe', f'quiet-md-{version}-x86_64.AppImage']
+          paths = [list(Path('dist/incoming').rglob(name)) for name in names]
+          if any(len(matches) != 1 for matches in paths):
+              raise SystemExit('Expected exactly one package for each platform')
+          command = [sys.executable, 'scripts/publish-github-release.py', '--test-release', '--publish', 'dist/github']
+          notes = Path(f'docs/releases/{version}.md')
+          if notes.is_file():
+              command.extend(['--notes', str(notes)])
+          if os.environ['PUBLISH_TEST'] != 'true':
+              command.append('--draft')
+          subprocess.run(command + [str(matches[0]) for matches in paths], check=True)
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              status = 'Published unsigned test prerelease' if os.environ['PUBLISH_TEST'] == 'true' else 'Verified test draft'
+              summary.write(f'{status}: https://github.com/iuxt/quiet-md/releases/tag/v{version}\n')
+          PYTHON
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: verified-update-assets
+          name: verified-test-assets
           path: dist/github/*
           if-no-files-found: error
           retention-days: 14
