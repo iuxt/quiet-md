@@ -1,6 +1,8 @@
 name: Release
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
@@ -23,7 +25,7 @@ concurrency:
 
 jobs:
   preflight:
-    if: github.repository == 'iuxt/quiet-md' && github.ref == 'refs/heads/main'
+    if: github.repository == 'iuxt/quiet-md' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     outputs:
@@ -38,7 +40,7 @@ jobs:
       - name: Validate release source and tag
         id: source
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
@@ -53,6 +55,8 @@ jobs:
           if tag != f'v{version}':
               raise SystemExit(f'Tag must be v{version}, matching both Cargo.toml files')
           head = release.run('git', 'rev-parse', 'HEAD', capture=True)
+          if release.run('git', 'rev-parse', 'refs/remotes/origin/main', capture=True) != head:
+              raise SystemExit('The release commit must be main HEAD')
           if release.run('git', 'rev-list', '-n', '1', tag, capture=True) != head:
               raise SystemExit('The local release tag must point at main HEAD')
           if release.run('gh', 'api', f'repos/{release.REPO}/commits/{tag}', '--jq', '.sha', capture=True) != head:
@@ -290,7 +294,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-          PUBLISH_LATEST: ${{ inputs.publish }}
+          PUBLISH_LATEST: ${{ github.event_name == 'push' || inputs.publish }}
           MINISIGN_SECRET_KEY_BASE64: ${{ secrets.MINISIGN_SECRET_KEY_BASE64 }}
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
         run: |

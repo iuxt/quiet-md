@@ -97,7 +97,7 @@ https://github.com/iuxt/quiet-md/releases/latest/download/update-<platform>.json
 4. 为 `iuxt/quiet-md` 创建 draft Release，上传全部安装包、校验和、签名和清单。读取回传资产并比对名称、大小和下载内容；全部验证成功后才发布为正式 Latest。上传过程中客户端仍看到前一个完整 Release。
 5. 从公开版本资源地址再次下载验签，再检查四个 `latest/download/update-*.json` 地址是否对应本次版本；记录验证结果。发布完成后不替换该版本资产，有修复时递增版本重新发布。
 
-上述发布步骤由维护者显式执行；应用本身不上传、创建 tag 或发布。发布脚本会要求本地和远端 tag 均指向当前提交，并运行完整检查。`.github/workflows/release.yml` 实现手动发布，只有最终发布任务持有 `contents: write`；签名凭据仅在 Release 流程中使用，PR / 常规 CI 不持有发布私钥。
+维护者推送版本 tag 后，由 `.github/workflows/release.yml` 自动完成上述发布步骤，也可选择本地手动发布；应用本身不上传、创建 tag 或发布。发布脚本会要求本地和远端 tag 均指向当前提交，并运行完整检查。只有最终发布任务持有 `contents: write`；签名凭据仅在 Release 流程中使用，PR / 常规 CI 不持有发布私钥。
 
 首次切换需要手动安装一个内置新更新源和独立公钥的版本。现有读取上游源、公钥的安装不能自行迁移到分叉的信任链；本地 ad-hoc 安装版也需要手动安装首个同 Team 的正式签名版本。发布前需准备 Minisign 私钥和 macOS Developer ID；不得把上游公钥可用当作分叉已具备发布条件。
 
@@ -123,11 +123,11 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 
 `--dry-run` 不签名、不写文件、不联网；`--prepare` 只在本地生成 16 项资产（每个平台的包、SHA-256、Minisign 签名和清单），没有私钥时也可使用包旁已经存在且验签通过的 `.minisig`。已有输出目录一律拒绝覆盖。私钥从命令指定路径或 `MINISIGN_KEY` 读取，不复制进产物。
 
-发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交公钥和源码、创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`，加上 `--notes docs/releases/<version>.md`。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
+如选择本地手动发布，应先停用 Actions Release 工作流，避免推送 tag 后与自动发布争用同一版本。发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交公钥和源码、创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`，加上 `--notes docs/releases/<version>.md`。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
 
 ## GitHub Actions Release
 
-[Release 工作流](../.github/workflows/release.yml) 只接受在 `main` 上手动触发，不因普通 push 或 PR 发布。先把工作流提交并推送到 `main`，再在仓库 Settings › Secrets and variables › Actions 配置下列 **Repository secrets**（不是普通 variables）：
+[Release 工作流](../.github/workflows/release.yml) 在推送 `v*` tag 时自动触发，校验通过后发布为正式 Latest；普通分支 push 和 PR 不发布。也保留在 `main` 上手动触发的入口，可选择只生成草稿。先把工作流提交并推送到 `main`，确保待发布 tag 对应的提交包含该工作流，再在仓库 Settings › Secrets and variables › Actions 配置下列 **Repository secrets**（不是普通 variables）：
 
 | Secret | 值 |
 |---|---|
@@ -159,17 +159,19 @@ gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
 2. 为当前 `main` 提交创建并推送匹配的 tag（示例版本号需替换）：
 
    ```sh
-   git tag v0.1.13
-   git push origin v0.1.13
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 
-3. 打开仓库 Actions › **Release** › **Run workflow**，分支选择 `main`，`tag` 填该 tag。`publish` 默认关闭，生成并下载验签通过的 Release 草稿；需要让客户端发现版本时勾选 `publish`，发布为正式 Latest。也可用 CLI：
+3. 推送 tag 后，Actions › **Release** 自动构建、签名并发布正式 Latest，无需再点 **Run workflow**。在 Actions 中查看执行结果和 Release 链接。
 
-   ```sh
-   gh workflow run release.yml --repo iuxt/quiet-md --ref main -f tag=v0.1.13 -f publish=true
-   ```
+需要重试尚未创建 Release 的版本时，可重新运行失败的工作流，也可打开 Actions › **Release** › **Run workflow**，分支选择 `main`，`tag` 填已有 tag。手动运行时 `publish` 默认关闭，生成并下载验签通过的 Release 草稿；需要正式发布时勾选 `publish`。也可用 CLI：
 
-预检要求 tag 指向当前 `main` 提交、两个版本号一致、发布说明存在、公钥有效、所需 Secrets 完整、Minisign 私钥实际签名能通过仓库公钥验签；失败会在昂贵的平台构建前结束。三个平台任务固定检出预检得到的同一提交，分别完成完整检查、打包与平台签名；macOS 在同一个 runner 顺序构建两种架构并公证。只有所有平台成功后才汇总生成 16 项更新资产，创建 draft、重新下载并逐项校验，再按 `publish` 的值保留 draft 或发布为 Latest。只有最终汇总任务具备 Release 写权限。
+```sh
+gh workflow run release.yml --repo iuxt/quiet-md --ref main -f tag=v0.2.0 -f publish=true
+```
+
+预检要求 tag 指向当前 `main` 提交、tag 严格为与两个 `Cargo.toml` 一致的 `vMAJOR.MINOR.PATCH`、发布说明存在、公钥有效、所需 Secrets 完整、Minisign 私钥实际签名能通过仓库公钥验签；失败会在昂贵的平台构建前结束。三个平台任务固定检出预检得到的同一提交，分别完成完整检查、打包与平台签名；macOS 在同一个 runner 顺序构建两种架构并公证。只有所有平台成功后才汇总生成 16 项更新资产，创建 draft、重新下载并逐项校验。tag 推送自动发布为 Latest；手动运行则按 `publish` 的值保留 draft 或发布为 Latest。只有最终汇总任务具备 Release 写权限。
 
 所有发布使用同一个并发组，不取消已经开始的签名或上传；已有 Release 和资产拒绝覆盖。草稿验证后如要在同版本运行正式发布，先由维护者检查并删除已有草稿，再重新触发；工作流不会自动删除它，也不会替换已经公开的版本。构建产物保留 7 天，最终更新资产额外保留 14 天；实际 Release 资源长期保留。
 
@@ -184,7 +186,7 @@ gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
 | `src/settings.rs` | 沿用现有控件；更新错误和不支持状态文案，将手动下载指向分叉 Releases |
 | `packaging/update-key.pub` | 已配置分叉独立公钥；Actions 中的私钥必须与其匹配 |
 | `scripts/publish-github-release.py` | 资产生成、签名校验、dry-run、CI 密码输入和 draft / Latest 发布 |
-| `.github/workflows/release.yml` | 手动校验 tag、四平台构建与检查、平台签名和公证、汇总发布 |
+| `.github/workflows/release.yml` | 推送版本 tag 自动发布；保留手动草稿入口；四平台构建与检查、平台签名和公证、汇总发布 |
 | `CONTRIBUTING.md`、README 各语言 | 已同步更新源、手动下载、密钥和首装说明；历史发布记录保留原意 |
 
 测试应覆盖数值版本比较、旧版本 / 同版本不升级、错仓库 / tag / 平台、篡改签名或 trusted comment、恶意 URL、清单超限、包截断 / 超长、404 / 403 / 429 / 5xx / 超时，以及自动和手动检查并发。使用本地 HTTP 服务及测试密钥，验证「检查 → 下载 → 验签 → 待安装」；真实 GitHub 冒烟测试只读公开资源。
