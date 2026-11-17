@@ -231,6 +231,9 @@ def publish(output, assets, release, notes=None, draft=False, test_release=False
 
 
 def main():
+    # Windows redirected stdout may use a legacy code page; paths can be Unicode.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(errors="backslashreplace")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("packages", nargs="+", type=Path)
     mode = parser.add_mutually_exclusive_group(required=True)

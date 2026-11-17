@@ -138,7 +138,8 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(set(json.loads(plan.stdout)), set(release.PLATFORMS))
         self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
         output = self.root / "test-assets"
-        subprocess.run([*command, "--prepare", str(output), *map(str, packages)], check=True, capture_output=True, text=True)
+        subprocess.run([*command, "--prepare", str(output), *map(str, packages)], check=True, capture_output=True, text=True,
+                       env={**os.environ, "PYTHONIOENCODING": "cp1252"})
         self.assertEqual({p.name for p in output.iterdir()}, {name for p in packages for name in (p.name, p.name + ".sha256")})
         for package in packages:
             self.assertEqual((output / package.name).read_bytes(), package.read_bytes())

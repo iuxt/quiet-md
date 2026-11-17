@@ -17,7 +17,7 @@ const REAL_FOLDERS: &str = "文档库改为真实文件夹，以标题命名，�
 /// Each version's notes: (version, [(中文, English)]). Only the running
 /// version's are shown; a version without notes shows nothing.
 const NOTES: &[(&str, &[(&str, &str)])] = &[
-    ("0.3.4", &[
+    ("0.3.5", &[
         ("发布免费测试安装包，可从 GitHub Releases 手动下载安装", "Free test builds are available for manual installation from GitHub Releases"),
     ]),
     ("0.3.2", &[
