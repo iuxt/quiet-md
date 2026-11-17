@@ -69,6 +69,7 @@ shot narrow-diff
 resize 1280 860
 wait 300
 click 390 788
+key cmd-a
 type Review library changes
 click 400 832
 move 1220 800
@@ -116,7 +117,15 @@ def committed_files(repo):
         return files
     return walk(tree)
 
-selected = replay("stage-selected", """click 476 267
+selected = replay("stage-selected", """click 337 116
+wait 700
+move 1220 800
+shot staged-all
+click 367 116
+wait 700
+move 1220 800
+shot unstaged-all
+click 476 267
 wait 700
 move 1220 800
 shot staged
@@ -127,8 +136,9 @@ shot unstaged
 click 476 267
 wait 700
 click 390 788
+key cmd-a
 type Commit selected file
-click 400 832
+click 307 116
 move 1220 800
 wait 1200
 shot selected-committed

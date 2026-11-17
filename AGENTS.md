@@ -37,6 +37,8 @@ scripts/check.sh        # cargo test --release + clippy --all-targets 零警告
 
 版本号记录在根目录 `VERSION`；用 `python3 scripts/version.py` 查询，用 `bump-major` / `bump-minor` / `bump-patch` 参数递增，并同步两个 `Cargo.toml` 和 `Cargo.lock`。未经用户明确要求，不创建提交。
 
+发布新版本时，提交并推送版本改动后运行 `python3 scripts/version.py release`，为该版本的发布提交创建并推送 `v<版本号>` Git tag（版本号取自 `VERSION`），不能只更新版本号或创建 Release。脚本要求工作区干净且当前提交是 `origin/main` 的最新提交；推送 tag 会触发 Release 工作流，详见 `docs/UPDATES.md`。已有 tag 不覆盖、不移动。
+
 ## 用户数据（绝对不要碰）
 
 - 产品名 Quiet.md，二进制 `quiet_md`，默认文档库 `~/Documents/Quiet.md`。那是使用者的真实数据：不要提交进仓库，不要删改里面的文件。别的应用的进程和数据一律不碰，结束进程只能匹配本仓库自己编译出来的二进制。

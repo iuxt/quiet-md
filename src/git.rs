@@ -13,13 +13,15 @@ pub(crate) struct GitPanel {
 }
 
 #[derive(Clone)]
-pub(crate) enum Action { Enable, Refresh, Configure, Commit, Push, Pull, Stage(String), Unstage(String), Discard(String), Clone(std::path::PathBuf) }
+pub(crate) enum Action { Enable, Refresh, Configure, Commit, Push, Pull, StageAll, UnstageAll, Stage(String), Unstage(String), Discard(String), Clone(std::path::PathBuf) }
 
 impl Workspace {
     pub(crate) fn init_git_panel(&mut self, cx: &mut Context<Self>) {
         if self.git.is_some() { return }
         let config = LibraryRepo::open(&Store::root_dir()).and_then(|r| r.config()).unwrap_or_default();
         let auth = Auth::environment();
+        let (y, m, d, _, _) = crate::time::civil(crate::time::now());
+        let message = format!("{y}-{m:02}-{d:02}");
         let mut field = |placeholder: &'static str, value: &str, secret: bool| cx.new(|cx| {
             let mut f = TextField::new(placeholder, cx); f.secret = secret; f.set_text(value, cx); f
         });
@@ -31,7 +33,7 @@ impl Workspace {
             ssh_key: field(tr("留空使用 SSH agent", "Leave blank to use SSH agent"), &config.ssh_key, false),
             ssh_passphrase: field(tr("私钥密码（仅本次会话）", "Key passphrase (this session only)"), &auth.ssh_passphrase, true),
             lfs_ca_info: field(tr("PEM CA 证书路径（可选）", "PEM CA certificate path (optional)"), &config.lfs_ca_info, false),
-            message: field(tr("提交说明", "Commit message"), "", false),
+            message: field(tr("提交说明", "Commit message"), &message, false),
             status: None, settings_feedback: false, error: None, notice: None,
             selected: None, preview: None, loading: false, source: false, request: 0,
         });
@@ -77,6 +79,8 @@ impl Workspace {
                     },
                     Action::Push => { repo.push(&auth)?; tr("已推送到远端", "Pushed to remote").to_string() },
                     Action::Pull => { writer.git_pull(&auth)?; tr("已与远端同步", "Up to date with remote").to_string() },
+                    Action::StageAll => { writer.git_stage_all(true)?; String::new() },
+                    Action::UnstageAll => { writer.git_stage_all(false)?; String::new() },
                     Action::Stage(path) => { writer.git_stage(&path, true)?; String::new() },
                     Action::Unstage(path) => { writer.git_stage(&path, false)?; String::new() },
                     Action::Discard(path) => { writer.git_discard(&path)?; tr("已丢弃未暂存的修改", "Unstaged changes discarded").to_string() },

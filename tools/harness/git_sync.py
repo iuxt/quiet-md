@@ -57,6 +57,7 @@ wait 300
 click 110 98
 wait 700
 click 390 828
+key cmd-a
 type First UI commit
 click 400 872
 wait 1500

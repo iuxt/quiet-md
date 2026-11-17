@@ -123,7 +123,7 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 
 `--dry-run` 不签名、不写文件、不联网；`--prepare` 只在本地生成 16 项资产（每个平台的包、SHA-256、Minisign 签名和清单），没有私钥时也可使用包旁已经存在且验签通过的 `.minisig`。已有输出目录一律拒绝覆盖。私钥从命令指定路径或 `MINISIGN_KEY` 读取，不复制进产物。
 
-如选择本地手动发布，应先停用 Actions Release 工作流，避免推送 tag 后与自动发布争用同一版本。发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交公钥和源码、创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`；可选加上 `--notes docs/releases/<version>.md` 使用自定义发布说明，省略时由 GitHub 自动生成。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
+如选择本地手动发布，应先停用 Actions Release 工作流，避免推送 tag 后与自动发布争用同一版本。发布前登录 `gh`，手动确认版本、源码、平台签名及安装验证，通过正常 Git 流程提交并推送公钥和源码，再运行 `python3 scripts/version.py release` 创建并推送 `v<version>` tag。然后将 `--prepare <新目录>` 改为 `--publish <新目录>`；可选加上 `--notes docs/releases/<version>.md` 使用自定义发布说明，省略时由 GitHub 自动生成。脚本运行完整检查，创建 draft、上传并下载验证后才标记 Latest；失败的 draft 留供检查，不覆盖已有 Release。发布成功后再从公开地址下载复核；若此时失败，会返回失败并保留已发布版本供维护者处理，不擅自删除公开版本。
 
 ## GitHub Actions Release
 
@@ -156,12 +156,13 @@ gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
 一次新版本的操作顺序：
 
 1. 用 `python3 scripts/version.py bump-patch` 递增版本（也支持 `bump-minor` / `bump-major`），脚本同步 `VERSION`、两个 `Cargo.toml` 和 `Cargo.lock`。更新 `src/changelog.rs`；`docs/releases/<version>.md` 为可选的自定义发布说明，存在时优先使用，不存在时由 GitHub 自动生成。完成检查后按正常 Git 流程提交、推送到 `main`。**要测试更新，新版本必须高于已安装版本。**
-2. 为当前 `main` 提交创建并推送匹配的 tag（示例版本号需替换）：
+2. 每次发布新版本都运行以下命令，为当前 `main` 的发布提交创建并推送匹配的 Git tag；版本号直接从 `VERSION` 读取：
 
    ```sh
-   git tag v0.2.0
-   git push origin v0.2.0
+   python3 scripts/version.py release
    ```
+
+   脚本先校验四份版本文件一致、工作区干净、当前分支为 `main`，并联网确认 `origin/main` 指向当前提交，再创建附注 tag 并推送。已有同版本 tag 指向其他提交时拒绝发布，不覆盖、不移动；指向相同提交时可重复运行，推送失败后也可重试。此命令不递增版本、不创建提交。
 
 3. 推送 tag 后，Actions › **Release** 自动构建、签名并发布正式 Latest，无需再点 **Run workflow**。在 Actions 中查看执行结果和 Release 链接。
 

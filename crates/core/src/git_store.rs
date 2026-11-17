@@ -35,6 +35,12 @@ impl Store {
         if stage { repo.stage(path) } else { repo.unstage(path) }
     }
 
+    pub fn git_stage_all(&mut self, stage: bool) -> Result<()> {
+        let _lock = self.begin_write()?;
+        let repo = crate::git::LibraryRepo::open(&self.root)?;
+        if stage { repo.stage_all() } else { repo.unstage_all() }
+    }
+
     pub fn git_discard(&mut self, path: &str) -> Result<()> {
         let lock = self.begin_write()?;
         crate::git::LibraryRepo::open(&self.root)?.discard(path)?;

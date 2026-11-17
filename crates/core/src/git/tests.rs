@@ -50,6 +50,51 @@ fn staged_commits_keep_the_snapshot_and_leave_other_changes_uncommitted() {
 }
 
 #[test]
+fn stage_all_and_unstage_all_preserve_working_files_and_lfs_snapshots() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let id = store.create_from(&doc("First")).unwrap(); let path = format!("notes/{id}.xml");
+    let repo = lib.git(); configure(&repo, &Library::new().0);
+    store.git_stage_all(true).unwrap();
+    assert!(repo.status().unwrap().changes.iter().all(|c| c.staged && !c.unstaged));
+    store.git_stage_all(false).unwrap();
+    assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged && c.unstaged));
+    assert!(repo.repo.head().is_err());
+    repo.commit("initial").unwrap();
+    let original = std::fs::read_to_string(lib.0.join(&path)).unwrap();
+    let updated = original.replace("First", "Updated");
+    std::fs::write(lib.0.join(&path), &updated).unwrap();
+    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
+    std::fs::write(lib.0.join(".assets/test.bin"), b"staged asset").unwrap();
+    std::fs::write(lib.0.join("unmanaged.txt"), "keep private").unwrap();
+    let added = store.create_from(&doc("Added")).unwrap();
+    store.git_stage_all(true).unwrap();
+    let changes = repo.status().unwrap().changes;
+    assert!(changes.iter().any(|c| c.path == MANIFEST));
+    assert!(changes.iter().all(|c| c.staged && !c.unstaged));
+    store.git_stage_all(false).unwrap();
+    assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged && c.unstaged));
+    assert_eq!(std::fs::read_to_string(lib.0.join(&path)).unwrap(), updated);
+    assert_eq!(std::fs::read(lib.0.join(".assets/test.bin")).unwrap(), b"staged asset");
+    store.git_stage_all(true).unwrap();
+    std::fs::write(lib.0.join(&path), original.replace("First", "Later")).unwrap();
+    std::fs::write(lib.0.join(".assets/test.bin"), b"later asset").unwrap();
+    let commit = store.git_commit("all staged").unwrap().unwrap();
+    assert_eq!(repo.revision(&commit, &id).unwrap(), updated);
+    assert!(repo.revision(&commit, &added).unwrap().contains("Added"));
+    let tree = repo.repo.find_commit(Oid::from_str(&commit).unwrap()).unwrap().tree().unwrap();
+    assert!(tree.get_name("unmanaged.txt").is_none());
+    let blob = repo.repo.find_blob(tree.get_path(Path::new(".assets/test.bin")).unwrap().id()).unwrap();
+    let pointer = Pointer::parse(blob.content()).unwrap().unwrap();
+    assert_eq!(lfs::Lfs::new(repo.repo.path()).read(&pointer).unwrap(), b"staged asset");
+    std::fs::remove_file(lib.0.join(".assets/test.bin")).unwrap();
+    store.git_stage_all(true).unwrap();
+    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == ".assets/test.bin" && c.kind == 'D' && c.staged && !c.unstaged));
+    store.git_stage_all(false).unwrap();
+    assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged && c.unstaged));
+    assert!(!lib.0.join(".assets/test.bin").exists());
+}
+
+#[test]
 fn discard_restores_deleted_files_and_removes_new_notes_without_broken_metadata() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("Keep")).unwrap(); let path = format!("notes/{id}.xml");

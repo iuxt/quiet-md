@@ -34,6 +34,23 @@ impl LibraryRepo {
         Ok(())
     }
 
+    pub fn stage_all(&self) -> Result<()> {
+        let tree = self.repo.find_tree(self.working_tree(true)?)?;
+        let mut index = self.repo.index()?; index.read(true)?;
+        ensure!(!index.has_conflicts(), "请先解决 Git 暂存区冲突");
+        index.read_tree(&tree)?; index.write()?;
+        Ok(())
+    }
+
+    pub fn unstage_all(&self) -> Result<()> {
+        let head = self.repo.head().ok().and_then(|h| h.peel_to_tree().ok());
+        let mut index = self.repo.index()?; index.read(true)?;
+        ensure!(!index.has_conflicts(), "请先解决 Git 暂存区冲突");
+        if let Some(tree) = head { index.read_tree(&tree)?; } else { index.clear()?; }
+        index.write()?;
+        Ok(())
+    }
+
     pub fn commit_staged(&self, message: &str) -> Result<Option<String>> {
         ensure!(!message.trim().is_empty(), "请填写提交说明");
         let config = self.config()?;

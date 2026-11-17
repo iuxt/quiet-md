@@ -17,6 +17,10 @@ const REAL_FOLDERS: &str = "文档库改为真实文件夹，以标题命名，�
 /// Each version's notes: (version, [(中文, English)]). Only the running
 /// version's are shown; a version without notes shows nothing.
 const NOTES: &[(&str, &[(&str, &str)])] = &[
+    ("0.3.2", &[
+        ("Git 变更支持全部暂存、全部取消暂存，并可从工具栏提交", "Stage or unstage all Git changes and commit from the toolbar"),
+        ("Git 提交说明默认填写当天日期，文件对比使用单列行号", "Git commit messages default to today's date; file diffs use one line-number column"),
+    ]),
     ("0.2.0", &[
         ("可选 Git 备份，支持 HTTPS / SSH 推送、克隆和拉取，图片与附件使用 Git LFS", "Optional Git backup with HTTPS / SSH push, clone, and pull; images and attachments use Git LFS"),
         ("版本历史支持预览、对比、命名和恢复", "Preview, compare, name, and restore document versions"),
