@@ -2031,9 +2031,7 @@ impl Store {
         anyhow::ensure!(!self.trash.contains_key(id), "回收站文档恢复后才能编辑");
         let text = std::fs::read_to_string(self.path(id))?;
         let ext = if self.is_markdown(id) { "md" } else { "xml" };
-        let before = self.versions(id).len();
-        crate::versions::snapshot(&self.history_base(), id, ext, &text, crate::time::now_ms(), self.settings().history_limit(), true)?;
-        Ok(self.versions(id).len() > before)
+        crate::versions::snapshot(&self.history_base(), id, ext, &text, crate::time::now_ms(), self.settings().history_limit(), true)
     }
 
     pub fn settings(&self) -> Settings {
@@ -2176,6 +2174,37 @@ mod tests {
         let mut d = doc(title);
         d.blocks.push(crate::model::Block::text(body));
         d
+    }
+
+    #[test]
+    fn manual_version_reports_creation_at_retention_limit() {
+        let lib = Lib::new("version-limit");
+        let mut s = lib.open();
+        let mut settings = s.settings(); settings.history_limit = Some(1); s.save_settings(&settings).unwrap();
+        let id = s.create_from(&doc_with("note", "first")).unwrap();
+        assert!(s.save_version_now(&id).unwrap());
+        s.save(&id, &doc_with("note", "second")).unwrap();
+        assert!(s.save_version_now(&id).unwrap());
+        let versions = s.versions(&id);
+        assert_eq!(versions.len(), 1);
+        assert!(s.version_text(&id, &versions[0].name).unwrap().contains("second"));
+        assert!(!s.save_version_now(&id).unwrap());
+    }
+
+    #[test]
+    fn completed_tree_worker_keeps_open_editors_conflict_baselines() {
+        let lib = Lib::new("receive-tree");
+        let mut s = lib.open();
+        let doc = doc_with("current", "original");
+        let id = s.create_from(&doc).unwrap();
+        s.load_for_edit(&id, false).unwrap();
+        let mut writer = s.tree_writer();
+        let imported = writer.create_from(&doc_with("imported", "new body")).unwrap();
+        writer.list();
+        s.receive_tree(writer);
+        assert!(s.load(&imported).unwrap().plain_text().contains("new body"));
+        std::fs::write(s.file_path(&id).unwrap(), docxml::serialize(&doc_with("current", "external"))).unwrap();
+        assert!(s.save(&id, &doc_with("current", "local edit")).is_err());
     }
 
     #[test]

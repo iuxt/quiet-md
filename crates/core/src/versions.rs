@@ -115,16 +115,17 @@ pub fn remove(root: &Path, id: &str, name: &str, trashed: bool) -> Result<()> {
 
 /// Save `previous` as one version. The caller treats every error as a
 /// warning: a history failure must never fail the document's own save.
-pub fn snapshot(root: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit: u32, force: bool) -> Result<()> {
-    if previous.is_empty() || (ext != "xml" && ext != "md") { return Ok(()) }
+/// Returns whether a snapshot was created, even when retention trims another.
+pub fn snapshot(root: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit: u32, force: bool) -> Result<bool> {
+    if previous.is_empty() || (ext != "xml" && ext != "md") { return Ok(false) }
     let mut versions = list(root, id, false);
     if let Some(last) = versions.first() {
         // The same text never adds a snapshot, forced or not: 保存当前版本
         // twice in a row leaves one row.
-        if read(root, id, &last.name, false).is_ok_and(|s| s == previous) { return Ok(()) }
+        if read(root, id, &last.name, false).is_ok_and(|s| s == previous) { return Ok(false) }
         // Autosave fires on a 500ms debounce; the interval keeps a long
         // editing session from filling the list.
-        if !force && ms.saturating_sub(last.ms) < MIN_INTERVAL * 1000 { return Ok(()) }
+        if !force && ms.saturating_sub(last.ms) < MIN_INTERVAL * 1000 { return Ok(false) }
     }
     let dir = history_root(root).join(id);
     std::fs::create_dir_all(&dir)?;
@@ -133,7 +134,7 @@ pub fn snapshot(root: &Path, id: &str, ext: &str, previous: &str, ms: u64, limit
     versions.insert(0, Version { name, ms, size: previous.len() as u64, label: None });
     trim(root, id, &mut versions, limit);
     trim_library(root);
-    Ok(())
+    Ok(true)
 }
 
 fn trim(root: &Path, id: &str, versions: &mut Vec<Version>, limit: u32) {

@@ -34,14 +34,16 @@ export default {
 
 export async function collect(env, now = new Date()) {
   const yesterday = dayOf(new Date(now.getTime() - 86400e3));
-  // Cloudflare: every day since the last good run, oldest first, at most MAX_DAYS per run
+  // Cloudflare: missing days, oldest first, at most MAX_DAYS attempts per run
   // (the analytics only reach 30 days back; a gap older than that is lost).
   const oldest = dayOf(new Date(now.getTime() - 30 * 86400e3));
   for (const [source, f] of [['cloudflare', cloudflare], ['site', site]]) {
-    const last = await env.DB.prepare('SELECT max(day) AS d FROM runs WHERE source = ? AND error IS NULL').bind(source).first('d');
-    let day = last ? next(last) : oldest;
-    if (day < oldest) day = oldest;
-    for (let n = 0; day <= yesterday && n < Number(env.MAX_DAYS || 3); day = next(day), n++) {
+    const done = await env.DB.prepare('SELECT DISTINCT day FROM runs WHERE source = ? AND error IS NULL AND day >= ?').bind(source, oldest).all();
+    const good = new Set(done.results.map((r) => r.day));
+    let n = 0;
+    for (let day = oldest; day <= yesterday && n < Number(env.MAX_DAYS || 3); day = next(day)) {
+      if (good.has(day)) continue;
+      n++;
       await run(env, source, day, () => f(env, day));
     }
   }

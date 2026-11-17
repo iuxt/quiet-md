@@ -910,7 +910,8 @@ fn fence(line: &str) -> Option<(char, usize, &str)> {
     let t = line.trim_start();
     let c = t.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let n = t.chars().take_while(|&x| x == c).count();
-    (n >= 3).then(|| (c, n, t[n..].trim()))
+    let info = t[n..].trim();
+    (n >= 3 && (c != '`' || !info.contains('`'))).then_some((c, n, info))
 }
 
 fn display_math(lines: &[&str]) -> Option<(Block, usize)> {

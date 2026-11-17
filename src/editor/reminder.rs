@@ -55,26 +55,31 @@ const LIST_H: f32 = 240.;
 const SELECT_H: f32 = 30.;
 const SHOW_DELAY: Duration = Duration::from_millis(600);
 
-fn off() -> i64 {
-    crate::time::local_offset() * 1000
-}
-
 /// Local day number of `t`.
 pub fn day_of(t: i64) -> i64 {
-    (t + off()).div_euclid(DAY)
+    let (y, m, d, _, _) = crate::time::civil(t.max(0) as u64 / 1000);
+    crate::time::days_from_civil(y, m, d)
 }
 
-/// Local midnight of the day of `t`.
-pub fn day_start(t: i64) -> i64 {
-    day_of(t) * DAY - off()
+fn at_day_time(day: i64, tod: i64) -> i64 {
+    let (y, m, d) = super::countdown::from_days(day);
+    crate::time::local_to_unix(y, m, d, (tod / HOUR) as u32, (tod % HOUR / MINUTE) as u32) * 1000 + tod.rem_euclid(MINUTE)
 }
+
+#[cfg(test)]
+fn day_start(t: i64) -> i64 { at_day_time(day_of(t), 0) }
 
 fn ymd(t: i64) -> (i64, u32, u32) {
     super::countdown::from_days(day_of(t))
 }
 
+fn time_of_day(t: i64) -> i64 {
+    let (_, _, _, h, m) = crate::time::civil(t.max(0) as u64 / 1000);
+    h as i64 * HOUR + m as i64 * MINUTE + t.rem_euclid(MINUTE)
+}
+
 fn hm(t: i64) -> (i64, i64) {
-    let tod = t - day_start(t);
+    let tod = time_of_day(t);
     (tod / HOUR, tod % HOUR / MINUTE)
 }
 
@@ -168,7 +173,7 @@ pub fn time_slots(set_time: i64) -> Vec<i64> {
 /// The slot a reminder made timed starts at: the last one not after now
 /// (00:00 from 23:30 on).
 pub fn current_slot(now: i64) -> i64 {
-    let k = (now - day_start(now)) / SLOT;
+    let k = time_of_day(now) / SLOT;
     if k >= 47 { 0 } else { k * SLOT }
 }
 
@@ -214,8 +219,8 @@ fn jet_label(whole_day: bool, cur: i64) -> String {
 
 /// A new reminder: tomorrow, at this half hour.
 pub fn default_reminder(now: i64) -> InlineReminder {
-    let tod = now - day_start(now);
-    let expire = day_start(now) + DAY + tod / SLOT * SLOT;
+    let tod = time_of_day(now);
+    let expire = at_day_time(day_of(now) + 1, tod / SLOT * SLOT);
     InlineReminder { expire, notify: expire, should_notify: true, whole_day: false }
 }
 
@@ -224,26 +229,26 @@ pub fn default_reminder(now: i64) -> InlineReminder {
 /// 提醒 choice resets to the first.
 pub fn toggle(r: &InlineReminder, whole_day: bool, should_notify: bool, now: i64) -> InlineReminder {
     let jet = r.notify - r.expire;
-    let day = day_start(r.expire);
+    let day = day_of(r.expire);
     let changed_day = whole_day != r.whole_day;
     let tod = match (changed_day, whole_day) {
         (true, false) => current_slot(now),
         (true, true) => DAY_END,
-        _ => r.expire - day,
+        _ => time_of_day(r.expire),
     };
-    let expire = day + tod;
+    let expire = at_day_time(day, tod);
     let jet = if changed_day || should_notify != r.should_notify { jet_lags(whole_day, jet)[0].1 } else { jet };
     InlineReminder { expire, notify: expire + jet, should_notify, whole_day }
 }
 
 /// Moves the reminder to local day `day`, keeping its time and 提醒.
 pub fn on_day(r: &InlineReminder, day: i64) -> InlineReminder {
-    let expire = day * DAY - off() + (r.expire - day_start(r.expire));
+    let expire = at_day_time(day, time_of_day(r.expire));
     InlineReminder { expire, notify: expire + (r.notify - r.expire), ..*r }
 }
 
 pub fn at_time(r: &InlineReminder, tod: i64) -> InlineReminder {
-    let expire = day_start(r.expire) + tod;
+    let expire = at_day_time(day_of(r.expire), tod);
     InlineReminder { expire, notify: expire + (r.notify - r.expire), ..*r }
 }
 
@@ -375,7 +380,7 @@ impl Editor {
     }
 
     fn sync_reminder_time(&mut self, r: &InlineReminder, cx: &mut Context<Self>) {
-        let t = slot_label(r.expire - day_start(r.expire));
+        let t = slot_label(time_of_day(r.expire));
         self.rm.time.update(cx, |f, cx| f.set_text(&t, cx));
     }
 
@@ -410,7 +415,7 @@ impl Editor {
         let Some(r) = self.core.reminder_at(at_) else { return };
         let text = self.rm.time.read(cx).text.clone();
         match parse_time(&text) {
-            Some(t) if t != r.expire - day_start(r.expire) => self.apply_reminder(|r| at_time(r, t), window, cx),
+            Some(t) if t != time_of_day(r.expire) => self.apply_reminder(|r| at_time(r, t), window, cx),
             _ => self.sync_reminder_time(&r, cx),
         }
     }
@@ -472,7 +477,7 @@ impl Editor {
             window.focus(&fh);
             self.rm.time.update(cx, |f, cx| f.select_all_text(cx));
             if let Some(r) = self.core.reminder_at(at_) {
-                let t = r.expire - day_start(r.expire);
+                let t = time_of_day(r.expire);
                 let ix = time_slots(t).iter().position(|s| *s == t).unwrap_or(0);
                 let n = time_slots(t).len();
                 let max = (n as f32 * ITEM_H + LIST_PAD - LIST_H).max(0.);
@@ -734,7 +739,7 @@ impl Editor {
         let (Some(d), Some(r)) = (p.drop, self.core.reminder_at(p.at)) else { return vec![] };
         let ix = if d == Drop::Time { 0 } else { 1 };
         let Some(a) = self.rm.selects[ix].get() else { return vec![] };
-        let set_time = r.expire - day_start(r.expire);
+        let set_time = time_of_day(r.expire);
         let jet = r.notify - r.expire;
         let items: Vec<(String, i64, bool)> = match d {
             Drop::Time => time_slots(set_time).into_iter().map(|t| (slot_label(t), t, t == set_time)).collect(),
@@ -796,6 +801,25 @@ mod tests {
 
     fn t(y: i64, m: u32, d: u32, h: u32, mi: u32) -> i64 {
         local_to_unix(y, m, d, h, mi) * 1000
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_calendar_handles_dst() {
+        if std::env::var_os("FDL_REMINDER_DST_TEST").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "editor::reminder::tests::local_calendar_handles_dst", "--nocapture"])
+                .env("TZ", "America/New_York").env("FDL_REMINDER_DST_TEST", "1").status().unwrap();
+            assert!(status.success()); return;
+        }
+        let now = t(2026, 3, 7, 12, 15);
+        let r = default_reminder(now);
+        assert_eq!(r.expire, t(2026, 3, 8, 12, 0));
+        assert_eq!(super::time_of_day(r.expire), 12 * HOUR);
+        assert_eq!(super::at_time(&r, 15 * HOUR).expire, t(2026, 3, 8, 15, 0));
+        let day = crate::time::days_from_civil(2026, 11, 1);
+        assert_eq!(super::on_day(&r, day).expire, t(2026, 11, 1, 12, 0));
+        assert_eq!(toggle(&r, true, true, now).expire, t(2026, 3, 8, 23, 59) + 59_000);
     }
 
     fn time_string(expire: i64, timed: bool, now: i64) -> String { time_string_for(expire, timed, now, Lang::Zh) }

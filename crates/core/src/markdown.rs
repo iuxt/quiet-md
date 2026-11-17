@@ -128,14 +128,14 @@ impl Writer<'_> {
             format!("{head}\n{}", indent(&w.blocks(&b.children), "    "))
         };
         match &b.kind {
-            BlockKind::Text => nested(self, text),
+            BlockKind::Text => nested(self, paragraph(text)),
             BlockKind::Heading { level, .. } => nested(self, format!("{} {text}", "#".repeat((*level).clamp(1, 6) as usize))),
             BlockKind::Bullet => nested(self, format!("- {text}")),
             BlockKind::Ordered { .. } => nested(self, format!("{seq}. {text}")),
             BlockKind::Todo { done } => nested(self, format!("- [{}] {text}", if *done { "x" } else { " " })),
             BlockKind::Code { lang, .. } => {
                 let lang = if lang.eq_ignore_ascii_case("plain text") { String::new() } else { lang.to_lowercase().replace(' ', "") };
-                let fence = if b.text.text.contains("```") { "````" } else { "```" };
+                let fence = ticks(&b.text.text, 3);
                 format!("{fence}{lang}\n{}\n{fence}", b.text.text)
             }
             BlockKind::Quote => indent(&self.blocks(&b.children), "> "),
@@ -637,6 +637,23 @@ fn escape(s: &str) -> String {
     out
 }
 
+fn ticks(s: &str, min: usize) -> String {
+    let longest = s.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    "`".repeat(min.max(longest + 1))
+}
+
+fn paragraph(mut text: String) -> String {
+    let start = text.len() - text.trim_start_matches(' ').len();
+    let s = &text[start..];
+    let at = if s.starts_with(['#', '>', '-', '+', '=']) { Some(start) }
+        else {
+            let n = s.bytes().take_while(u8::is_ascii_digit).count();
+            (n > 0 && n <= 9 && s[n..].starts_with(['.', ')']) && s[n + 1..].starts_with([' ', '\t'])).then_some(start + n)
+        };
+    if let Some(at) = at { text.insert(at, '\\'); }
+    text
+}
+
 #[derive(PartialEq, Clone, Default)]
 struct Md {
     bold: bool,
@@ -707,8 +724,9 @@ fn inline(t: &RichText, files: &mut impl FnMut(&FileBlock) -> Option<String>) ->
             continue;
         }
         let mut x = if m.code {
-            let tick = if body.contains('`') { "``" } else { "`" };
-            format!("{tick}{body}{tick}")
+            let tick = ticks(body, 1);
+            let pad = if body.starts_with('`') || body.ends_with('`') { " " } else { "" };
+            format!("{tick}{pad}{body}{pad}{tick}")
         } else {
             escape(body)
         };
@@ -856,6 +874,41 @@ mod tests {
         let canon = |d: &Document| write_file(d, "", Some(base));
         assert_eq!(canon(&parse_file(&out, "t", Some(base))), canon(&doc), "{out}");
         out
+    }
+
+    #[test]
+    fn code_delimiters_outgrow_their_contents() {
+        for text in ["before\n````\nafter", "a``b", "`first", "last`", "``````"] {
+            for code in [true, false] {
+                if !code && text.contains('\n') { continue; }
+                let block = if code {
+                    Block::new(BlockKind::Code { lang: "plaintext".into(), caption: None, wrap: false }, RichText::plain(text))
+                } else {
+                    let mut rich = RichText::default();
+                    rich.push(text, Marks { code: true, ..Default::default() });
+                    Block::new(BlockKind::Text, rich)
+                };
+                let doc = Document { blocks: vec![block], ..Default::default() };
+                let out = write_file(&doc, "", None);
+                let after = parse_file(&out, "", None);
+                assert_eq!(after.blocks[0].text.text, text, "{out}");
+                assert_eq!(after.blocks.len(), 1, "{out}");
+                if !code { assert!(after.blocks[0].text.spans().all(|(_, m)| m.code), "{out}"); }
+            }
+        }
+    }
+
+    #[test]
+    fn literal_paragraph_prefixes_stay_text_after_editing() {
+        for text in ["# heading", "1. numbered", "2) numbered", "> quote", "- bullet", "+ bullet", "---", "==="] {
+            let doc = Document { blocks: vec![Block::text(text)], ..Default::default() };
+            let original = write_file(&doc, "", None);
+            let out = preserved(&original, |d| d.blocks[0].text = RichText::plain(format!("{text} edited")));
+            let after = parse_file(&out, "", None);
+            assert_eq!(after.blocks.len(), 1, "{out}");
+            assert_eq!(after.blocks[0].kind, BlockKind::Text, "{out}");
+            assert_eq!(after.blocks[0].text.text, format!("{text} edited"), "{out}");
+        }
     }
 
     /// Only what changed is rewritten: other blocks keep their own syntax

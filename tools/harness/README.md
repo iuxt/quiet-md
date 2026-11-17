@@ -48,6 +48,8 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 `python3 tools/harness/trash.py` 在临时文档库中验证回收站嵌套文件夹浏览、XML / Markdown 只读打开、本地历史预览、历史另存副本及恢复后编辑，并核对查看期间正文与历史未被改写。
 
+`python3 tools/harness/document_safety.py` 验证多窗口历史预览保留最新编辑、导入成功后打开正文、删除后打开下一篇，以及主页和侧栏混合拖入多个文件夹与文件；只使用临时文档库。
+
 `python3 tools/harness/virtual_folders.py` 用 FORMAT 6 临时文档库验证 JSON 标题、侧栏拖动、文件夹重命名和文件夹内新建文章；确认只改变虚拟层级，原正文不变，新正文固定使用 UUID 文件名，无需启用 Git。
 
 每行一条命令；`#` 开头的是注释。完整说明见 `src/devtools.rs` 顶部。
@@ -55,6 +57,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 | 命令 | 作用 |
 |---|---|
 | `check-update-state <状态> [feedback\|silent]` | 只读断言当前更新状态（如 `available`、`downloading`、`failed`），可同时断言是否显示结果提示；仅 devtools 构建提供 |
+| `check-document-safety <阶段>` | 文档保存与导航回归断言，由 `document_safety.py` 使用；仅 devtools 构建提供 |
 | `wait <ms>` | 等待，期间自己绘制帧（锁屏时也能出图） |
 | `key <按键>` | 发送按键，如 `key cmd-b`、`key escape` |
 | `type <文字>` | 输入文字（行尾空格有效） |

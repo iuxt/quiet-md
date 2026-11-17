@@ -48,7 +48,7 @@ main.rs ─ 窗口
 
 写入成功后 `Store::save_now` 还会用内存里的旧正文在 `history/<id>/` 存一份版本快照：5 分钟节流、每篇文档 1–30 份、全库 200 MiB 上限。快照写入失败只记警告，不影响正文保存。恢复某个版本时先强制给当前正文留一份快照，再走正常的 `save`。
 
-版本历史的界面沿用 Google Docs / 飞书那一套：抽屉在右、正文就地变成所选快照的只读预览、改动是可关掉的高亮层。为此 `Workspace` 多一个 `preview: Option<Preview>`，它持有进入预览前那份完整的 `Core`（文档、光标、选区、撤销栈），返回时整体放回去。预览期间 `flush`、`schedule_save`、`sync_document` 全部短路：编辑器里装的是历史正文，写盘或同步给兄弟窗口都会把它当成当前文档。
+版本历史的界面沿用 Google Docs / 飞书那一套：抽屉在右、正文就地变成所选快照的只读预览、改动是可关掉的高亮层。为此 `Workspace` 多一个 `preview: Option<Preview>`，它持有当前文档的完整 `Core`（文档、光标、选区、撤销栈），返回时整体放回去；兄弟窗口编辑时更新这份 Core，屏幕上的历史正文保持不变。预览期间 `flush`、`schedule_save`、`sync_document` 全部短路：编辑器里装的是历史正文，写盘或同步给兄弟窗口都会把它当成当前文档。
 
 回收站文件夹按原父级逐层浏览，文章通过 `Store::load_trash` 只读加载，不建立编辑冲突基线。`trash_document` 在应用层阻止保存、同步和切换编辑模式，存储层也拒绝保存回收站正文。历史抽屉复用普通文章的实现，本地快照按文章状态从 `history/` 或 `history-trash/` 读取，Git 历史仍按 UUID 查询；恢复文章后重新打开可编辑正文。
 
@@ -115,7 +115,7 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 | `markdown.rs` | 导出 Markdown |
 | `lang.rs` | 代码语言表 |
 | `palette.rs` | 文字色、背景色、高亮块色板（RGBA，不依赖 GPUI；`theme.rs` 转成 GPUI 颜色） |
-| `time.rs` | 日期换算、本地时区、当前时间 |
+| `time.rs` | 日期换算、按目标日期应用系统时区规则（含夏令时）、当前时间 |
 | `editor/core.rs` | 编辑内核 |
 | `editor/table_ops.rs` | 表格操作和单元格选区（`CellSel`） |
 | `editor/fuzz_tests.rs` | 随机编辑 fuzzer |

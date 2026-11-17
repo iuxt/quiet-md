@@ -7,6 +7,18 @@ impl Store {
             loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default() }
     }
 
+    /// Adopt a completed worker's tree and parse cache, keeping open editors'
+    /// conflict baselines and attachment copies in this handle.
+    pub fn receive_tree(&mut self, writer: Self) {
+        assert_eq!(self.root, writer.root);
+        self.index = writer.index; self.trash = writer.trash; self.manifest = writer.manifest; self.flat = writer.flat;
+        self.parsed = writer.parsed;
+        self.warnings.extend(writer.warnings);
+        self.loaded.get_mut().retain(|id, _| self.index.contains_key(id));
+        self.loaded_titles.get_mut().retain(|id, _| self.index.contains_key(id));
+        self.copied.get_mut().retain(|id, _| self.index.contains_key(id));
+    }
+
     pub fn take_warnings(&mut self) -> Vec<String> { std::mem::take(&mut self.warnings) }
 
     /// Where `id` would go in folder `parent`: its name there, numbered when taken.

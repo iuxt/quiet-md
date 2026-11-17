@@ -377,11 +377,17 @@ impl Workspace {
     /// Import files into `parent` (a folder; None: the top of 我的文档); with
     /// `open`, the last one opens (a drop on a list stays on the list).
     pub(crate) fn import_paths(&mut self, paths: &[PathBuf], parent: Option<String>, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.import_paths_then(paths, parent, open, None, window, cx);
+    }
+
+    pub(crate) fn import_paths_then(&mut self, paths: &[PathBuf], parent: Option<String>, open: bool, then: Option<Box<dyn FnOnce(&mut Self, &[String])>>, window: &mut Window, cx: &mut Context<Self>) {
         if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() { return; }
-        let (again, retry) = (paths.to_vec(), parent.clone());
-        if !self.save_before(cx, move |w, window, cx| w.import_paths(&again, retry.clone(), open, window, cx)) {
+        let held = std::rc::Rc::new(std::cell::Cell::new(then));
+        let (again, retry, later) = (paths.to_vec(), parent.clone(), held.clone());
+        if !self.save_before(cx, move |w, window, cx| w.import_paths_then(&again, retry.clone(), open, later.take(), window, cx)) {
             return;
         }
+        let then = held.take();
         let Some(task_guard) = self.store.begin_file_task() else { return };
         let mut writer = self.store.tree_writer();
         let paths = paths.to_vec();
@@ -389,30 +395,42 @@ impl Workspace {
             let journal = writer.track_file_changes();
             let mut last = None;
             let mut failed = false;
+            let mut added = vec![];
             let batch = writer.begin_batch().is_ok();
             for p in &paths {
                 let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
                 let made = match ext.as_str() {
+                    _ if p.is_dir() => match scan_folder(p, 0).filter(|t| t.files > 0 && t.files <= IMPORT_FOLDER_LIMIT) {
+                        Some(tree) => {
+                            let mut errors = 0;
+                            let id = import_tree(&mut writer, &tree, parent.as_deref(), &mut errors);
+                            failed |= errors > 0;
+                            id.ok_or_else(|| anyhow::anyhow!("导入失败"))
+                        }
+                        None => Err(anyhow::anyhow!("导入失败")),
+                    },
                     _ if crate::local_files::is_markdown_path(p) => import_markdown(&mut writer, p, None, parent.as_deref()),
                     e if MARKDOWN_EXTS.contains(&e) => markdown_document(p).map_err(anyhow::Error::from).and_then(|doc| writer.create_from_in(&doc, parent.as_deref())),
                     "xml" => writer.import_into(p, parent.as_deref()),
                     _ => Err(anyhow::anyhow!("文件格式不支持")),
                 };
-                match made { Ok(id) => last = Some(id), Err(_) => failed = true }
+                match made { Ok(id) => { added.push(id.clone()); last = Some(id); }, Err(_) => failed = true }
             }
             if batch && writer.end_batch().is_err() { failed = true; }
             let entries = writer.list();
-            (ImportedFiles { last, failed, changes: journal.take() }, entries)
+            (ImportedFiles { last, failed, changes: journal.take() }, entries, added, writer)
         });
         self.show_toast_kind(ToastKind::Info, crate::settings::tr("正在导入…", "Importing…"), cx);
         cx.spawn_in(window, async move |this, cx| {
-            let _task_guard = task_guard;
-            let (imported, entries) = task.await;
+            let (imported, entries, added, writer) = task.await;
             let _ = this.update_in(cx, |w, window, cx| {
+                w.store.receive_tree(writer);
+                drop(task_guard);
                 w.sync_peers(cx, &entries, None);
                 w.entries = entries;
                 w.sort();
                 w.remember_file_changes(imported.changes, crate::settings::tr("导入", "Import"));
+                if let Some(then) = then { then(w, &added); }
                 if let Some(id) = imported.last.filter(|_| open) { w.open(&id, window, cx); }
                 if imported.failed { w.show_toast_kind(ToastKind::Error, crate::settings::text("导入失败，请检查文件格式"), cx); }
                 else if w.toast.as_ref().is_some_and(|t| matches!(t.0, ToastKind::Info) && t.1.as_ref() == crate::settings::tr("正在导入…", "Importing…")) { w.toast = None; }
@@ -557,16 +575,20 @@ impl Workspace {
             Imported::Done { top, failed, saved, changes: journal.take() }
                 }
             };
-            match imported {
+            let entries = match imported {
                 Imported::Empty | Imported::TooMany(_) => (imported, Vec::new()),
                 Imported::Done { .. } => (imported, writer.list()),
-            }
+            };
+            (entries, writer)
         });
         self.show_toast_kind(ToastKind::Info, crate::settings::tr("正在导入…", "Importing…"), cx);
         cx.spawn_in(window, async move |this, cx| {
-            let _task_guard = task_guard;
-            let (imported, entries) = task.await;
-            let _ = this.update_in(cx, |w, window, cx| w.finish_import_folder(imported, entries, open, then, window, cx));
+            let ((imported, entries), writer) = task.await;
+            let _ = this.update_in(cx, |w, window, cx| {
+                if matches!(imported, Imported::Done { .. }) { w.store.receive_tree(writer); }
+                drop(task_guard);
+                w.finish_import_folder(imported, entries, open, then, window, cx);
+            });
         }).detach();
     }
 

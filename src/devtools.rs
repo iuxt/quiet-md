@@ -272,6 +272,10 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.update(|cx| crate::app::check_save_safety(rest.trim(), cx)).unwrap();
                 continue;
             }
+            if cmd == "check-document-safety" {
+                cx.update(|cx| crate::app::check_document_safety(rest.trim(), cx)).unwrap();
+                continue;
+            }
             if cmd == "check-update-state" {
                 cx.update(|cx| crate::update::check_script_state(rest.trim(), cx)).unwrap();
                 continue;

@@ -658,8 +658,8 @@ impl Workspace {
         if let Some(f) = d.over.as_ref().and_then(|k| self.home.folders.fx.get_mut(k)) { f.dip.v += 5.5; }
         let (dirs, files): (Vec<_>, Vec<_>) = d.paths.iter().cloned().partition(|p| p.is_dir());
         let files: Vec<_> = files.into_iter().filter(|p| crate::local_files::is_markdown_path(p) || p.extension().is_some_and(|x| x.eq_ignore_ascii_case("xml"))).collect();
-        if !files.is_empty() { self.import_paths(&files, target.clone(), false, window, cx); }
-        for dir in &dirs { self.import_folder(dir, target.clone(), false, window, cx); }
+        let paths: Vec<_> = files.into_iter().chain(dirs).collect();
+        self.import_paths(&paths, target, false, window, cx);
         cx.notify();
     }
 

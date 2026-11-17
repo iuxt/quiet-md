@@ -41,10 +41,12 @@ npx wrangler@4 secret put GITHUB_TOKEN                       # optional: any tok
 npx wrangler@4 deploy
 ```
 
-Each run fills in every Cloudflare day since the last successful one, up to `MAX_DAYS` (3) per run. After a longer gap, or for the first fill, run the same collector from a machine:
+Each run fills in missing Cloudflare days, oldest first, with up to `MAX_DAYS` (3) attempts per source. Failed days stay eligible even when later days succeed. After a longer gap, or for the first fill, run the same collector from a machine:
 
 ```sh
 CF_API_TOKEN=<token with Analytics Read and D1 Edit> node backfill.mjs [days]
 ```
 
 Cloudflare only answers for the last 30 days; anything older that was missed is gone.
+
+Run the collector regression test without network access or credentials: `node --test src/index.test.mjs`.

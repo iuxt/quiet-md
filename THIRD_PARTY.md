@@ -4,7 +4,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 
 ## Rust 依赖
 
-由 `cargo metadata` 生成，共 771 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
+由 `cargo metadata` 生成，共 775 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
 
@@ -18,6 +18,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | aho-corasick | 1.1.5 | Unlicense OR MIT |
 | aligned | 0.4.3 | MIT OR Apache-2.0 |
 | aligned-vec | 0.6.4 | MIT |
+| android_system_properties | 0.1.6 | MIT OR Apache-2.0 |
 | anyhow | 1.0.104 | MIT OR Apache-2.0 |
 | ar_archive_writer | 0.5.3 | Apache-2.0 WITH LLVM-exception |
 | arbitrary | 1.5.0 | MIT OR Apache-2.0 |
@@ -91,6 +92,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | cfg_aliases | 0.2.2 | MIT |
 | cgl | 0.3.2 | MIT / Apache-2.0 |
 | chacha20 | 0.10.2 | MIT OR Apache-2.0 |
+| chrono | 0.4.45 | MIT OR Apache-2.0 |
 | cipher | 0.4.4 | MIT OR Apache-2.0 |
 | clang-sys | 1.9.1 | Apache-2.0 |
 | cocoa | 0.25.0 | MIT OR Apache-2.0 |
@@ -264,6 +266,8 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | hyper | 1.12.0 | MIT |
 | hyper-rustls | 0.27.10 | Apache-2.0 OR ISC OR MIT |
 | hyper-util | 0.1.21 | MIT |
+| iana-time-zone | 0.1.65 | MIT OR Apache-2.0 |
+| iana-time-zone-haiku | 0.1.2 | MIT OR Apache-2.0 |
 | icu_collections | 2.3.0 | Unicode-3.0 |
 | icu_locale_core | 2.3.0 | Unicode-3.0 |
 | icu_normalizer | 2.3.0 | Unicode-3.0 |

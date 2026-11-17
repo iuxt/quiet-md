@@ -113,7 +113,7 @@ impl Workspace {
         if !self.flush(cx) { self.file_history.requests.clear(); return; }
         for c in &record.changes {
             let content = c.before.is_none() || c.after.is_none() || c.before.as_ref().zip(c.after.as_ref()).is_some_and(|(a,b)| a.title != b.title);
-            if content && !self.document_peers(&c.id, window, cx).is_empty() {
+            if content && self.document_peer_core(&c.id, window, cx).is_some() {
                 self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr("请先关闭正在编辑这些文档的其他窗口", "Close other windows editing these documents first"), cx);
                 self.file_history.requests.clear(); return;
             }

@@ -648,7 +648,8 @@ impl Workspace {
         }) {
             return false;
         }
-        let shared = !self.document_peers(id, window, cx).is_empty();
+        let peer = self.document_peer_core(id, window, cx);
+        let shared = peer.is_some();
         let doc = match if trashed { self.store.load_trash(id) } else { self.store.load_for_edit(id, shared) } {
             Ok(d) => d,
             Err(e) => {
@@ -674,8 +675,7 @@ impl Workspace {
             e
         });
         // Reuse the live state, including unsaved edits and undo history.
-        if let Some(peer) = self.document_peers(id, window, cx).first().filter(|_| !trashed) {
-            let core = peer.read(cx).core.clone();
+        if let Some(core) = peer.filter(|_| !trashed) {
             editor.update(cx, |e, cx| e.receive_document(&core, cx));
         }
         // 阅读位置: back to where this document was left, on its first frame.
@@ -741,7 +741,7 @@ impl Workspace {
                 e.meta.opened = m.opened;
             }
         if let Some(previous) = &self.current
-            && self.document_peers(previous, window, cx).is_empty() { self.store.forget_loaded(previous); }
+            && self.document_peer_core(previous, window, cx).is_none() { self.store.forget_loaded(previous); }
         self.editor = Some(editor);
         self.current = Some(id.to_string());
         self.trash_document = trashed;
@@ -826,15 +826,16 @@ impl Workspace {
             }
             let warnings = writer.take_warnings();
             let listed = ListedDocs { entries: writer.list(), trash: writer.list_trash(), warnings };
-            (DeletedDocs { deleted, errors, changes: journal.take() }, listed)
+            (DeletedDocs { deleted, errors, changes: journal.take() }, listed, writer)
         });
         self.batch = None;
         self.row_menu = None;
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let _task_guard = task_guard;
-            let (done, listed) = task.await;
+            let (done, listed, writer) = task.await;
             let _ = this.update_in(cx, |w, window, cx| {
+                w.store.receive_tree(writer);
+                drop(task_guard);
                 if w.current.as_ref().is_some_and(|c| done.deleted.contains(c)) {
                     w.save_task = None;
                     w.unsaved = false;
@@ -1010,6 +1011,15 @@ impl Workspace {
             }).ok().flatten()).collect()
     }
 
+    pub(crate) fn document_peer_core(&self, id: &str, window: &Window, cx: &mut Context<Self>) -> Option<crate::editor::core::Core> {
+        cx.windows().into_iter().filter(|w| w.window_id() != window.window_handle().window_id())
+            .filter_map(|w| w.downcast::<Workspace>())
+            .find_map(|w| w.update(cx, |ws, _, cx| {
+                if ws.current.as_deref() != Some(id) || ws.trash_document { return None }
+                ws.preview.as_ref().map(|p| p.core.clone()).or_else(|| ws.editor.as_ref().map(|e| e.read(cx).core.clone()))
+            }).ok().flatten())
+    }
+
     /// 阅读位置: hand the open document's scroll offset to the library, so
     /// coming back to it lands where it was left.
     fn remember_scroll(&mut self, cx: &mut Context<Self>) {
@@ -1023,18 +1033,24 @@ impl Workspace {
         // sibling window.
         if self.preview.is_some() || self.trash_document { return }
         let (Some(id), Some(editor)) = (self.current.clone(), self.editor.clone()) else { return };
-        let peers = self.document_peers(&id, window, cx);
-        if peers.is_empty() { return; }
-        let core = editor.read(cx).core.clone();
-        for peer in peers { peer.update(cx, |e, cx| e.receive_document(&core, cx)); }
+        let (title, icon) = { let e = editor.read(cx); (e.core.doc.title.text.clone(), e.core.doc.icon.clone()) };
+        let mut core = None;
         for handle in cx.windows().into_iter().filter(|w| w.window_id() != window.window_handle().window_id()).filter_map(|w| w.downcast::<Workspace>()) {
             let _ = handle.update(cx, |ws, _, cx| {
                 if let Some(entry) = ws.entries.iter_mut().find(|e| e.id == id) {
-                    entry.title = core.doc.title.text.clone();
-                    entry.icon = core.doc.icon.clone();
+                    entry.title = title.clone();
+                    entry.icon = icon.clone();
                 }
                 // Every remaining view can save the latest state if its sibling closes.
-                if ws.current.as_deref() == Some(&id) && !ws.trash_document && ws.preview.is_none() { ws.unsaved = true; }
+                if ws.current.as_deref() == Some(&id) && !ws.trash_document {
+                    let core = core.get_or_insert_with(|| editor.read(cx).core.clone());
+                    if let Some(preview) = ws.preview.as_mut() {
+                        preview.receive_document(core);
+                    } else if let Some(editor) = &ws.editor {
+                        editor.update(cx, |e, cx| e.receive_document(core, cx));
+                    }
+                    ws.unsaved = true;
+                }
                 cx.notify();
             });
         }
@@ -1781,6 +1797,78 @@ impl Workspace {
 }
 
 /// Fault injection against real window/save code, available only in the harness build.
+#[cfg(feature = "devtools")]
+pub(crate) fn check_document_safety(phase: &str, cx: &mut App) {
+    use crate::editor::core::{EditKind, Pos, Selection};
+    use crate::model::{Block, Document, RichText};
+    if phase == "preview" {
+        let mut store = cx.global::<SharedStore>().clone();
+        let doc = Document { title: RichText::plain("Preview safety"), blocks: vec![Block::text("Original")], ..Default::default() };
+        let id = store.create_from(&doc).unwrap();
+        assert!(store.save_version_now(&id).unwrap());
+        fn make_window(cx: &mut App, id: String) -> WindowHandle<Workspace> { cx.open_window(WindowOptions {
+            focus: false,
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(-20000.), px(-20000.)), size(px(1200.), px(900.))))),
+            ..Default::default()
+        }, |window, cx| cx.new(|cx| Workspace::new_document_window(Some(id), window, cx))).unwrap() }
+        let a = make_window(cx, id.clone());
+        let b = make_window(cx, id.clone());
+        a.update(cx, |w, window, cx| w.open_history(&id, window, cx)).unwrap();
+        b.update(cx, |w, window, cx| {
+            w.editor.as_ref().unwrap().update(cx, |e, cx| {
+                let block = &e.core.doc.blocks[0];
+                e.core.sel = Selection::caret(Pos::new(block.id, block.text.len()));
+                e.core.checkpoint(EditKind::Typing);
+                e.core.insert_text(" from B");
+                e.changed(window, cx);
+            });
+            // Deliver this edit before the next assertion in this App update;
+            // queued EditorEvent callbacks run after the update returns.
+            w.sync_document(window, cx);
+            w.schedule_save(window, cx);
+        }).unwrap();
+        a.update(cx, |w, _, cx| {
+            assert_eq!(w.editor.as_ref().unwrap().read(cx).core.doc.blocks[0].text.text, "Original");
+            assert_eq!(w.preview.as_ref().unwrap().core.doc.blocks[0].text.text, "Original from B");
+            assert!(w.unsaved);
+        }).unwrap();
+        // A third view must open the live Core hidden behind A's preview.
+        b.update(cx, |w, window, cx| { assert!(w.flush(cx)); window.remove_window(); }).unwrap();
+        let c = make_window(cx, id.clone());
+        c.update(cx, |w, window, cx| {
+            assert_eq!(w.editor.as_ref().unwrap().read(cx).core.doc.blocks[0].text.text, "Original from B");
+            assert!(w.flush(cx));
+            window.remove_window();
+        }).unwrap();
+        a.update(cx, |w, window, cx| {
+            w.exit_preview(cx);
+            w.editor.as_ref().unwrap().update(cx, |e, cx| {
+                let block = &e.core.doc.blocks[0];
+                e.core.sel = Selection::caret(Pos::new(block.id, block.text.len()));
+                e.core.checkpoint(EditKind::Typing);
+                e.core.insert_text(" from A");
+                e.changed(window, cx);
+            });
+            assert!(w.flush(cx));
+            assert_eq!(store.load(&id).unwrap().blocks[0].text.text, "Original from B from A");
+            window.remove_window();
+        }).unwrap();
+    } else {
+        let handle = cx.windows().into_iter().find_map(|w| w.downcast::<Workspace>()).unwrap();
+        handle.update(cx, |w, window, cx| {
+            assert!(!w.store.file_task_busy());
+            if phase == "delete" {
+                let id = w.current.clone().unwrap();
+                w.delete_docs(&[id], window, cx);
+            } else {
+                assert!(matches!(w.view, View::Doc));
+                assert!(w.current.is_some() && w.editor.is_some());
+            }
+        }).unwrap();
+    }
+    eprintln!("document-safety: {phase} checked");
+}
+
 #[cfg(feature = "devtools")]
 #[derive(Clone)]
 struct SaveSafetyQa(Vec<(WindowHandle<Workspace>, String)>);

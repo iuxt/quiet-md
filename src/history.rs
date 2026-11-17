@@ -35,12 +35,21 @@ pub struct HistoryView {
     pub list_scroll: ScrollHandle,
 }
 
-/// The editor state before the preview began — document, caret, selection and
-/// undo stack — so 返回当前 is exact.
+/// The live editor state behind a preview, updated by edits in sibling windows.
 pub struct Preview {
     pub core: Core,
     pub reading: bool,
     pub name: String,
+}
+
+impl Preview {
+    pub(crate) fn receive_document(&mut self, core: &Core) {
+        let sel = self.core.sel;
+        self.core = core.clone();
+        self.core.sel = sel;
+        self.core.fix_selection();
+        self.core.break_coalescing();
+    }
 }
 
 pub struct VersionRename {
