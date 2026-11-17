@@ -38,8 +38,11 @@ class LocalSigningTests(unittest.TestCase):
         return app
 
     def sign(self, app, state):
-        return subprocess.run([sys.executable, str(SIGNER), str(app)], capture_output=True, text=True,
-                              env={**os.environ, "QUIET_MD_SIGNING_DIR": str(state)})
+        before = subprocess.check_output(["security", "list-keychains", "-d", "user"])
+        result = subprocess.run([sys.executable, str(SIGNER), str(app)], capture_output=True, text=True,
+                                env={**os.environ, "QUIET_MD_SIGNING_DIR": str(state)})
+        self.assertEqual(subprocess.check_output(["security", "list-keychains", "-d", "user"]), before)
+        return result
 
     def requirement(self, app):
         result = subprocess.run(["codesign", "-dr", "-", str(app)], check=True,

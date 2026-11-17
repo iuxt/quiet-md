@@ -5,6 +5,7 @@ import hashlib
 import os
 from pathlib import Path
 import secrets
+import shlex
 import ssl
 import subprocess
 import sys
@@ -63,14 +64,24 @@ def sign(app, state):
                     raise
         password = password_file.read_text().strip()
         run("security", "unlock-keychain", "-p", password, str(keychain))
+        search = shlex.split(run("security", "list-keychains", "-d", "user"))
+        added = str(keychain) not in search
         try:
+            # codesign also searches this list to complete a self-signed identity.
+            if added:
+                run("security", "list-keychains", "-d", "user", "-s", *search, str(keychain))
             der = ssl.PEM_cert_to_DER_cert(certificate.read_text())
             identity = hashlib.sha1(der).hexdigest()
             run("codesign", "--force", "--timestamp=none", "--keychain", str(keychain),
                 "--sign", identity, str(app))
             run("codesign", "--verify", "--deep", "--strict", str(app))
         finally:
-            run("security", "lock-keychain", str(keychain))
+            try:
+                run("security", "lock-keychain", str(keychain))
+            finally:
+                if added:
+                    current = shlex.split(run("security", "list-keychains", "-d", "user"))
+                    run("security", "list-keychains", "-d", "user", "-s", *(p for p in current if p != str(keychain)))
         print(f"Local signing identity: {identity}")
 
 

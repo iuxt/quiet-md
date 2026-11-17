@@ -90,7 +90,7 @@ def main():
                 for start, end in sorted(spans, reverse=True):
                     contents = contents[:start] + version + contents[end:]
                 path.write_bytes(contents.encode("utf-8"))
-            (ROOT / "VERSION").write_text(version + "\n", encoding="utf-8")
+            (ROOT / "VERSION").write_bytes((version + "\n").encode("utf-8"))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         if isinstance(error, subprocess.CalledProcessError):
             error = error.stderr.strip() or str(error)

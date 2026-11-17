@@ -142,7 +142,7 @@ python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key
 3. 运行 `python3 scripts/version.py release`，校验当前提交与远端 `main` 一致后，创建并推送 `v<版本号>` tag。已有 tag 不覆盖、不移动。
 4. Actions › Release 自动构建并发布测试版，在 [Releases](https://github.com/iuxt/quiet-md/releases) 手动下载。
 
-手动运行 Actions › Release 时，分支选择 `main`，`tag` 填已有 tag；默认生成验证过的测试草稿，勾选 `publish` 才公开为 Pre-release。若已有同版本 Release，工作流拒绝覆盖；未创建 Release 的失败任务可以重跑。所有版本使用同一个并发组，不取消正在上传的任务。
+手动运行 Actions › Release 时，分支选择 `main`，`tag` 填已有 tag；默认生成验证过的测试草稿，勾选 `publish` 才公开为 Pre-release。若已有同版本 Release，工作流拒绝覆盖；未创建 Release 的失败任务可以重跑。不同版本可并行构建，汇总发布使用同一个并发组，不取消正在上传的任务。
 
 本地也可以使用相同流程，输入四个平台最终产物：
 
