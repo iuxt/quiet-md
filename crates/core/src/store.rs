@@ -261,8 +261,6 @@ pub struct Store {
     /// Problems found while opening the library (a damaged index recovered
     /// from its backup …), for the window to tell the user once.
     pub warnings: Vec<String>,
-    /// What `open` moved to the new layout this launch, for 更新日志.
-    pub migrated: Option<MigrationReport>,
     batch: Batch,
 }
 
@@ -662,13 +660,9 @@ impl Store {
         let root = Self::root_dir();
         Self::prune_backups(&root);
         let mut failed = None;
-        let report = match Self::migration_state(&root) {
-            MigrationState::Silent => Self::migrate(&root).map_err(|e| failed = Some(e.to_string())).ok(),
-            _ => None,
-        };
+        if let MigrationState::Silent = Self::migration_state(&root) && let Err(e) = Self::migrate(&root) { failed = Some(e.to_string()); }
         let mut store = Self::open_at(root)?;
         if !store.flat { store.use_virtual_folders()?; }
-        store.migrated = report;
         store.warnings.extend(failed);
         Ok(store)
     }
@@ -729,7 +723,7 @@ impl Store {
         let base = if flat { root.clone() } else { internal.clone() };
         let trash = if !flat && reread::<FormatMarker>(&marker).is_some_and(|m| m.format == FORMAT) { HashMap::new() }
             else { load_json(&base.join("trash").join("index.json"), "回收站索引", &mut warnings) };
-        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, manifest: None, warnings, migrated: None, loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, manifest: None, warnings, loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
         if flat {
             store.index = load_json(&base.join("index.json"), "文档索引", &mut store.warnings);
             store.flat_folders()?;
@@ -2753,7 +2747,7 @@ mod tests {
         let index = std::fs::read(trash.join("index.json")).unwrap();
         std::fs::rename(&trash, lib.0.join(".quiet/trash-away")).unwrap();
         std::fs::write(&trash, b"").unwrap();
-        let mut s = Store { file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), flat: false, manifest: None, migrated: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+        let mut s = Store { file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), flat: false, manifest: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
         assert_eq!(s.list_trash().len(), 1);
         assert_eq!(s.trash.len(), 1);
     }

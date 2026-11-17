@@ -214,7 +214,7 @@ jobs:
           paths = [list(Path('dist/incoming').rglob(name)) for name in names]
           if any(len(matches) != 1 for matches in paths):
               raise SystemExit('Expected exactly one package for each platform')
-          command = [sys.executable, 'scripts/publish-github-release.py', '--test-release', '--publish', 'dist/github']
+          command = [sys.executable, 'scripts/publish-github-release.py', '--publish', 'dist/github']
           notes = Path(f'docs/releases/{version}.md')
           if notes.is_file():
               command.extend(['--notes', str(notes)])

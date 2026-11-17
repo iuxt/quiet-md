@@ -4,7 +4,7 @@ impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
     pub fn tree_writer(&self) -> Self {
         Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat, manifest: self.manifest.clone(),
-            loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], migrated: None, batch: Default::default() }
+            loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], batch: Default::default() }
     }
 
     /// Adopt a completed worker's tree and parse cache, keeping open editors'

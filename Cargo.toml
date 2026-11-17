@@ -38,7 +38,6 @@ regex = "1"
 html5ever = "0.27"
 markup5ever_rcdom = "0.3"
 base64 = "0.22"
-minisign-verify = "0.3.0"
 log = "0.4"
 sys-locale = "0.3.2"
 jpeg-decoder = { version = "0.3", default-features = false }

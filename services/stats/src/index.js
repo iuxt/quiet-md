@@ -6,8 +6,6 @@
 //     cdn.downloads          distinct IPs per file and day: a resumed or segmented
 //                            download counts once      {platform, version, channel, country}
 //     cdn.download_requests  raw GET requests, for comparison  {platform, version, channel, status}
-//     update.checks          distinct IPs fetching an update manifest  {platform, country}
-//     update.check_requests  raw manifest requests     {platform}
 //   site        quiet.md's home page (same analytics, same 31 days)
 //     site.visitors          distinct IPs that loaded the page, crawlers left out  {country}
 //     site.pageviews         page loads, crawlers left out  {}
@@ -16,10 +14,8 @@
 //     github.downloads       their increase since the previous snapshot  {platform, version}
 //     github.stars, github.forks, github.watchers, github.open_issues (issues and PRs)  {}
 //
-// channel: "update" is the in-app updater (curl fetching a versioned v<x.y.z>/ package,
-// the URL its manifest names); "cdn" is everything else on download.quiet.md, i.e. the
-// site, the README and release-note links opened in a browser. The free plan's analytics
-// have no query string or referer, so the site and the README are not told apart here.
+// channel: "cdn" covers download.quiet.md links from the site, README and release
+// notes. The free plan's analytics have no query string or referer to separate them.
 
 const HOST = 'download.quiet.md', SITE = 'quiet.md';
 const CRAWLER = /bot|crawl|spider|slurp|curl|wget|python|go-http|java\/|headless|preview|monitor|scan/i;
@@ -63,14 +59,12 @@ async function run(env, source, day, f) {
 
 // ---- Cloudflare ----
 
-/// What a request to download.quiet.md is: a manifest, a package, or noise (null).
-export function classify(path, userAgent) {
-  let m = path.match(/^\/latest\/update-(.+)\.json$/);
-  if (m) return { kind: 'check', platform: m[1] };
-  m = path.match(/^\/latest\/quiet-md-(macos-arm64\.zip|macos-x86_64\.zip|windows-x64-setup\.exe|x86_64\.AppImage)$/);
+/// A package request to download.quiet.md, or noise (null).
+export function classify(path) {
+  let m = path.match(/^\/latest\/quiet-md-(macos-arm64\.zip|macos-x86_64\.zip|windows-x64-setup\.exe|x86_64\.AppImage)$/);
   if (m) return { kind: 'download', platform: PLATFORMS[m[1]], version: 'latest', channel: 'cdn' };
   m = path.match(/^\/v(\d+\.\d+\.\d+)\/quiet-md-(\d+\.\d+\.\d+)-(macos-arm64\.zip|macos-x86_64\.zip|windows-x64-setup\.exe|x86_64\.AppImage)$/);
-  if (m && m[1] === m[2]) return { kind: 'download', platform: PLATFORMS[m[3]], version: m[1], channel: /^curl\//.test(userAgent || '') ? 'update' : 'cdn' };
+  if (m && m[1] === m[2]) return { kind: 'download', platform: PLATFORMS[m[3]], version: m[1], channel: 'cdn' };
   return null;
 }
 
@@ -102,43 +96,30 @@ async function cloudflare(env, day) {
   const from = new Date(`${day}T00:00:00Z`);
   const list = await groups(env, from, new Date(from.getTime() + 86400e3));
   const add = (map, key, n) => map.set(key, (map.get(key) || 0) + n);
-  const ips = new Map(), downloadReq = new Map(), checkIps = new Map(), checkReq = new Map();
-  const dailyDownloads = new Map(), dailyChecks = new Map(['all', 'Mac', 'Windows', 'Linux', 'Other'].map((p) => [p, new Set()]));
+  const ips = new Map(), downloadReq = new Map();
+  const dailyDownloads = new Map();
   const family = (p) => p.startsWith('macos-') ? 'Mac' : p.startsWith('windows-') ? 'Windows' : p.startsWith('linux-') ? 'Linux' : 'Other';
   for (const { count, dimensions: d } of list) {
-    const c = classify(d.clientRequestPath, d.userAgent);
+    const c = classify(d.clientRequestPath);
     if (!c) continue;
     const country = d.clientCountryName || 'XX';
-    if (c.kind === 'download') {
-      if (![200, 206].includes(d.edgeResponseStatus)) continue;
-      const dk = key({ platform: family(c.platform), channel: c.channel, path: d.clientRequestPath });
-      if (!dailyDownloads.has(dk)) dailyDownloads.set(dk, new Set());
-      dailyDownloads.get(dk).add(d.clientIP);
-      add(downloadReq, key({ platform: c.platform, version: c.version, channel: c.channel, status: String(d.edgeResponseStatus) }), count);
-      const k = key({ platform: c.platform, version: c.version, channel: c.channel, country });
-      if (!ips.has(k)) ips.set(k, new Set());
-      ips.get(k).add(d.clientIP);
-    } else {
-      dailyChecks.get('all').add(d.clientIP);
-      dailyChecks.get(family(c.platform)).add(d.clientIP);
-      if (![200, 206, 304].includes(d.edgeResponseStatus)) continue;
-      add(checkReq, key({ platform: c.platform }), count);
-      const k = key({ platform: c.platform, country });
-      if (!checkIps.has(k)) checkIps.set(k, new Set());
-      checkIps.get(k).add(d.clientIP);
-    }
+    if (![200, 206].includes(d.edgeResponseStatus)) continue;
+    const dk = key({ platform: family(c.platform), channel: c.channel, path: d.clientRequestPath });
+    if (!dailyDownloads.has(dk)) dailyDownloads.set(dk, new Set());
+    dailyDownloads.get(dk).add(d.clientIP);
+    add(downloadReq, key({ platform: c.platform, version: c.version, channel: c.channel, status: String(d.edgeResponseStatus) }), count);
+    const k = key({ platform: c.platform, version: c.version, channel: c.channel, country });
+    if (!ips.has(k)) ips.set(k, new Set());
+    ips.get(k).add(d.clientIP);
   }
   const rows = [['daily.coverage', '{}', 1]];
   const daily = new Map();
   for (const [k, set] of dailyDownloads) { const { platform, channel } = JSON.parse(k); add(daily, key({ platform, channel }), set.size); }
-  for (const platform of ['Mac', 'Windows', 'Linux', 'Other']) for (const channel of ['cdn', 'update']) {
-    const k = key({ platform, channel }); rows.push(['daily.downloads', k, daily.get(k) || 0]);
+  for (const platform of ['Mac', 'Windows', 'Linux', 'Other']) {
+    const k = key({ platform, channel: 'cdn' }); rows.push(['daily.downloads', k, daily.get(k) || 0]);
   }
-  for (const [platform, set] of dailyChecks) rows.push(['daily.checks', key({ platform }), set.size]);
   for (const [k, s] of ips) rows.push(['cdn.downloads', k, s.size]);
   for (const [k, n] of downloadReq) rows.push(['cdn.download_requests', k, n]);
-  for (const [k, s] of checkIps) rows.push(['update.checks', k, s.size]);
-  for (const [k, n] of checkReq) rows.push(['update.check_requests', k, n]);
   return replace(env, day, 'cloudflare', rows);
 }
 

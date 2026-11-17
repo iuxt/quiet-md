@@ -19,8 +19,7 @@ source = work / "source"
 (source / "assets").mkdir()
 (source / ".quiet/format.json").write_text('{"format":6}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
-    "theme": "craft", "appearance": "light", "english": True, "seen_version": "0.1.12",
-    "auto_update": False, "quick_hotkey": False,
+    "theme": "craft", "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 (source / "quiet.json").write_text(json.dumps({"version": 2, "folders": [], "notes": [{
     "id": note, "title": "Image layout", "filename": f"{note}.xml", "folderId": None,

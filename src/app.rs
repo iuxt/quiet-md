@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 const SAVE_MAX_DELAY: Duration = Duration::from_secs(2);
 
-actions!(workspace, [NewDoc, OpenFile, ImportDoc, ImportFolder, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, CheckForUpdates, GoHome, CloseWindow, Quit,
+actions!(workspace, [NewDoc, OpenFile, ImportDoc, ImportFolder, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, GoHome, CloseWindow, Quit,
     ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen]);
 
 /// The menu bar, in the interface language.
@@ -33,7 +33,6 @@ pub fn set_menus(cx: &mut App) {
             name: "Quiet.md".into(),
             items: vec![
                 MenuItem::action(tr("关于 Quiet.md", "About Quiet.md"), OpenAbout),
-                MenuItem::action(tr("检查更新…", "Check for Updates…"), CheckForUpdates),
                 MenuItem::separator(),
                 MenuItem::action(tr("设置…", "Settings…"), OpenSettings),
                 MenuItem::separator(),
@@ -144,17 +143,14 @@ pub fn bind_keys(cx: &mut App) {
 /// 退出: the open document is saved first; when that fails its dialog asks
 /// (重试 / 放弃修改) and quits afterwards. Call it outside any window update
 /// (`cx.defer`): a window on the update stack cannot be asked to save.
-pub fn quit(cx: &mut App) { quit_after_saving(|cx| cx.quit(), cx); }
-
-/// Run the final action only once every window has accepted the normal save path.
-pub(crate) fn quit_after_saving(then: fn(&mut App), cx: &mut App) {
+pub fn quit(cx: &mut App) {
     let ready = cx
         .windows()
         .into_iter()
         .filter_map(|w| w.downcast::<Workspace>())
-        .map(|w| w.update(cx, |ws, _, cx| ws.save_before(cx, move |_, _, cx| cx.defer(move |cx| quit_after_saving(then, cx)))).unwrap_or(false))
+        .map(|w| w.update(cx, |ws, _, cx| ws.save_before(cx, |_, _, cx| cx.defer(quit))).unwrap_or(false))
         .fold(true, |ready, saved| ready & saved);
-    if ready { then(cx); }
+    if ready { cx.quit(); }
 }
 
 /// 更改文档库: open documents are saved first (as for 退出), the folder is
@@ -433,7 +429,7 @@ impl Workspace {
                 if window.is_window_active() {
                     if !this.trash_document && let Some(id) = &this.current { crate::quick_note::used(id, cx); }
                     if !this.store.file_task_busy() { this.entries = this.store.list(); this.sort(); }
-                    crate::update::check_if_stale(cx); cx.notify();
+                    cx.notify();
                 }
                 else if !this.store.file_task_busy() { this.cancel_home_drag(cx); this.end_folder_drag(true, cx); this.cancel_shortcut_recording(cx); this.flush(cx); }
             }),
@@ -1152,12 +1148,11 @@ impl Workspace {
     pub(crate) fn migrate_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.save_before(cx, |w, window, cx| w.migrate_library(window, cx)) { return }
         let root = crate::store::Store::root_dir();
-        let moved = crate::store::Store::migrate(&root).and_then(|r| { let mut store = crate::store::Store::open_at(root.clone())?; store.use_virtual_folders()?; Ok((r, store)) });
+        let moved = crate::store::Store::migrate(&root).and_then(|_| { let mut store = crate::store::Store::open_at(root)?; store.use_virtual_folders()?; Ok(store) });
         match moved {
             Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("文档库格式升级未完成：{}", "Library storage upgrade did not finish: {}", crate::settings::diagnostic(&e.to_string())), cx),
-            Ok((report, store)) => {
+            Ok(store) => {
                 self.store.with(|s| *s = store);
-                crate::changelog::migrated(&report);
                 crate::open_main_window(crate::devtools::scripted(), Some(window.bounds()), cx);
                 window.remove_window();
             }
@@ -1661,7 +1656,6 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &OpenSettings, _, cx| w.show_view(View::Settings, cx)))
             .on_action(cx.listener(|w, _: &ReplayOnboarding, window, cx| w.replay_onboarding(window, cx)))
             .on_action(cx.listener(|w, _: &OpenAbout, _, cx| w.open_settings(crate::settings::Page::About, cx)))
-            .on_action(cx.listener(|w, _: &CheckForUpdates, _, cx| { w.open_settings(crate::settings::Page::About, cx); crate::update::check(true, cx); }))
             .on_action(cx.listener(|w, _: &GoHome, _, cx| w.show_view(View::Home, cx)))
             .on_action(cx.listener(|w, _: &NewDoc, window, cx| w.new_doc(window, cx)))
             .on_action(cx.listener(|w, _: &ImportDoc, window, cx| w.open_import(window, cx)))

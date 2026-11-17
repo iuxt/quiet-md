@@ -73,12 +73,6 @@ jobs:
           MACOS_TARGET: x86_64-apple-darwin
         run: scripts/release.sh
 
-      - name: Test Intel update validation under Rosetta
-        if: steps.filter.outputs.skip != 'true'
-        run: |
-          sudo softwareupdate --install-rosetta --agree-to-license
-          cargo test --release --locked --target x86_64-apple-darwin --bin quiet_md update::tests
-
       - name: Upload macOS validation packages
         if: steps.filter.outputs.skip != 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

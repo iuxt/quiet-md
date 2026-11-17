@@ -45,7 +45,7 @@
 
 **⚡ Fast, the native kind of fast.** The whole interface is drawn on the GPU by Rust and [GPUI](https://www.gpui.rs/). No WebView, no Electron. In a one-million-character document, typing, deleting and scrolling all stay under 6 ms per frame at P95.
 
-**🔒 Local-first. Your files are yours.** No account, no cloud, and nothing goes over the network by default (the optional update check aside). Your library is an ordinary folder on your computer: `quiet.json` manages virtual folders and display titles, while document bodies stay at fixed `notes/<UUID>.xml` (or `.md`) paths. Moving, renaming or trashing an entry only changes metadata. Manage it with Git, iCloud or any sync tool you like; if you ever stop using Quiet.md, your files are still there.
+**🔒 Local-first. Your files are yours.** No account, no cloud, and nothing goes over the network by default. Your library is an ordinary folder on your computer: `quiet.json` manages virtual folders and display titles, while document bodies stay at fixed `notes/<UUID>.xml` (or `.md`) paths. Moving, renaming or trashing an entry only changes metadata. Manage it with Git, iCloud or any sync tool you like; if you ever stop using Quiet.md, your files are still there.
 
 **📝 A full rich-text editor that speaks Feishu (Lark) DocxXML.** Notes are saved in the DocxXML format used by Feishu (Lark) Docs, so copy-paste, import and export keep their structure. Headings, to-dos, tables, columns, callouts, code, math, images and attachments — the blocks you reach for when writing documents are all there.
 
@@ -68,9 +68,9 @@
 
 - **macOS**: unzip and drag `quiet.md.app` into Applications. The test app uses ad-hoc signing and is not notarized by Apple.
 - **Windows**: run the installer. By default it installs for the current user only, and uninstalling never deletes your notes. If SmartScreen appears on first launch, click **More info → Run anyway**.
-- **Linux** (experimental): `chmod +x quiet-md-*.AppImage` and run it; without FUSE, add `--appimage-extract-and-run`. AppImage 0.1.10 and later support in-app updates; older Linux versions need a one-time manual install. Interactive testing so far covers Omarchy on Wayland; see the [Linux notes](CONTRIBUTING.md#linux-experimental).
+- **Linux** (experimental): `chmod +x quiet-md-*.AppImage` and run it; without FUSE, add `--appimage-extract-and-run`. Install new versions manually. Interactive testing so far covers Omarchy on Wayland; see the [Linux notes](CONTRIBUTING.md#linux-experimental).
 
-Current downloads are **free test prereleases** from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS packages are ad-hoc signed and unnotarized; the Windows installer is unsigned. Download and install manually; these builds do not enter the in-app update channel. Each package includes a SHA-256 checksum. See [the release guide](docs/UPDATES.md).
+Current downloads are **free test prereleases** from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS packages are ad-hoc signed and unnotarized; the Windows installer is unsigned. Download and install manually. Each package includes a SHA-256 checksum. See [the release guide](docs/RELEASES.md).
 
 On first launch, Quiet.md asks for the interface language, where to keep your library and the quick-note shortcut, and offers to copy in notes from Obsidian, Logseq, iA Writer or Typora. An empty library gets a **Getting started** guide — a ten-minute tour of the main features. Existing notes are never overwritten.
 
@@ -124,10 +124,8 @@ Thanks to everyone who has helped build Quiet.md. Issues and pull requests are w
 - **0.1.5** (Nov 5): the app is now called Quiet.md; your library and notes stay where they were.
   - Manage several documents at once from Home: duplicate, move or delete them together.
   - Empty the Trash in one step; arrow keys move through the insert menu's icons; deleting every document no longer creates an empty one.
-  - After an in-app update, the sidebar shows once what changed in the new version.
   - Windows: shortcuts and the built-in guide read Ctrl / Alt, and a failed launch explains itself and leaves a log.
 - **0.1.4** (Nov 5):
-  - In-app updates: when a new version is out, an **Update** button appears at the top of the sidebar. The download is verified against its signature, and a restart finishes the install; open documents are saved first. Automatic checks can be turned off in **Settings › General**. A check only fetches a version manifest and sends no data. Version 0.1.3 and earlier need a one-time manual download of 0.1.4.
   - Dark mode: choose System, Light or Dark in **Settings › Appearance**. Built-in and custom themes all have a dark look; export and printing stay light.
 - **0.1.3** (Nov 4): sidebar text is readable again when macOS is in dark mode.
 - **0.1.2** (Nov 4): the standard macOS menus and shortcuts (Hide, Minimize, Zoom, Full Screen); clicking the Dock icon reopens a window after the last one was closed. Fixed some Chinese characters rendering with the wrong glyphs.

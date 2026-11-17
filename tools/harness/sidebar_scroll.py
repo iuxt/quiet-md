@@ -5,14 +5,12 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-import tomllib
 import uuid
 
 from PIL import Image, ImageChops
 
 here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-sidebar-scroll-"))
-version = tomllib.loads((here.parent.parent / "Cargo.toml").read_text())["package"]["version"]
 for pinned in (False, True):
     case = work / ("pinned" if pinned else "plain")
     source = case / "source"
@@ -20,7 +18,7 @@ for pinned in (False, True):
     (source / "notes").mkdir()
     (source / ".quiet/format.json").write_text('{"format":6}')
     (source / ".quiet/preferences.json").write_text(json.dumps({
-        "appearance": "light", "english": True, "seen_version": version, "auto_update": False, "quick_hotkey": False,
+        "appearance": "light", "english": True, "quick_hotkey": False,
     }))
     notes = []
     for i in range(80):

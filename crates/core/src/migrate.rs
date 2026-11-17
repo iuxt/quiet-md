@@ -59,7 +59,7 @@ pub enum DeviceHint {
     SyncCopy(String),
 }
 
-/// What a move did, for 更新日志.
+/// The document and folder counts and backup path after a move.
 #[derive(Clone, Debug)]
 pub struct MigrationReport {
     pub docs: usize,

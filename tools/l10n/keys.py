@@ -7,7 +7,7 @@ per Chinese key with its English text and where it is used.
 
 Sources: the zh -> en `localize` table and diagnostic templates in
 src/settings.rs, `tr("…", "…")`, `localized_format!("…", "…")`, and
-("…", "…") pair tables (shortcuts, changelog of the running version, menus).
+("…", "…") pair tables (shortcuts, menus).
 """
 import json, re, sys
 from pathlib import Path
@@ -38,10 +38,6 @@ def without_test_mods(text):
     return text
 
 
-def version():
-    return re.search(r'^version = "([^"]+)"', (ROOT / 'Cargo.toml').read_text(encoding='utf-8'), re.M)[1]
-
-
 def collect():
     keys = {}
 
@@ -60,14 +56,6 @@ def collect():
             continue
         text = without_test_mods(path.read_text(encoding='utf-8'))
         line = lambda pos: f'{rel}:{text.count(chr(10), 0, pos) + 1}'
-        if rel == 'src/changelog.rs':
-            # Only the running version's notes are ever shown.
-            m = re.search(r'\("' + re.escape(version()) + r'", &\[(.*?)\n    \]\),', text, re.S)
-            for p in re.finditer(r'\(' + LIT + r',\s*' + LIT + r'\)', m[1] if m else ''):
-                add(p[1], p[2], 'changelog', line(m.start(1) + p.start()))
-            # The other versions' notes are not keys; keep the line numbers of what follows.
-            notes = re.search(r'const NOTES: .*?\n\];', text, re.S)
-            if notes: text = text[:notes.start()] + '\n' * notes[0].count('\n') + text[notes.end():]
         for m in re.finditer(LIT + r'\s*=>\s*' + LIT, text):
             add(m[1], m[2], 'table', line(m.start()))
         for m in re.finditer(r'\btr\(\s*' + LIT + r'\s*,\s*' + LIT, text):

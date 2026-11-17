@@ -19,7 +19,7 @@ body = "<title>Stored body title</title>\n<p>Original body.</p>\n"
 (source / f"notes/{note}.xml").write_text(body)
 (source / ".quiet/format.json").write_text('{"format":6}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
-    "appearance": "light", "english": True, "seen_version": "0.1.12", "auto_update": False, "quick_hotkey": False,
+    "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 (source / "quiet.json").write_text(json.dumps({"version": 2, "folders": [
     {"id": folder, "name": "Projects", "parentId": None, "options": {"root_order": 1}},

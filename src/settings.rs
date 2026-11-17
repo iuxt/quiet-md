@@ -97,12 +97,8 @@ pub struct Preferences {
     pub remote_images: bool,
     /// The system-wide quick note hotkey is registered.
     pub quick_hotkey: bool,
-    /// Look for a new version now and then (update.rs).
-    pub auto_update: bool,
     /// Light or dark look: "light", "dark", or empty to follow the system.
     pub appearance: String,
-    /// The last version that opened this library (changelog.rs).
-    pub seen_version: String,
     /// 动画: "high" animates folding, the selection and hover; empty keeps them instant.
     pub motion: String,
     /// 快捷新建 (⌘N) 的默认类型: "doc", "markdown", or empty to repeat the last one.
@@ -148,7 +144,7 @@ fn system_lang() -> Lang {
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, auto_update: true, appearance: String::new(), seen_version: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new(), migrate_later: 0 }
+        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, appearance: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new(), migrate_later: 0 }
     }
 }
 
@@ -699,7 +695,6 @@ impl Workspace {
         if p.quick_hotkey != old.quick_hotkey {
             if p.quick_hotkey { crate::quick_note::register(cx); } else { crate::quick_note::suspend_hotkey(); }
         }
-        if p.auto_update && !old.auto_update { cx.defer(|cx| crate::update::check(false, cx)); }
         if p.appearance != old.appearance { apply_appearance(&p.appearance); }
         if p.theme_id() != old.theme_id() || p.lang() != old.lang() || sync_dark(cx) {
             refresh_all(self, cx);
@@ -770,7 +765,7 @@ impl Workspace {
         };
         div().w(px(self.sidebar_w(window))).h_full().flex_none().flex().flex_col().text_color(Theme::text()).font_family(theme::UI_FONT)
             .child(div().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().pl(px(theme::TRAFFIC_LIGHTS_W)).pr(px(12.)).title_bar().child(self.header_navigation(cx))
-                .child(div().flex_1()).children(update_pill(cx)))
+                .child(div().flex_1()))
             // The document sidebar's rhythm: 主页 sits 8 under the bar, a section
             // header like 我的文档's, rows on a 31 pitch. 设置's line sits on
             // 主页's, not a section header's: the 34pt box keeps the rows below.
@@ -862,8 +857,6 @@ impl Workspace {
                 }).into_any_element(),
                 row(tr("自动下载网络图片", "Download web images"), desc(tr("关闭后不联网，网络图片显示为占位，点击单独加载。", "When off the app stays offline; web images show a placeholder you can click to load.")),
                     switch("pref-remote", p.remote_images).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.remote_images = !p.remote_images, cx)))).into_any_element(),
-                row(tr("自动检查更新", "Check for updates automatically"), desc(tr("只读取一份版本信息，不发送任何数据；新版本由你决定何时下载安装。", "Reads a version file and sends nothing about you; you decide when to download and install.")),
-                    switch("pref-update", p.auto_update).on_click(cx.listener(|w, _, _, cx| w.set_pref(|p| p.auto_update = !p.auto_update, cx)))).into_any_element(),
                 row(tr("快捷新建默认类型", "Quick new (⌘N)"), desc(tr("⌘N 新建时创建的类型；「记住上次」沿用你上次从新建菜单选的类型。", "What ⌘N creates; “Last used” repeats the type you last picked from the New menu.")), {
                     let sel = match p.new_default.as_str() { "doc" => 1, "markdown" => 2, _ => 0 };
                     self.select("quick-new", vec![tr("记住上次", "Last used"), tr("文档", "Document"), "Markdown"], sel,
@@ -1015,64 +1008,10 @@ impl Workspace {
             .child(div().text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 5.)).text_color(Theme::text_caption()).child(format!("{} {}", tr("版本", "Version"), env!("CARGO_PKG_VERSION"))))
             .child(div().text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).text_color(Theme::text_caption()).child(if cfg!(target_os = "macos") { tr("本地优先的笔记应用：无需账号，文档就是你电脑上的文件。", "Local-first notes: no account, your documents are files on your Mac.") }
                 else { tr("本地优先的笔记应用：无需账号，文档就是你电脑上的文件。", "Local-first notes: no account, your documents are files on your computer.") })))
-            .child(group(None, vec![update_row(cx).into_any_element()]))
             .child(group(None, vec![row("Onboarding", Some(tr("在这个窗口上再走一遍首次启动的欢迎页（⌘⌥⇧O）；只会应用快捷键，不改动文档库", "Go through the first-launch pages again over this window (⌘⌥⇧O); only the shortcut is applied, the library stays as it is").into()),
                 button("replay-onboarding", tr("打开", "Open")).on_click(cx.listener(|w, _, window, cx| w.replay_onboarding(window, cx)))).into_any_element()]))
             .into_any_element()
     }
-}
-
-/// The sidebar bar's 更新 pill, only while a new version is on offer:
-/// 更新 downloads, verifies and restarts after saving. 重启更新 retries
-/// when saving or installation could not finish. Labels stay short: the bar
-/// keeps 72pt for it at the narrowest sidebar; a longer one ellipsizes.
-pub(crate) fn update_pill(cx: &mut Context<Workspace>) -> Option<AnyElement> {
-    use crate::update::State;
-    let state = crate::update::state(cx);
-    let (label, tip) = match &state {
-        State::Available(m) => (tr("更新", "Update").to_string(), crate::localized_format!("更新到 {}：下载后会保存文档并自动重启", "Update to {}: save documents and restart automatically after downloading", m.version)),
-        State::Downloading(m) => (format!("{:.0}%", crate::update::progress(m) * 100.), crate::localized_format!("正在下载 {}…", "Downloading {}…", m.version)),
-        State::Ready(m, _) => (tr("重启更新", "Restart").to_string(), crate::localized_format!("重启后更新到 {}，打开的文档会先保存", "Restart into {}; open documents are saved first", m.version)),
-        State::Installing(m) => (tr("即将更新", "Updating").to_string(), crate::localized_format!("Quiet.md 退出后安装 {}", "{} installs when Quiet.md quits", m.version)),
-        _ => return None,
-    };
-    let fill = if let State::Downloading(m) = &state { Some(crate::update::progress(m)) } else { None };
-    let busy = matches!(state, State::Downloading(_) | State::Installing(_));
-    Some(div().id("update-pill").no_drag().flex_shrink().min_w_0().h(px(24.)).px(px(10.)).relative().overflow_hidden().flex().items_center().justify_center().rounded_full()
-        .text_size(px(theme::ui_font_small())).line_height(px(theme::ui_font_small() + 4.)).font_weight(FontWeight::MEDIUM)
-        .when(!busy, |d| d.cursor_pointer().bg(Theme::primary()).text_color(gpui::white()).hover(|s| s.opacity(0.9)))
-        .when(busy, |d| d.bg(Theme::sidebar_hover()).text_color(Theme::text_caption()))
-        // Downloading: a fixed width (no jitter as the digits change), filled left
-        // to right behind a moving wave.
-        .when_some(fill, |d, f| d.w(px(56.)).child(ui::wave_fill(f, Theme::primary().opacity(0.18))))
-        .child(div().relative().min_w_0().truncate().child(label))
-        .tip(&tip, None)
-        .on_click(move |_, _, cx| match &state { State::Available(_) => crate::update::start_update(cx), State::Ready(..) => crate::update::install(cx), _ => {} })
-        .into_any_element())
-}
-
-/// 软件更新: where the updater stands and the one next step.
-fn update_row(cx: &mut Context<Workspace>) -> Div {
-    use crate::update::State;
-    let state = crate::update::state(cx);
-    let (title, detail): (SharedString, Option<SharedString>) = match &state {
-        State::Idle => (tr("软件更新", "Software update").into(), None),
-        State::Unsupported => (tr("软件更新", "Software update").into(), desc(crate::update::unsupported_message())),
-        State::Checking => (tr("正在检查更新…", "Checking for updates…").into(), None),
-        State::Current => (tr("已是最新版本", "Quiet.md is up to date").into(), None),
-        State::Available(m) => (crate::localized_format!("新版本 {} 可用", "Version {} is available", m.version).into(), desc(tr("下载完成后会先保存所有文档，再自动重启安装。", "After downloading, Quiet.md saves all documents and restarts to install."))),
-        State::Downloading(m) => (crate::localized_format!("正在下载 {}… {:.0}%", "Downloading {}… {:.0}%", m.version, crate::update::progress(m) * 100.).into(), None),
-        State::Ready(m, _) => (crate::localized_format!("{} 已准备好", "{} is ready to install", m.version).into(), desc(tr("重启后完成更新，打开的文档会先保存。", "Quiet.md restarts to finish; open documents are saved first."))),
-        State::Installing(m) => (crate::localized_format!("{} 将在退出后安装", "{} installs when Quiet.md quits", m.version).into(), None),
-        State::Failed(e) => (tr("更新失败", "Update failed").into(), Some(e.clone().into())),
-    };
-    let control = match &state {
-        State::Checking | State::Downloading(_) | State::Installing(_) => None,
-        State::Available(_) => Some(button("update-download", tr("更新", "Update")).on_click(|_, _, cx| crate::update::start_update(cx))),
-        State::Ready(..) => Some(button("update-install", tr("重启以更新", "Restart to Update")).on_click(|_, _, cx| crate::update::install(cx))),
-        _ => Some(button("update-check", tr("检查更新", "Check Now")).on_click(|_, _, cx| crate::update::check(true, cx))),
-    };
-    row(title, detail, div().children(control))
 }
 
 /// The app icon resampled once to 176px, its size at 88pt on a 2x screen.

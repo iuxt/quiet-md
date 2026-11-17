@@ -30,8 +30,7 @@ def fixture(name, target):
     (source / "assets/sample.txt").write_text("ATTACHMENT PREVIEW\nSecond line\nThird line\n")
     (source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
     (source / "preferences.json").write_text(json.dumps({
-        "theme": "craft", "appearance": "light", "english": True, "seen_version": "0.1.10",
-        "auto_update": False, "quick_hotkey": False, "remote_images": False,
+        "theme": "craft", "appearance": "light", "english": True, "quick_hotkey": False, "remote_images": False,
     }))
     xml = '<title>Pointer property regression</title>\n<p>CARET_ANCHOR</p>\n'
     xml += ''.join(f'<p>Anchor {i:02d}: Before target paragraph</p>\n' for i in range(20))

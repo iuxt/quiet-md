@@ -45,7 +45,7 @@
 
 **⚡ Rapide, nativement rapide.** Toute l'interface est dessinée sur le GPU par Rust et [GPUI](https://www.gpui.rs/). Pas de WebView, pas d'Electron. Dans un document d'un million de caractères, la frappe, la suppression et le défilement restent sous 6 ms par image à P95.
 
-**🔒 Local d'abord. Vos fichiers vous appartiennent.** Aucun compte, aucun cloud, et rien ne passe par le réseau par défaut (hormis la vérification facultative des mises à jour). Votre bibliothèque est un dossier ordinaire sur votre ordinateur : `quiet.json` gère les dossiers virtuels et les titres, tandis que le contenu reste dans des fichiers fixes `notes/<UUID>.xml` (ou `.md`). Déplacer ou renommer une entrée modifie uniquement les métadonnées. Gérez-la avec Git, iCloud ou l'outil de synchronisation de votre choix. Si vous cessez un jour d'utiliser Quiet.md, vos fichiers seront toujours là.
+**🔒 Local d'abord. Vos fichiers vous appartiennent.** Aucun compte, aucun cloud, et rien ne passe par le réseau par défaut. Votre bibliothèque est un dossier ordinaire sur votre ordinateur : `quiet.json` gère les dossiers virtuels et les titres, tandis que le contenu reste dans des fichiers fixes `notes/<UUID>.xml` (ou `.md`). Déplacer ou renommer une entrée modifie uniquement les métadonnées. Gérez-la avec Git, iCloud ou l'outil de synchronisation de votre choix. Si vous cessez un jour d'utiliser Quiet.md, vos fichiers seront toujours là.
 
 **📝 Un éditeur de texte enrichi complet qui parle le DocxXML de Feishu (Lark).** Les notes sont enregistrées au format DocxXML utilisé par les documents Feishu (Lark), pour que copier-coller, import et export conservent leur structure. Titres, tâches, tableaux, colonnes, encadrés, code, math, images et pièces jointes : tous les blocs utiles à l'écriture de documents sont là.
 
@@ -68,9 +68,9 @@
 
 - **macOS** : décompressez l'archive et glissez `quiet.md.app` dans Applications. La version de test utilise une signature ad-hoc et n’est pas notariée par Apple.
 - **Windows** : lancez l'installateur. Par défaut, l'installation est limitée à l'utilisateur courant, et la désinstallation ne supprime jamais vos notes. Si SmartScreen apparaît au premier lancement, cliquez sur **Plus d'infos → Exécuter quand même**.
-- **Linux** (expérimental) : `chmod +x quiet-md-*.AppImage` puis lancez-le. Sans FUSE, ajoutez `--appimage-extract-and-run`. Les AppImage 0.1.10 et plus récentes prennent en charge la mise à jour depuis l'app. Les versions Linux plus anciennes nécessitent une installation manuelle unique. Les tests interactifs ont jusqu'ici porté sur Omarchy sous Wayland (voir les [notes Linux](CONTRIBUTING.md#linux-experimental)).
+- **Linux** (expérimental) : `chmod +x quiet-md-*.AppImage` puis lancez-le. Sans FUSE, ajoutez `--appimage-extract-and-run`. Installez les nouvelles versions manuellement. Les tests interactifs ont jusqu'ici porté sur Omarchy sous Wayland (voir les [notes Linux](CONTRIBUTING.md#linux-experimental)).
 
-Les téléchargements actuels sont des **préversions de test gratuites** sur [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS utilise une signature ad-hoc sans notarisation ; l’installateur Windows n’est pas signé. Téléchargez et installez manuellement : ces versions ne passent pas par les mises à jour de l’app. Chaque paquet inclut une somme SHA-256. Voir le [guide de publication](docs/UPDATES.md).
+Les téléchargements actuels sont des **préversions de test gratuites** sur [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS utilise une signature ad-hoc sans notarisation ; l’installateur Windows n’est pas signé. Téléchargez et installez manuellement. Chaque paquet inclut une somme SHA-256. Voir le [guide de publication](docs/RELEASES.md).
 
 Au premier lancement, Quiet.md demande la langue de l'interface, l'emplacement de votre bibliothèque et le raccourci de note rapide, et propose de copier vos notes depuis Obsidian, Logseq, iA Writer ou Typora. Une bibliothèque vide reçoit le guide **Getting started** : une visite de dix minutes des principales fonctionnalités. Les notes existantes ne sont jamais écrasées.
 
@@ -122,10 +122,8 @@ Merci à toutes les personnes qui ont contribué à construire Quiet.md. Issues 
 - **0.1.5** (5 nov) : l'app s'appelle désormais Quiet.md. Votre bibliothèque et vos notes restent où elles étaient.
   - Gérez plusieurs documents à la fois depuis l'accueil : dupliquer, déplacer ou supprimer ensemble.
   - Videz la Corbeille en une seule étape. Les flèches parcourent les icônes du menu d'insertion, et supprimer tous les documents ne crée plus de document vide.
-  - Après une mise à jour depuis l'app, la barre latérale affiche une fois ce qui a changé dans la nouvelle version.
   - Windows : les raccourcis et le guide intégré affichent Ctrl / Alt, et un lancement raté s'explique et laisse un journal.
 - **0.1.4** (5 nov) :
-  - Mises à jour depuis l'app : quand une nouvelle version sort, un bouton **Mettre à jour** apparaît en haut de la barre latérale. Le téléchargement est vérifié par sa signature, et un redémarrage termine l'installation. Les documents ouverts sont d'abord enregistrés. Les vérifications automatiques se désactivent dans **Réglages › Général**. Une vérification ne récupère qu'un manifeste de version et n'envoie aucune donnée. Les versions 0.1.3 et antérieures nécessitent un téléchargement manuel unique de la 0.1.4.
   - Mode sombre : choisissez Système, Clair ou Sombre dans **Réglages › Apparence**. Les thèmes intégrés et personnalisés ont tous un habillage sombre, mais l'export et l'impression restent clairs.
 - **0.1.3** (4 nov) : le texte de la barre latérale est de nouveau lisible quand macOS est en mode sombre.
 - **0.1.2** (4 nov) : les menus et raccourcis macOS standard (Masquer, Placer dans le Dock, Zoom, Plein écran). Cliquer sur l'icône du Dock rouvre une fenêtre après la fermeture de la dernière. Correction de certains caractères chinois rendus avec les mauvais glyphes.

@@ -17,8 +17,7 @@ source = work / "source"
 (source / ".quiet/format.json").write_text('{"format":7}')
 (source / "quiet.json").write_text('{"version":2,"folders":[],"notes":[],"trash":[]}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
-    "appearance": "light", "english": True, "seen_version": "0.2.0", "auto_update": False,
-    "quick_hotkey": False, "onboarding_done": True,
+    "appearance": "light", "english": True, "quick_hotkey": False, "onboarding_done": True,
 }))
 incoming = work / "incoming"
 incoming.mkdir()

@@ -294,7 +294,7 @@ pub fn shadow_s4_down() -> Vec<BoxShadow> {
     vec![shadow(0.05, 1., 3., 0.), shadow(0.11, 10., 28., 0.)]
 }
 
-/// Cards resting on the sidebar (更新日志): a faint lift, no border.
+/// Onboarding cards: a faint lift, no border.
 pub fn shadow_card() -> Vec<BoxShadow> {
     vec![shadow(0.04, 1., 2., 0.), shadow(0.06, 4., 14., 0.)]
 }

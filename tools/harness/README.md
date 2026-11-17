@@ -36,10 +36,6 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 ## 脚本命令
 
-`python3 tools/harness/update_flow.py` 使用临时文档库和本地 HTTP 服务器验证更新按钮、设置页文案、下载进度、篡改签名拒绝安装，以及多窗口保存失败保护；不使用正式私钥，不启动安装器。
-
-`python3 tools/harness/update_check.py` 验证关于页手动检查的检查中状态和结果提示，覆盖已是最新版、404、429 限流、不支持自动更新以及重复点击；只使用临时文档库和本地 HTTP 服务器，不下载更新包。
-
 `python3 tools/harness/git_sync.py` 在临时文档库中通过界面启用 Git、提交并打开历史，核对 UUID 文件名、元数据、真实提交对象、令牌不落盘及只读预览；不调用系统 Git、不联网。
 
 `python3 tools/harness/git_ssh.py` 使用临时 SSH / 自签 TLS 服务器验证自定义端口、加密私钥、known_hosts 校验、LFS CA、上传确认及推送 / 克隆 / 拉取；需要 Python `paramiko`，系统 Git 仅作为测试服务端。
@@ -56,7 +52,6 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 | 命令 | 作用 |
 |---|---|
-| `check-update-state <状态> [feedback\|silent]` | 只读断言当前更新状态（如 `available`、`downloading`、`failed`），可同时断言是否显示结果提示；仅 devtools 构建提供 |
 | `check-document-safety <阶段>` | 文档保存与导航回归断言，由 `document_safety.py` 使用；仅 devtools 构建提供 |
 | `wait <ms>` | 等待，期间自己绘制帧（锁屏时也能出图） |
 | `key <按键>` | 发送按键，如 `key cmd-b`、`key escape` |

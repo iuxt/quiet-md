@@ -17,7 +17,7 @@ xml = "33333333-3333-4333-8333-333333333333"
 md = "44444444-4444-4444-8444-444444444444"
 (source / ".quiet/format.json").write_text('{"format":7}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
-    "appearance": "light", "english": True, "seen_version": "0.2.0", "auto_update": False, "quick_hotkey": False,
+    "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 
 def deleted(id, title, parent=None, filename=None, root=None):

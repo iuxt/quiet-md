@@ -161,8 +161,7 @@ impl Workspace {
                         cx.notify();
                     })),
             )
-            .child(div().flex_1())
-            .children(crate::settings::update_pill(cx));
+            .child(div().flex_1());
 
         // The nav is just 主页: 36px items, a blue tint when selected. Its
         // icon column (x 17) is shared with 搜索 and the doc rows.
@@ -280,7 +279,6 @@ impl Workspace {
             .child(header)
             .child(nav)
             .child(self.sidebar_drop_zone(div().id("doc-list").flex_1().min_h_0().overflow_y_scroll().track_scroll(&self.list_scroll).child(list), cx))
-            .children(crate::changelog::card(cx.listener(|_, _, _, cx| cx.notify())))
             .child(footer)
             .into_any_element()
     }

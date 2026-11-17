@@ -25,8 +25,7 @@ def fixture(name, target, theme="craft"):
     (source / "docs").mkdir(parents=True)
     (source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
     (source / "preferences.json").write_text(json.dumps({
-        "theme": theme, "appearance": "light", "english": True, "seen_version": "0.1.10",
-        "auto_update": False, "quick_hotkey": False,
+        "theme": theme, "appearance": "light", "english": True, "quick_hotkey": False,
     }))
     xml = '<title>Scroll intent regression</title>\n<p>CARET_ANCHOR</p>\n'
     xml += ''.join(f'<p>Before target paragraph {i:02d}</p>\n' for i in range(20))

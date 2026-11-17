@@ -43,7 +43,7 @@ Most of these, AGENTS.md included, are written in Chinese for now.
 
 ## Building release packages
 
-Before a release, `scripts/check.sh` must pass. Branch pushes and pull requests do not start builds; pushing a version tag automatically runs the Release workflow, which checks every platform before publishing. The CI workflow remains available for manual validation builds. The default Release workflow publishes free test prereleases: ad-hoc signed, unnotarized macOS ZIPs, an unsigned Windows installer and a Linux AppImage, each with SHA-256. No platform credentials or Minisign key are required. Download and install these builds manually; they do not enter the in-app update channel. See [the release guide](docs/UPDATES.md). The Windows CI build does not replace installing, uninstalling and editing on a real machine.
+Before a release, `scripts/check.sh` must pass. Branch pushes and pull requests do not start builds; pushing a version tag automatically runs the Release workflow, which checks every platform before publishing. The CI workflow remains available for manual validation builds. The default Release workflow publishes free test prereleases: ad-hoc signed, unnotarized macOS ZIPs, an unsigned Windows installer and a Linux AppImage, each with SHA-256. No platform signing credentials are required. Download and install these builds manually. See [the release guide](docs/RELEASES.md). The Windows CI build does not replace installing, uninstalling and editing on a real machine.
 
 Packaging scripts build with `cargo build --profile dist` (Cargo.toml: fat LTO, no symbol table) into `target/dist`, about a third smaller than `--release`, which stays the quick everyday build. A full `dist` build takes about four minutes, and so does relinking after a change. Line tables go to a separate file that is kept but never published: `release.sh` writes `dSYM-quiet-md-<version>-macos-<arch>.zip`, `package-windows.ps1` writes `quiet-md-<version>-windows-x64.pdb`. A panic in the log carries `base … frames: …`; on macOS, resolve them with `atos -o <unzipped dSYM> -arch <arch> -l <base> <frames>`.
 
@@ -97,33 +97,11 @@ The installer lets you choose the location and an optional desktop shortcut, and
 
 On every platform, never commit credentials, private keys or certificate files.
 
-### Uploads and in-app updates
+### Releases
 
-The app reads `https://github.com/iuxt/quiet-md/releases/latest/download/update-<platform>.json`. It checks 10 seconds after launch, every 12 hours, and when a window becomes active more than an hour after the last check. Automatic checks can be disabled in Settings › General. Click **Update** once to download, verify, save every open document and restart to install. Automatic checks only discover versions. Failed or cancelled saves leave the verified package ready for a manual retry, without scheduling an installation on a later ordinary quit. Packages are bound to an exact repository, version, platform and Minisign signature; macOS additionally requires the same code-signature team. See [the update and release guide](docs/UPDATES.md).
+All platforms use manual downloads from [GitHub Releases](https://github.com/iuxt/quiet-md/releases). The app does not check for or install releases. Version notes live in `docs/releases/<version>.md`.
 
-Before the first fork release, generate an independent update key on your secure release machine (`brew install minisign`), outside the checkout. This fork already has its public key configured. Only initialize a new key when establishing a new trust chain; keep the matching private key for future releases:
-
-```sh
-mkdir -p ~/.minisign
-minisign -G -p ~/.minisign/quiet-md-iuxt.pub -s ~/.minisign/quiet-md-iuxt.key
-cp ~/.minisign/quiet-md-iuxt.pub packaging/update-key.pub
-```
-
-Keep and back up the private key outside the repository. Commit only `packaging/update-key.pub` before building **all** platforms. The publishing script refuses the upstream key and rejects signatures whose trusted comment differs from the package name. Changing the public key breaks the trust chain for already installed copies; do not rotate it without a migration release.
-
-Build final platform-signed packages as described above, then use `scripts/publish-github-release.py` with all four packages. `--dry-run` only inspects local files; `--prepare dist/github/v<version>` signs and prepares the 16 release assets without network access. `--publish dist/github/v<version>` additionally runs the checks, uploads a draft, downloads and verifies every asset, then publishes it as Latest and checks public downloads. Publishing needs an authenticated `gh`, a clean release checkout, and an existing pushed tag pointing at HEAD. `--notes <release-notes-file>` is optional; when omitted, GitHub generates the release notes. Existing releases/assets are never overwritten; failed uploads remain drafts for inspection. Use a new output directory per attempt.
-
-```sh
-# Substitute the four final package paths; globbing is intentionally avoided.
-python3 scripts/publish-github-release.py --dry-run <arm64.zip> <intel.zip> <windows-setup.exe> <linux.AppImage>
-python3 scripts/publish-github-release.py --prepare dist/github/v<version> --key ~/.minisign/quiet-md-iuxt.key <arm64.zip> <intel.zip> <windows-setup.exe> <linux.AppImage>
-```
-
-Install the first fork-signed release manually. Upstream builds use another feed/key; ad-hoc macOS local builds and Preview cannot replace themselves with signed releases. For isolated tests, build with `QUIET_MD_UPDATE_PUBKEY=<test public key>` and run with `QUIET_MD_UPDATE_URL=http://127.0.0.1:<port>` pointing at test manifests and packages, always with `QUIET_MD_HOME` set to a temporary library. The URL override explicitly enables unsigned test builds and HTTP; production requests and redirects require HTTPS.
-
-For GitHub Actions, commit and push `.github/workflows/release.yml` to `main`, configure the signing Secrets listed in [UPDATES.md](docs/UPDATES.md#github-actions-release), then push a `v<version>` tag pointing at the current `main` commit. Both Cargo versions and the release-notes file must match. The workflow automatically checks credentials before building, runs checks on all platforms, signs and notarizes macOS packages, signs Windows packages, then verifies a draft containing all four platforms and publishes it as Latest. You can also manually run **Release** on `main` with an existing tag: leave `publish` off for a draft, or enable it to make the verified release Latest. `MINISIGN_PASSWORD` is passed to minisign through stdin, and `--publish ... --draft` provides the same verified-draft behavior locally. An ad-hoc client still needs a one-time manual installation of the first Developer ID signed fork release.
-
-The old `scripts/publish-downloads.sh` is retained for upstream R2 infrastructure and is not the feed used by this fork.
+Pushing a version tag runs `.github/workflows/release.yml`, builds all four platforms and publishes a verified test prerelease with SHA-256 checksums. For local preparation, `scripts/publish-github-release.py --dry-run` inspects the four test packages without writes or network access; `--prepare <new-directory>` creates the eight package/checksum assets. `--publish <new-directory>` checks the release checkout and pushed tag, runs the checks, uploads and verifies a draft, then publishes and checks public downloads. Add `--draft` to leave it unpublished, or `--notes <release-notes-file>` to select notes. Existing releases and assets are never overwritten. See [the release guide](docs/RELEASES.md).
 
 The release version is recorded in `VERSION`. Use the script below to read it or bump it together with both `Cargo.toml` files and the workspace packages in `Cargo.lock` (Python 3 required; works from any directory):
 
@@ -135,12 +113,12 @@ python3 scripts/version.py bump-minor    # 0.2.0 -> 0.3.0
 python3 scripts/version.py bump-patch    # 0.2.0 -> 0.2.1
 ```
 
-Each bump command prints the new version. Major and minor bumps reset the lower components to zero. All commands reject invalid or inconsistent versions before changing files; `scripts/check.sh` also checks consistency. The script does not create commits or tags. For a new version, write the version's highlights in `src/changelog.rs`: after updating, existing users see them once at the bottom of the sidebar.
+Each bump command prints the new version. Major and minor bumps reset the lower components to zero. All commands reject invalid or inconsistent versions before changing files; `scripts/check.sh` also checks consistency. Bump commands do not create commits or tags. After committing and pushing a release, run `python3 scripts/version.py release` to create and push its version tag.
 
 ### Linux (experimental)
 
 Install Rust through rustup, then run `scripts/linux-deps.sh` on Ubuntu/Debian or Arch-based systems. Run `scripts/preview-linux.sh` for an isolated temporary library, or set `QUIET_MD_HOME` to reuse a test library. `scripts/package-linux.sh` produces a tarball and SHA-256 in `dist/linux`; it includes a desktop entry and a 512×512 icon generated with ImageMagick. The binary is dynamically linked; build on the oldest distribution you intend to support and check `runtime-libraries.txt` on the target system.
 
-The Linux build and full checks run on Ubuntu 22.04. `scripts/package-appimage.sh` also produces an x86_64 AppImage in `dist/linux`, using a pinned, SHA-256-verified linuxdeploy. It bundles shared dependencies and checks the payload against a glibc 2.35 baseline; graphics drivers remain system-provided. SHA-256 and dependency reports are generated alongside it. AppImage can be run after `chmod +x`; if FUSE is unavailable, use `--appimage-extract-and-run`. AppImage supports in-app updates when the fork release key is configured; other package formats require manual updates. Interactive testing has been done on Omarchy 4.5 with Wayland, floating windows and 250% scaling, including Chinese title input. GNOME Wayland, X11 and systems without Noto fonts still need interactive verification; this is not a claim of support for every desktop distribution. Software Vulkan (`vulkan-swrast` on Arch) is useful in VMs or when no hardware Vulkan driver is available. Global quick-note shortcuts are not supported on Linux yet.
+The Linux build and full checks run on Ubuntu 22.04. `scripts/package-appimage.sh` also produces an x86_64 AppImage in `dist/linux`, using a pinned, SHA-256-verified linuxdeploy. It bundles shared dependencies and checks the payload against a glibc 2.35 baseline; graphics drivers remain system-provided. SHA-256 and dependency reports are generated alongside it. AppImage can be run after `chmod +x`; if FUSE is unavailable, use `--appimage-extract-and-run`. Install new versions manually for all package formats. Interactive testing has been done on Omarchy 4.5 with Wayland, floating windows and 250% scaling, including Chinese title input. GNOME Wayland, X11 and systems without Noto fonts still need interactive verification; this is not a claim of support for every desktop distribution. Software Vulkan (`vulkan-swrast` on Arch) is useful in VMs or when no hardware Vulkan driver is available. Global quick-note shortcuts are not supported on Linux yet.
 
 Linux support started in [PR #7](https://github.com/s1dashu/quiet-md/pull/7) by [VJ-2303](https://github.com/VJ-2303); maintainer follow-ups add desktop integration and runtime fixes.

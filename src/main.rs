@@ -12,7 +12,6 @@ static ALLOC: big_alloc::Alloc = big_alloc::Alloc;
 mod shared_store;
 mod quick_note;
 mod assets;
-mod changelog;
 mod guides;
 mod clipboard;
 #[cfg(feature = "devtools")]
@@ -68,7 +67,6 @@ mod transfer;
 mod trash;
 mod tree;
 mod ui;
-mod update;
 
 use fdl_core::{docxml, lang, markdown, model, palette, paste, store, time};
 
@@ -136,17 +134,14 @@ pub(crate) fn open_main_window(scripted: bool, at: Option<Bounds<Pixels>>, cx: &
 /// existing one, after first launch's pages for a new one). The main view
 /// opens in a new window, or takes over `into` — first launch's own window,
 /// so the pages give way to the notes without a second window.
-pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, incoming: local_files::Incoming, cx: &mut App) -> Option<Entity<app::Workspace>> {
-    changelog::startup(existed);
+pub(crate) fn start(scripted: bool, into: Option<&mut Window>, incoming: local_files::Incoming, cx: &mut App) -> Option<Entity<app::Workspace>> {
     shortcuts::init(cx);
     match shared_store::SharedStore::open() {
         Ok(s) => cx.set_global(s),
         Err(err) => logging::fatal("无法打开文档库 / Could not open the library", &err),
     }
-    if let Some(r) = cx.global::<shared_store::SharedStore>().with(|s| s.migrated.take()) { changelog::migrated(&r); }
     if !scripted { quick_note::install(cx); }
     app::set_menus(cx);
-    update::init(cx);
     let took = into.map(|window| window.replace_root(cx, app::Workspace::new));
     if took.is_none() { open_main_window(scripted, None, cx); }
     // A synced library (or one used elsewhere) moves to real folders only once the user agrees.
@@ -163,9 +158,7 @@ pub(crate) fn start(existed: bool, scripted: bool, into: Option<&mut Window>, in
 }
 
 fn main() {
-    if update::run_helper() { return }
     logging::init();
-    if let Err(e) = update::register_instance() { logging::fatal("无法启动 / Could not start Quiet.md", &anyhow::anyhow!(e)); }
     let scripted = devtools::scripted();
     // No single-instance guard: copies may share a library (builds tested
     // side by side). `Store` rereads an index another copy rewrote before
@@ -175,7 +168,7 @@ fn main() {
     store::set_ubiquity_probe(onboarding::ubiquitous);
     let root = store::Store::root_dir();
     logging::write(&format!("library {}", root.display()));
-    // A library that was here before this launch can show 更新日志.
+    // An existing library skips first-launch setup.
     let existed = guides::seeded(&root).unwrap_or(false);
     // A new library is set up after first launch's pages pick where it goes.
     let onboard = onboarding::wanted(existed, scripted);
@@ -204,7 +197,7 @@ fn main() {
         settings::sync_dark(cx);
         themes::load(&settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
         let quick_enabled = !scripted;
-        if onboard { onboarding::open(scripted, incoming, cx); } else { start(existed, scripted, None, incoming, cx); }
+        if onboard { onboarding::open(scripted, incoming, cx); } else { start(scripted, None, incoming, cx); }
         cx.on_window_closed(move |cx| {
             // Closing first launch's window before it finished quits: there is no library yet.
             if (!quick_enabled || !cfg!(target_os = "macos") || onboarding::pending()) && cx.windows().is_empty() {

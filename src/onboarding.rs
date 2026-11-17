@@ -539,7 +539,6 @@ impl Onboarding {
             return cx.emit(Done);
         }
         let root = self.root.clone();
-        let existed = crate::guides::seeded(&root).unwrap_or(false);
         let set = crate::store::Store::set_root_dir(root.clone()).and_then(|_| if self.scripted { Ok(()) } else { crate::guides::initialize(&root) });
         if let Err(e) = set {
             self.error = Some(format!("{}{e}", tr("无法在这里创建文档库：", "Couldn't create the library here: ")));
@@ -553,7 +552,7 @@ impl Onboarding {
         crate::settings::sync_dark(cx);
         crate::themes::load(&crate::settings::prefs().theme_id(), false, || cx.text_system().all_font_names());
         let imports = self.imports();
-        if imports.is_empty() { return self.hand_over(existed, None, window, cx); }
+        if imports.is_empty() { return self.hand_over(None, window, cx); }
         // Copy the notes in before the main window opens, off the main thread,
         // so the button's spinner keeps moving.
         self.importing = Some(Instant::now());
@@ -561,15 +560,15 @@ impl Onboarding {
         let work = cx.background_executor().spawn(async move { import_all(&imports) });
         cx.spawn_in(window, async move |this, cx| {
             let failed = work.await;
-            let _ = this.update_in(cx, |w, window, cx| w.hand_over(existed, failed, window, cx));
+            let _ = this.update_in(cx, |w, window, cx| w.hand_over(failed, window, cx));
         }).detach();
     }
 
     /// The notes take over this same window: no second window, nothing jumps.
-    fn hand_over(&mut self, existed: bool, import_error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
+    fn hand_over(&mut self, import_error: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self._ticker = Task::ready(());
         if let Some((_, t)) = self.film_tex.take() { let _ = window.drop_image(t); }
-        let ws = crate::start(existed, self.scripted, Some(window), self.incoming.take().unwrap_or_default(), cx);
+        let ws = crate::start(self.scripted, Some(window), self.incoming.take().unwrap_or_default(), cx);
         let hotkey_error = (cfg!(target_os = "macos") && self.hotkey != crate::shortcuts::global_key())
             .then(|| crate::shortcuts::set_global(&self.hotkey, cx).err()).flatten().map(|e| e.to_string());
         if let Some(e) = hotkey_error.or(import_error) && let Some(ws) = ws {

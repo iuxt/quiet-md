@@ -75,15 +75,8 @@ Root: HKA; Subkey: "Software\Classes\Applications\quiet_md.exe\SupportedTypes"; 
 
 [Run]
 Filename: "{app}\quiet_md.exe"; Description: "Launch Quiet.md"; Flags: nowait postinstall skipifsilent
-; The in-app updater installs silently with /UPDATE=1 and expects the app back afterwards.
-Filename: "{app}\quiet_md.exe"; Flags: nowait; Check: IsUpdate
 
 [Code]
-function IsUpdate: Boolean;
-begin
-  Result := ExpandConstant('{param:UPDATE|0}') = '1';
-end;
-
 procedure InitializeWizard;
 begin
   WizardForm.Caption := 'Quiet.md';

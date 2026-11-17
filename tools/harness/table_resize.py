@@ -20,8 +20,7 @@ source = work / "source"
 doc_id = "aaaaaaaa-0000-0000-0000-000000000001"
 (source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
 (source / "preferences.json").write_text(json.dumps({
-    "appearance": "light", "english": True, "seen_version": "0.1.7",
-    "auto_update": False, "quick_hotkey": False,
+    "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 xml = "<title>Table resize regression</title>\n"
 xml += "".join(f"<p>Before table paragraph {i:02d}</p>\n" for i in range(20))

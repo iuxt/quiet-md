@@ -21,7 +21,7 @@ body = "<title>Git regression</title>\n<p>Keep this body.</p>\n"
 (source / ".quiet/format.json").write_text('{"format":4}')
 (source / ".quiet/index.json").write_text(json.dumps({"Git regression.xml": {"id": doc_id, "created": 1, "modified": 1}}))
 (source / ".quiet/preferences.json").write_text(json.dumps({
-    "appearance": "light", "english": True, "seen_version": "0.1.12", "auto_update": False, "quick_hotkey": False,
+    "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 script = work / "steps.txt"
 script.write_text("""resize 1200 900

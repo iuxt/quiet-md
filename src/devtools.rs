@@ -27,7 +27,7 @@ fn fps() -> f64 {
     std::env::var("FDL_RECORD_FPS").ok().and_then(|v| v.parse().ok()).filter(|&f: &f64| f > 0.).unwrap_or(30.)
 }
 
-/// A script drives this run: other apps, dialogs and the updater stay out of it.
+/// A script drives this run: other apps and system dialogs stay out of it.
 pub fn scripted() -> bool { std::env::var_os("FDL_SCRIPT").is_some() }
 
 /// Time spent in the editor's `render` during the last benched frame.
@@ -274,10 +274,6 @@ pub fn start(window: &mut Window, cx: &mut App) {
             }
             if cmd == "check-document-safety" {
                 cx.update(|cx| crate::app::check_document_safety(rest.trim(), cx)).unwrap();
-                continue;
-            }
-            if cmd == "check-update-state" {
-                cx.update(|cx| crate::update::check_script_state(rest.trim(), cx)).unwrap();
                 continue;
             }
             #[cfg(target_os = "macos")]

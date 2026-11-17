@@ -20,8 +20,7 @@ source = work / "source"
 doc_id = "aaaaaaaa-0000-0000-0000-000000000001"
 (source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
 (source / "preferences.json").write_text(json.dumps({
-    "appearance": "light", "english": True, "seen_version": "0.1.9",
-    "auto_update": False, "quick_hotkey": False,
+    "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 original = "<title>Screenshot paste</title>\n<p>BeforeAfter</p>\n"
 (source / "docs" / f"{doc_id}.xml").write_text(original)

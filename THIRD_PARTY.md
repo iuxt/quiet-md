@@ -339,7 +339,6 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | mime | 0.3.17 | MIT OR Apache-2.0 |
 | mime_guess | 2.0.5 | MIT |
 | minimal-lexical | 0.2.1 | MIT/Apache-2.0 |
-| minisign-verify | 0.3.0 | MIT |
 | miniz_oxide | 0.8.9 | MIT OR Zlib OR Apache-2.0 |
 | miniz_oxide | 0.9.1 | MIT OR Zlib OR Apache-2.0 |
 | mint | 0.5.9 | MIT |

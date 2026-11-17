@@ -68,9 +68,9 @@
 
 - **macOS**：解压后把 `quiet.md.app` 拖进「应用程序」。测试包采用 ad-hoc 签名，未经 Apple 公证。
 - **Windows**：运行安装程序，默认只装到当前用户目录，卸载不会删除笔记。如果首次运行出现 SmartScreen 提示，点「更多信息 → 仍要运行」即可。
-- **Linux**（实验性）：`chmod +x quiet-md-*.AppImage` 后直接运行；没有 FUSE 时加 `--appimage-extract-and-run`。AppImage 从 0.1.10 起支持应用内更新；更早的 Linux 版本需先手动安装本版。目前只在 Omarchy（Wayland）上做过交互测试，详见 [Linux 说明](CONTRIBUTING.md#linux-experimental)。
+- **Linux**（实验性）：`chmod +x quiet-md-*.AppImage` 后直接运行；没有 FUSE 时加 `--appimage-extract-and-run`。新版本需手动下载安装。目前只在 Omarchy（Wayland）上做过交互测试，详见 [Linux 说明](CONTRIBUTING.md#linux-experimental)。
 
-当前提供 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) 上的**免费测试版**：macOS 使用 ad-hoc 签名且未经 Apple 公证，Windows 安装包未签名。请手动下载安装，测试版不进入应用内自动更新通道；每个包附带 SHA-256 校验文件。详见[更新与发布说明](docs/UPDATES.md)。
+当前提供 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) 上的**免费测试版**：macOS 使用 ad-hoc 签名且未经 Apple 公证，Windows 安装包未签名。请手动下载安装；每个包附带 SHA-256 校验文件。详见[发布说明](docs/RELEASES.md)。
 
 首次启动时可以选择界面语言、文档库位置和随手记快捷键，并可从 Obsidian、Logseq、iA Writer、Typora 复制已有笔记进来。空文档库里会放一套「开始指南」，十分钟带你过一遍主要功能；已有的笔记不会被覆盖。
 
@@ -125,10 +125,8 @@
 - **0.1.5**（11 月 5 日）：应用更名为 Quiet.md，文档库位置和已有内容不变。
   - 首页新增批量管理：一次选中多篇文档，创建副本、移动或删除。
   - 回收站可以一键清空；插入菜单的图标可以用方向键移动；删除全部文档后不再自动新建空文档。
-  - 应用内更新后，侧栏底部会显示一次新版本的变化。
   - Windows：快捷键和内置指南显示为 Ctrl / Alt；启动失败时会弹出提示并记录日志。
 - **0.1.4**（11 月 5 日）：
-  - 应用内自动更新：有新版本时，侧栏顶部会出现「更新」按钮；下载后先校验签名，重启即完成安装，打开的文档会先保存。自动检查可以在 设置 › 通用 中关闭，检查时只读取一份版本信息，不发送任何数据。0.1.3 及更早的版本需要手动下载一次 0.1.4。
   - 深色模式：设置 › 外观 可选跟随系统、浅色或深色，内置主题和自定义主题都有对应的深色效果；导出和打印仍是浅色。
 - **0.1.3**（11 月 4 日）：macOS 系统切到深色模式时，侧栏文字不再看不清。
 - **0.1.2**（11 月 4 日）：补齐 macOS 的标准菜单和快捷键（隐藏、最小化、缩放、全屏）；关掉最后一个窗口后，点 Dock 图标可以重新打开。修复部分中文字显示成错误字形的问题。
