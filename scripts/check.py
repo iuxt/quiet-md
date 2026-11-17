@@ -9,6 +9,8 @@ os.chdir(Path(__file__).resolve().parent.parent)
 def cargo(*args, env=None):
     subprocess.run(["cargo", *args], check=True, env=env)
 
+subprocess.run([sys.executable, "scripts/version.py"], check=True)
+subprocess.run([sys.executable, "scripts/test_version.py"], check=True)
 subprocess.run([sys.executable, "scripts/test_publish_github_release.py"], check=True)
 cargo("test", "--release", "--workspace", "--locked")
 cargo("test", "--release", "--locked", "-p", "fdl_core", "library_round_trips", "--", "--ignored",

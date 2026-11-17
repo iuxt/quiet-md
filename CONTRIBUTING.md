@@ -123,7 +123,17 @@ For GitHub Actions, commit and push `.github/workflows/release.yml` to `main`, c
 
 The old `scripts/publish-downloads.sh` is retained for upstream R2 infrastructure and is not the feed used by this fork.
 
-For a new version, bump the version in both `Cargo.toml` files together, and write the version's highlights in `src/changelog.rs`: after updating, existing users see them once at the bottom of the sidebar.
+The release version is recorded in `VERSION`. Use the script below to read it or bump it together with both `Cargo.toml` files and the workspace packages in `Cargo.lock` (Python 3 required; works from any directory):
+
+```sh
+python3 scripts/version.py               # print the current version (same as get)
+python3 scripts/version.py get
+python3 scripts/version.py bump-major    # 0.2.0 -> 1.0.0
+python3 scripts/version.py bump-minor    # 0.2.0 -> 0.3.0
+python3 scripts/version.py bump-patch    # 0.2.0 -> 0.2.1
+```
+
+Each bump command prints the new version. Major and minor bumps reset the lower components to zero. All commands reject invalid or inconsistent versions before changing files; `scripts/check.sh` also checks consistency. The script does not create commits or tags. For a new version, write the version's highlights in `src/changelog.rs`: after updating, existing users see them once at the bottom of the sidebar.
 
 ### Linux (experimental)
 

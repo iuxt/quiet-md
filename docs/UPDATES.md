@@ -155,7 +155,7 @@ gh secret set MINISIGN_PASSWORD --repo iuxt/quiet-md
 
 一次新版本的操作顺序：
 
-1. 同时递增两个 `Cargo.toml` 的版本，更新 `src/changelog.rs` 并创建 `docs/releases/<version>.md`，完成检查后按正常 Git 流程提交、推送到 `main`。**要测试更新，新版本必须高于已安装版本。**
+1. 用 `python3 scripts/version.py bump-patch` 递增版本（也支持 `bump-minor` / `bump-major`），脚本同步 `VERSION`、两个 `Cargo.toml` 和 `Cargo.lock`。更新 `src/changelog.rs` 并创建 `docs/releases/<version>.md`，完成检查后按正常 Git 流程提交、推送到 `main`。**要测试更新，新版本必须高于已安装版本。**
 2. 为当前 `main` 提交创建并推送匹配的 tag（示例版本号需替换）：
 
    ```sh

@@ -35,7 +35,7 @@ scripts/check.sh        # cargo test --release + clippy --all-targets 零警告
 
 想每次提交自动检查：`git config core.hooksPath scripts/hooks`。
 
-发布版本时，把两个 `Cargo.toml` 的版本号一起更新。未经用户明确要求，不创建提交。
+版本号记录在根目录 `VERSION`；用 `python3 scripts/version.py` 查询，用 `bump-major` / `bump-minor` / `bump-patch` 参数递增，并同步两个 `Cargo.toml` 和 `Cargo.lock`。未经用户明确要求，不创建提交。
 
 ## 用户数据（绝对不要碰）
 
