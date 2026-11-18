@@ -10,6 +10,7 @@ mod changes;
 mod staging;
 pub use changes::ChangePreview;
 pub use lfs::Pointer;
+pub(crate) use staging::CommitScope;
 #[cfg(test)] mod tests;
 
 pub const MANIFEST: &str = "quiet.json";
@@ -30,9 +31,12 @@ impl Auth {
 #[derive(Clone, Default)]
 pub struct Config { pub name: String, pub email: String, pub remote: String, pub branch: String, pub lfs_url: String, pub ssh_key: String, pub lfs_ca_info: String }
 #[derive(Clone, Debug)]
-pub struct Change { pub path: String, pub kind: char, pub staged: bool, pub unstaged: bool }
+pub struct Change { pub path: String, pub kind: char, pub staged: bool, pub unstaged: bool, pub blank_only: bool }
 #[derive(Clone, Debug, Default)]
 pub struct Status { pub branch: String, pub remote: String, pub head: Option<String>, pub changes: Vec<Change> }
+impl Status {
+    pub fn visible_changes(&self) -> impl Iterator<Item = &Change> { self.changes.iter().filter(|c| !c.blank_only) }
+}
 #[derive(Clone, Debug)]
 pub struct Commit { pub id: String, pub message: String, pub author: String, pub time: i64 }
 
@@ -175,32 +179,37 @@ impl LibraryRepo {
         let before = head.as_ref().map(|c| c.tree()).transpose()?;
         let after = self.repo.find_tree(self.working_tree(false)?)?;
         let index = self.index_tree()?;
+        let changes = self.changes_between(before.as_ref(), &index, &after)?;
+        Ok(Status { branch: config.branch, remote: config.remote, head: head.map(|c| c.id().to_string()), changes })
+    }
+
+    fn changes_between(&self, before: Option<&git2::Tree<'_>>, index: &git2::Tree<'_>, after: &git2::Tree<'_>) -> Result<Vec<Change>> {
         let mut changes = BTreeMap::new();
-        for (staged, from, to) in [(true, before.as_ref(), &index), (false, Some(&index), &after)] {
+        for (staged, from, to) in [(true, before, index), (false, Some(index), after)] {
             for delta in self.repo.diff_tree_to_tree(from, Some(to), None)?.deltas() {
                 let path = delta.new_file().path().or_else(|| delta.old_file().path()).context("Git 变更缺少路径")?.to_string_lossy().into_owned();
-                let change = changes.entry(path.clone()).or_insert(Change { path, kind: 'M', staged: false, unstaged: false });
+                let blank_only = self.blank_line_delta(&path, &delta)?;
+                let change = changes.entry(path.clone()).or_insert(Change { path, kind: 'M', staged: false, unstaged: false, blank_only: true });
+                change.blank_only &= blank_only;
                 change.kind = match delta.status() { git2::Delta::Added => 'A', git2::Delta::Deleted => 'D', _ => 'M' };
                 if staged { change.staged = true; } else { change.unstaged = true; }
             }
         }
-        let changes = changes.into_values().collect();
-        Ok(Status { branch: config.branch, remote: config.remote, head: head.map(|c| c.id().to_string()), changes })
+        Ok(changes.into_values().collect())
     }
 
-    pub fn commit(&self, message: &str) -> Result<Option<String>> {
-        ensure!(!message.trim().is_empty(), "请填写提交说明");
-        let config = self.config()?;
-        ensure!(!config.name.trim().is_empty() && !config.email.trim().is_empty(), "请先配置 Git 作者名称和邮箱");
-        let tree = self.repo.find_tree(self.working_tree(true)?)?;
-        let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        if parent.as_ref().is_some_and(|p| p.tree_id() == tree.id()) { return Ok(None) }
-        let author = Signature::now(&config.name, &config.email)?;
-        let parents: Vec<_> = parent.iter().collect();
-        let id = self.repo.commit(Some("HEAD"), &author, &author, message.trim(), &tree, &parents)?;
-        let mut index = self.repo.index()?;
-        index.read_tree(&tree)?; index.write()?;
-        Ok(Some(id.to_string()))
+    fn blank_line_delta(&self, path: &str, delta: &git2::DiffDelta<'_>) -> Result<bool> {
+        let (old, new) = (delta.old_file(), delta.new_file());
+        if delta.status() != git2::Delta::Modified || path.starts_with(".assets/")
+            || !matches!((old.mode(), new.mode()), (git2::FileMode::Blob, git2::FileMode::Blob)) { return Ok(false) }
+        let old = self.repo.find_blob(old.id())?; let new = self.repo.find_blob(new.id())?;
+        let (Ok(old), Ok(new)) = (std::str::from_utf8(old.content()), std::str::from_utf8(new.content())) else { return Ok(false) };
+        if old.contains('\0') || new.contains('\0') { return Ok(false) }
+        // Keep the exact bytes of nonblank lines, including their line endings.
+        fn nonblank(text: &str) -> impl Iterator<Item = &str> {
+            text.split_inclusive('\n').filter(|line| !line.trim_ascii().is_empty())
+        }
+        Ok(nonblank(old).eq(nonblank(new)))
     }
 
     pub fn history(&self, document: Option<&str>, limit: usize) -> Result<Vec<Commit>> {

@@ -1,6 +1,8 @@
 //! Explicit index operations; assets use the same LFS representation as full commits.
 use super::*;
 
+pub(crate) enum CommitScope { All, Staged, Auto }
+
 impl LibraryRepo {
     pub(super) fn index_tree(&self) -> Result<git2::Tree<'_>> {
         let mut index = self.repo.index()?; index.read(true)?;
@@ -51,19 +53,68 @@ impl LibraryRepo {
         Ok(())
     }
 
+    pub fn commit(&self, message: &str) -> Result<Option<String>> {
+        self.commit_changes(message, CommitScope::All, &mut BTreeSet::new())
+    }
+
     pub fn commit_staged(&self, message: &str) -> Result<Option<String>> {
+        self.commit_changes(message, CommitScope::Staged, &mut BTreeSet::new())
+    }
+
+    pub(crate) fn commit_changes(&self, message: &str, scope: CommitScope, restored: &mut BTreeSet<String>) -> Result<Option<String>> {
         ensure!(!message.trim().is_empty(), "请填写提交说明");
         let config = self.config()?;
         ensure!(!config.name.trim().is_empty() && !config.email.trim().is_empty(), "请先配置 Git 作者名称和邮箱");
-        let tree = self.index_tree()?;
-        let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        if parent.as_ref().is_some_and(|p| p.tree_id() == tree.id()) { return Ok(None) }
-        validate_tree(&self.repo, &tree_files(&self.repo, &tree)?)
-            .context("暂存区中的文档库不完整，请同时暂存相关的 quiet.json、正文和格式标记")?;
-        for pointer in self.pointers(None, &tree)? { lfs::Lfs::new(self.repo.path()).read(&pointer)?; }
         let author = Signature::now(&config.name, &config.email)?;
+        let parent = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+        let before = parent.as_ref().map(|p| p.tree()).transpose()?;
+        let working = self.repo.find_tree(self.working_tree(false)?)?;
+        let indexed = self.index_tree()?;
+        let changes = self.changes_between(before.as_ref(), &indexed, &working)?;
+        let staged = match scope {
+            CommitScope::All => false,
+            CommitScope::Staged => true,
+            CommitScope::Auto => changes.iter().any(|c| c.staged && !c.blank_only),
+        };
+        let source = if staged { &indexed } else {
+            ensure!(self.working_tree(true)? == working.id(), "提交期间文档库内容发生变化，请重试");
+            &working
+        };
+        let mut snapshot = Index::new()?; snapshot.read_tree(source)?;
+        let mut restore = Vec::new();
+        if let Some(before) = &before {
+            for change in changes.iter().filter(|c| c.blank_only) {
+                let path = Path::new(&change.path);
+                let original = before.get_path(path)?;
+                let current = working.get_path(path)?;
+                let mut entry = snapshot.get_path(path, 0).context("Git 快照缺少原有文件")?;
+                let blob = self.repo.find_blob(original.id())?;
+                entry.id = original.id(); entry.file_size = blob.size() as u32;
+                snapshot.add(&entry)?;
+                if current.id() != original.id() { restore.push((&change.path, current.id(), blob)); }
+            }
+        }
+        let tree = self.repo.find_tree(snapshot.write_tree_to(&self.repo)?)?;
+        let changed = !parent.as_ref().is_some_and(|p| p.tree_id() == tree.id());
+        if staged && changed {
+            validate_tree(&self.repo, &tree_files(&self.repo, &tree)?)
+                .context("暂存区中的文档库不完整，请同时暂存相关的 quiet.json、正文和格式标记")?;
+            for pointer in self.pointers(None, &tree)? { lfs::Lfs::new(self.repo.path()).read(&pointer)?; }
+        }
+        for (path, expected, original) in restore {
+            let target = safe_path(&self.root, path)?;
+            let current = crate::store::read_bounded(&target, crate::store::EXPORT_FILE_LIMIT)?;
+            ensure!(current == self.repo.find_blob(expected)?.content(), "提交期间文档库内容发生变化，请重试");
+            restored.insert(path.clone());
+            crate::store::write_atomic(&target, original.content())?;
+        }
         let parents: Vec<_> = parent.iter().collect();
-        Ok(Some(self.repo.commit(Some("HEAD"), &author, &author, message.trim(), &tree, &parents)?.to_string()))
+        let commit = if changed { Some(self.repo.commit(Some("HEAD"), &author, &author, message.trim(), &tree, &parents)?.to_string()) } else { None };
+        let update_index = staged || changed || changes.iter().filter(|c| c.staged).all(|c| c.blank_only);
+        if update_index && tree.id() != indexed.id() {
+            let mut index = self.repo.index()?; index.read_tree(&tree)?; index.write()?;
+        }
+        Ok(commit)
     }
 
     /// Like checkout -- <path>: restore the index snapshot, leaving staged changes intact.

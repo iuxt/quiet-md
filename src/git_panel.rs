@@ -117,13 +117,15 @@ impl Workspace {
         let header = crate::trash::page_header(self, tr("Git 变更", "Git changes"), 26., cx);
         let Some(p) = &self.git else { return div().child(header).into_any_element() };
         let status = p.status.as_ref();
-        let count = status.map_or(0, |s| s.changes.len());
-        let staged = status.map_or(0, |s| s.changes.iter().filter(|c| c.staged).count());
-        let unstaged = status.is_some_and(|s| s.changes.iter().any(|c| c.unstaged));
+        let count = status.map_or(0, |s| s.visible_changes().count());
+        let staged = status.map_or(0, |s| s.visible_changes().filter(|c| c.staged).count());
+        let unstaged = status.is_some_and(|s| s.visible_changes().any(|c| c.unstaged));
         let busy = self.store.file_task_busy() || self.tree_writes_pending();
+        let has_changes = status.is_some_and(|s| !s.changes.is_empty());
+        let can_commit = has_changes && !busy;
         let mut files = div().id("git-files").flex_1().min_h_0().overflow_y_scroll().p(px(8.));
         if let Some(status) = status {
-            for (i, change) in status.changes.iter().enumerate() {
+            for (i, change) in status.visible_changes().enumerate() {
                 let path = change.path.clone();
                 let note = self.entries.iter().map(|e| (&e.id, &e.meta, &e.title))
                     .chain(self.trash.iter().map(|e| (&e.id, &e.meta, &e.title)))
@@ -176,14 +178,15 @@ impl Workspace {
         }
         if count == 0 {
             files = files.child(div().p(px(16.)).text_size(px(12.)).line_height(px(20.)).text_color(Theme::text_caption())
-                .child(if status.is_some() { tr("工作区干净，没有未提交的变更。", "Working tree clean. No uncommitted changes.") }
+                .child(if has_changes { tr("空行变更已隐藏，提交时会还原。", "Blank-line changes are hidden and will be restored on commit.") }
+                    else if status.is_some() { tr("工作区干净，没有未提交的变更。", "Working tree clean. No uncommitted changes.") }
                     else { tr("刷新后查看文档库的变更。", "Refresh to see library changes.") }));
         }
         let branch = status.map(|s| s.branch.clone()).unwrap_or_else(|| "—".into());
         let left = div().w(px(256.)).max_w(relative(0.45)).flex_none().h_full().flex().flex_col().border_r_1().border_color(Theme::line_border())
             .child(div().h(px(48.)).flex_none().px(px(14.)).flex().items_center().gap(px(4.))
-                .child(tool("git-panel-commit-tool", "check", if staged > 0 { tr("提交已暂存变更", "Commit staged changes") } else { tr("提交本地变更", "Commit local changes") }, count > 0 && !busy)
-                    .when(count > 0 && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Commit, window, cx)))))
+                .child(tool("git-panel-commit-tool", "check", if staged > 0 { tr("提交已暂存变更", "Commit staged changes") } else { tr("提交本地变更", "Commit local changes") }, can_commit)
+                    .when(can_commit, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Commit, window, cx)))))
                 .child(tool("git-panel-stage-all", "plus", tr("全部暂存", "Stage all"), unstaged && !busy)
                     .when(unstaged && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::StageAll, window, cx)))))
                 .child(tool("git-panel-unstage-all", "minus", tr("全部取消暂存", "Unstage all"), staged > 0 && !busy)
@@ -201,8 +204,8 @@ impl Workspace {
                 .child(div().text_size(px(11.)).text_color(Theme::text_caption()).child(if staged > 0 { tr("仅提交已暂存的变更", "Commit staged changes only") } else { tr("提交文档库中的全部变更", "Commit all library changes") }))
                 .child(div().px(px(9.)).py(px(7.)).border_1().border_color(Theme::line_border()).rounded(px(6.)).child(p.message.clone()))
                 .child(ui::primary_button("git-panel-commit", if staged > 0 { tr("提交已暂存变更", "Commit staged changes") } else { tr("提交本地变更", "Commit local changes") })
-                    .when(count == 0 || busy, |d| d.opacity(0.45))
-                    .when(count > 0 && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Commit, window, cx))))));
+                    .when(!can_commit, |d| d.opacity(0.45))
+                    .when(can_commit, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Commit, window, cx))))));
         let mut diff = div().flex_1().min_w_0().h_full().flex().flex_col();
         if let Some(preview) = &p.preview {
             let rows = if p.source { preview.source.as_ref().unwrap_or(&preview.text) } else { preview.formatted.as_ref().unwrap_or(&preview.text) };
@@ -234,10 +237,12 @@ impl Workspace {
             } else {
                 diff = diff.child(rows.render());
             }
-        } else {
-            diff = diff.child(empty(if p.loading { tr("正在载入对比…", "Loading diff…") }
-                else if count == 0 && status.is_some() { tr("所有变更均已提交", "All changes committed") }
-                else { tr("选择文件，查看变更对比", "Select a file to compare changes") }));
+        } else if p.loading {
+            diff = diff.child(empty(tr("正在载入对比…", "Loading diff…")));
+        } else if !has_changes && status.is_some() {
+            diff = diff.child(empty(tr("所有变更均已提交", "All changes committed")));
+        } else if count > 0 || status.is_none() {
+            diff = diff.child(empty(tr("选择文件，查看变更对比", "Select a file to compare changes")));
         }
         div().size_full().flex().flex_col().text_color(Theme::text()).child(header)
             .child(div().flex_none().min_h(px(44.)).px(px(20.)).py(px(7.)).flex().flex_wrap().items_center().gap(px(10.)).border_b_1().border_color(Theme::line_border())

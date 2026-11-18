@@ -50,6 +50,67 @@ fn staged_commits_keep_the_snapshot_and_leave_other_changes_uncommitted() {
 }
 
 #[test]
+fn blank_line_changes_are_hidden_and_restored_without_creating_a_commit() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let id = store.create_from(&doc("First")).unwrap(); let path = format!("notes/{id}.xml");
+    let repo = lib.git(); configure(&repo, &Library::new().0);
+    let initial = repo.commit("initial").unwrap().unwrap();
+    let file = lib.0.join(&path);
+    let original = std::fs::read_to_string(&file).unwrap();
+    let with_blank_lines = format!("\n \t\r\n{original}");
+    std::fs::write(&file, &with_blank_lines).unwrap();
+    let status = repo.status().unwrap();
+    assert_eq!(status.changes.len(), 1);
+    assert!(status.visible_changes().next().is_none());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), with_blank_lines, "Status must be read-only");
+    assert!(store.git_commit(" ").is_err());
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), with_blank_lines);
+    store.git_stage(&path, true).unwrap();
+    std::fs::write(&file, format!("\n{with_blank_lines}")).unwrap();
+    let status = repo.status().unwrap();
+    assert!(status.changes[0].staged && status.changes[0].unstaged && status.changes[0].blank_only);
+    assert_eq!(store.git_commit("blank only").unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+    let status = repo.status().unwrap();
+    assert_eq!(status.head.as_deref(), Some(initial.as_str()));
+    assert!(status.changes.is_empty());
+}
+
+#[test]
+fn commits_include_substantive_changes_and_restore_only_blank_line_files() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let clean = store.create_markdown(&doc("Clean"), "").unwrap();
+    let mixed = store.create_from(&doc("Mixed")).unwrap();
+    let clean_path = format!("notes/{clean}.md"); let mixed_path = format!("notes/{mixed}.xml");
+    let clean_file = lib.0.join(&clean_path); let mixed_file = lib.0.join(&mixed_path);
+    let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
+    let original = std::fs::read_to_string(&clean_file).unwrap();
+    let blank = format!("\n{original}");
+    let updated = format!("\n{}", std::fs::read_to_string(&mixed_file).unwrap().replace("Mixed", "Updated"));
+    std::fs::write(&clean_file, &blank).unwrap(); store.git_stage(&clean_path, true).unwrap();
+    std::fs::write(&mixed_file, &updated).unwrap();
+    let status = repo.status().unwrap();
+    let visible: Vec<_> = status.visible_changes().map(|c| c.path.as_str()).collect();
+    assert_eq!(visible, [mixed_path.as_str()]);
+    let commit = store.git_commit("text and blank lines").unwrap().unwrap();
+    assert_eq!(repo.revision(&commit, &clean).unwrap(), original);
+    assert_eq!(std::fs::read_to_string(&clean_file).unwrap(), original);
+    assert_eq!(repo.revision(&commit, &mixed).unwrap(), updated);
+
+    let staged = updated.replace("Updated", "Staged");
+    let later = staged.replace("Staged", "Later");
+    std::fs::write(&mixed_file, &staged).unwrap(); store.git_stage(&mixed_path, true).unwrap();
+    std::fs::write(&clean_file, &blank).unwrap(); store.git_stage(&clean_path, true).unwrap();
+    std::fs::write(&mixed_file, &later).unwrap();
+    let commit = store.git_commit("staged edits").unwrap().unwrap();
+    assert_eq!(repo.revision(&commit, &clean).unwrap(), original);
+    assert_eq!(std::fs::read_to_string(&clean_file).unwrap(), original);
+    assert_eq!(repo.revision(&commit, &mixed).unwrap(), staged);
+    assert_eq!(std::fs::read_to_string(&mixed_file).unwrap(), later);
+    assert_eq!(repo.status().unwrap().visible_changes().count(), 1);
+}
+
+#[test]
 fn stage_all_and_unstage_all_preserve_working_files_and_lfs_snapshots() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("First")).unwrap(); let path = format!("notes/{id}.xml");

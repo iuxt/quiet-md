@@ -1,5 +1,6 @@
 //! Opt-in UUID file names and shared metadata for a Git-backed library.
 use super::*;
+use std::collections::BTreeSet;
 
 impl Store {
     pub fn git_enabled(&self) -> bool { !self.flat && self.root.join(".git").is_dir() && self.root.join(crate::git::MANIFEST).is_file() }
@@ -24,9 +25,17 @@ impl Store {
         Ok(())
     }
     pub fn git_commit(&mut self, message: &str) -> Result<Option<String>> {
+        self.git_commit_restoring(message, &mut BTreeSet::new())
+    }
+
+    pub fn git_commit_restoring(&mut self, message: &str, restored: &mut BTreeSet<String>) -> Result<Option<String>> {
         let _lock = self.begin_write()?;
         let repo = crate::git::LibraryRepo::open(&self.root)?;
-        if repo.status()?.changes.iter().any(|c| c.staged) { repo.commit_staged(message) } else { repo.commit(message) }
+        let result = repo.commit_changes(message, crate::git::CommitScope::Auto, restored);
+        for (id, meta) in &self.index {
+            if restored.contains(&meta.rel) { self.parsed.remove(id); self.forget_loaded(id); }
+        }
+        result
     }
 
     pub fn git_stage(&mut self, path: &str, stage: bool) -> Result<()> {
