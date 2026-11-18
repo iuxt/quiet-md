@@ -10,7 +10,7 @@ on:
         required: true
         type: string
       publish:
-        description: 'Publish the unsigned test prerelease (manual download only)'
+        description: 'Publish the stable release as Latest (manual download only)'
         required: true
         default: false
         type: boolean
@@ -199,11 +199,11 @@ jobs:
           pattern: release-*
           path: dist/incoming
           merge-multiple: true
-      - name: Publish verified unsigned test prerelease
+      - name: Publish verified stable release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
-          PUBLISH_TEST: ${{ github.event_name == 'push' || inputs.publish }}
+          PUBLISH_RELEASE: ${{ github.event_name == 'push' || inputs.publish }}
         run: |
           python3 - <<'PYTHON'
           import os, subprocess, sys
@@ -218,16 +218,16 @@ jobs:
           notes = Path(f'docs/releases/{version}.md')
           if notes.is_file():
               command.extend(['--notes', str(notes)])
-          if os.environ['PUBLISH_TEST'] != 'true':
+          if os.environ['PUBLISH_RELEASE'] != 'true':
               command.append('--draft')
           subprocess.run(command + [str(matches[0]) for matches in paths], check=True)
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              status = 'Published unsigned test prerelease' if os.environ['PUBLISH_TEST'] == 'true' else 'Verified test draft'
+              status = 'Published stable release' if os.environ['PUBLISH_RELEASE'] == 'true' else 'Verified release draft'
               summary.write(f'{status}: https://github.com/iuxt/quiet-md/releases/tag/v{version}\n')
           PYTHON
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: verified-test-assets
+          name: verified-release-assets
           path: dist/github/*
           if-no-files-found: error
           retention-days: 14

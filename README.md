@@ -10,12 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?include_prereleases&label=release&color=2f6feb" alt="Latest release"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="Latest release"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="CI status"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows and Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="Built with Rust and GPUI">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/s1dashu/quiet-md?color=green" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/status-beta-orange" alt="Beta">
+  <img src="https://img.shields.io/badge/status-stable-green" alt="Stable">
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 </p>
 
 > [!NOTE]
-> Quiet.md is in **beta** and changing quickly. If you hit a bug or have an idea, please [open an issue](https://github.com/s1dashu/quiet-md/issues) — or better, send a pull request.
+> If you hit a bug or have an idea, please [open an issue](https://github.com/s1dashu/quiet-md/issues) — or better, send a pull request.
 
 ## Why Quiet.md
 
@@ -66,11 +66,11 @@
 | **Linux** (x86_64, experimental) | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases) | glibc 2.35 or later (Ubuntu 22.04 and newer) |
 | **macOS** (Intel) | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 or later |
 
-- **macOS**: unzip and drag `quiet.md.app` into Applications. The test app uses ad-hoc signing and is not notarized by Apple.
+- **macOS**: unzip and drag `quiet.md.app` into Applications. The app uses ad-hoc signing and is not notarized by Apple.
 - **Windows**: run the installer. By default it installs for the current user only, and uninstalling never deletes your notes. If SmartScreen appears on first launch, click **More info → Run anyway**.
 - **Linux** (experimental): `chmod +x quiet-md-*.AppImage` and run it; without FUSE, add `--appimage-extract-and-run`. Install new versions manually. Interactive testing so far covers Omarchy on Wayland; see the [Linux notes](CONTRIBUTING.md#linux-experimental).
 
-Current downloads are **free test prereleases** from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS packages are ad-hoc signed and unnotarized; the Windows installer is unsigned. Download and install manually. Each package includes a SHA-256 checksum. See [the release guide](docs/RELEASES.md).
+Current downloads are **stable releases** from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS packages are ad-hoc signed and unnotarized; the Windows installer is unsigned. Download and install manually. Each package includes a SHA-256 checksum. See [the release guide](docs/RELEASES.md).
 
 On first launch, Quiet.md asks for the interface language, where to keep your library and the quick-note shortcut, and offers to copy in notes from Obsidian, Logseq, iA Writer or Typora. An empty library gets a **Getting started** guide — a ten-minute tour of the main features. Existing notes are never overwritten.
 

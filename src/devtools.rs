@@ -106,6 +106,30 @@ pub fn start(window: &mut Window, cx: &mut App) {
             let Some((handle, ns_view)) = CURRENT.with(|c| c.get()) else { break };
             let _ = ns_view;
             let (cmd, rest) = line.split_once(' ').unwrap_or((line, ""));
+            if cmd == "phase" {
+                eprintln!("devtools: phase {}", rest.trim());
+                continue;
+            }
+            if cmd == "idle" {
+                cx.background_executor().timer(Duration::from_millis(rest.trim().parse().unwrap_or(100))).await;
+                continue;
+            }
+            if cmd == "churn-windows" {
+                let n = rest.trim().parse().unwrap_or(10);
+                cx.update(|cx| {
+                    let id = cx.global::<crate::shared_store::SharedStore>().clone().list().into_iter().find(|e| e.meta.folder.is_none()).map(|e| e.id).expect("churn-windows needs a note");
+                    for _ in 0..n {
+                        let handle = cx.open_window(WindowOptions {
+                            focus: false, show: false,
+                            window_bounds: Some(WindowBounds::Windowed(Bounds::new(point(px(-20000.), px(-20000.)), size(px(800.), px(600.))))),
+                            ..Default::default()
+                        }, |window, cx| cx.new(|cx| crate::app::Workspace::new_document_window(Some(id.clone()), window, cx))).unwrap();
+                        handle.update(cx, |_, window, _| window.remove_window()).unwrap();
+                    }
+                }).unwrap();
+                eprintln!("devtools: churned {n} windows");
+                continue;
+            }
             if cmd == "wait" {
                 // Draw invalidated frames ourselves: the display link stops
                 // while the screen is locked, and nothing would render.
@@ -265,6 +289,13 @@ pub fn start(window: &mut Window, cx: &mut App) {
                         Some(p) => { if !ws.sidebar_drop_at(at, false, cx) { ws.file_drag_at(at, p, cx); } }
                         None => cx.notify(),
                     }).unwrap();
+                }).unwrap();
+                continue;
+            }
+            if cmd == "check-render-cache" {
+                cx.update(|cx| {
+                    let handle = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()).unwrap();
+                    handle.update(cx, |w, window, cx| w.editor.clone().unwrap().update(cx, |e, _| e.check_render_cache(window))).unwrap();
                 }).unwrap();
                 continue;
             }

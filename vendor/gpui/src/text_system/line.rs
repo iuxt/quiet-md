@@ -268,15 +268,18 @@ fn paint_line(
     // quiet.md: Include the aligned glyph positions in scene ordering, including text
     // wider than its alignment box. Otherwise later popovers can paint below it.
     let line_bounds = Bounds::new(
-        point(aligned_origin_x(origin, align_width.unwrap_or(layout.width), px(0.), &align, layout, None).min(origin.x), origin.y),
+        point(aligned_origin_x(origin, align_width.unwrap_or(layout.width), px(0.), &align, layout, None).min(origin.x), origin.y + row_tops.first().copied().unwrap_or_default()),
         size(
             layout.width.max(align_width.unwrap_or(layout.width)),
             match row_tops.last() {
-                Some(t) => *t + line_height,
+                Some(t) => *t - row_tops.first().copied().unwrap_or_default() + line_height,
                 None => line_height * (wrap_boundaries.len() as f32 + 1.),
             },
         ),
     );
+    // quiet.md: Explicit row tops are relative to the whole block. Offscreen
+    // hard lines must not insert layers spanning from the block's first row.
+    if !line_bounds.dilate(layout.font_size).intersects(&window.content_mask().bounds) { return Ok(()) }
     window.paint_layer(line_bounds, |window| {
         let padding_top = (line_height - layout.ascent - layout.descent) / 2.;
         let baseline_offset = point(px(0.), padding_top + layout.ascent);
@@ -512,15 +515,18 @@ fn paint_line_background(
 ) -> Result<()> {
     // quiet.md: Background decorations use the same aligned layer as the glyphs.
     let line_bounds = Bounds::new(
-        point(aligned_origin_x(origin, align_width.unwrap_or(layout.width), px(0.), &align, layout, None).min(origin.x), origin.y),
+        point(aligned_origin_x(origin, align_width.unwrap_or(layout.width), px(0.), &align, layout, None).min(origin.x), origin.y + row_tops.first().copied().unwrap_or_default()),
         size(
             layout.width.max(align_width.unwrap_or(layout.width)),
             match row_tops.last() {
-                Some(t) => *t + line_height,
+                Some(t) => *t - row_tops.first().copied().unwrap_or_default() + line_height,
                 None => line_height * (wrap_boundaries.len() as f32 + 1.),
             },
         ),
     );
+    // quiet.md: Explicit row tops are relative to the whole block. Offscreen
+    // hard lines must not insert layers spanning from the block's first row.
+    if !line_bounds.dilate(layout.font_size).intersects(&window.content_mask().bounds) { return Ok(()) }
     window.paint_layer(line_bounds, |window| {
         let mut decoration_runs = decoration_runs.iter();
         let mut wraps = wrap_boundaries.iter().peekable();

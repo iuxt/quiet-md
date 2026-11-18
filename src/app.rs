@@ -318,7 +318,8 @@ pub struct Workspace {
     /// 命名版本: the row's name being typed.
     pub version_rename: Option<crate::history::VersionRename>,
     pub list_scroll: ScrollHandle,
-    pub search_scroll: ScrollHandle,
+    pub search_scroll: ListState,
+    pub(crate) search_cache: RefCell<crate::search::SearchCache>,
     /// Last-frame bounds of the row menu's 下载 submenu.
     pub row_sub_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// 批量操作 mode: the checked docs of 我的文档, in check order.
@@ -437,7 +438,7 @@ impl Workspace {
                 match ev {
                     TextFieldEvent::Changed => {
                         this.search_sel = this.default_search_sel(cx);
-                        this.search_scroll.set_offset(point(px(0.), px(0.)));
+                        this.search_scroll.scroll_to(ListOffset::default());
                     }
                     TextFieldEvent::Up => this.move_search_sel(-1, cx),
                     TextFieldEvent::Down => this.move_search_sel(1, cx),
@@ -478,6 +479,7 @@ impl Workspace {
             let mut last = shape().await;
             loop {
                 bg.timer(Duration::from_secs(2)).await;
+                if this.upgrade().is_none() { break }
                 let now = shape().await;
                 if now == last { continue }
                 let reloaded = this.update(cx, |w, cx| {
@@ -556,7 +558,8 @@ impl Workspace {
             preview: None,
             version_rename: None,
             list_scroll: ScrollHandle::new(),
-            search_scroll: ScrollHandle::new(),
+            search_scroll: ListState::new(0, ListAlignment::Top, px(150.)),
+            search_cache: Default::default(),
             row_sub_bounds: Rc::new(Cell::new(None)),
             batch: None,
             confirm: None,

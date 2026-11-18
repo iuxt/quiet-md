@@ -10,12 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?include_prereleases&label=release&color=2f6feb" alt="Dernière version"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="Dernière version"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="État de la CI"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows et Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="Faite avec Rust et GPUI">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/s1dashu/quiet-md?color=green" alt="Licence MIT"></a>
-  <img src="https://img.shields.io/badge/status-beta-orange" alt="Beta">
+  <img src="https://img.shields.io/badge/status-stable-green" alt="Stable">
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 </p>
 
 > [!NOTE]
-> Quiet.md est en **bêta** et évolue vite. Si vous rencontrez un bug ou avez une idée, [ouvrez une issue](https://github.com/s1dashu/quiet-md/issues), ou mieux, envoyez une pull request.
+> Si vous rencontrez un bug ou avez une idée, [ouvrez une issue](https://github.com/s1dashu/quiet-md/issues), ou mieux, envoyez une pull request.
 
 ## Pourquoi Quiet.md
 
@@ -66,11 +66,11 @@
 | **Linux** (x86_64, expérimental) | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases) | glibc 2.35 ou ultérieure (Ubuntu 22.04 et plus récent) |
 | **macOS** (Intel) | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 ou ultérieur |
 
-- **macOS** : décompressez l'archive et glissez `quiet.md.app` dans Applications. La version de test utilise une signature ad-hoc et n’est pas notariée par Apple.
+- **macOS** : décompressez l'archive et glissez `quiet.md.app` dans Applications. L’application utilise une signature ad-hoc et n’est pas notariée par Apple.
 - **Windows** : lancez l'installateur. Par défaut, l'installation est limitée à l'utilisateur courant, et la désinstallation ne supprime jamais vos notes. Si SmartScreen apparaît au premier lancement, cliquez sur **Plus d'infos → Exécuter quand même**.
 - **Linux** (expérimental) : `chmod +x quiet-md-*.AppImage` puis lancez-le. Sans FUSE, ajoutez `--appimage-extract-and-run`. Installez les nouvelles versions manuellement. Les tests interactifs ont jusqu'ici porté sur Omarchy sous Wayland (voir les [notes Linux](CONTRIBUTING.md#linux-experimental)).
 
-Les téléchargements actuels sont des **préversions de test gratuites** sur [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS utilise une signature ad-hoc sans notarisation ; l’installateur Windows n’est pas signé. Téléchargez et installez manuellement. Chaque paquet inclut une somme SHA-256. Voir le [guide de publication](docs/RELEASES.md).
+Les téléchargements actuels sont des **versions stables** sur [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS utilise une signature ad-hoc sans notarisation ; l’installateur Windows n’est pas signé. Téléchargez et installez manuellement. Chaque paquet inclut une somme SHA-256. Voir le [guide de publication](docs/RELEASES.md).
 
 Au premier lancement, Quiet.md demande la langue de l'interface, l'emplacement de votre bibliothèque et le raccourci de note rapide, et propose de copier vos notes depuis Obsidian, Logseq, iA Writer ou Typora. Une bibliothèque vide reçoit le guide **Getting started** : une visite de dix minutes des principales fonctionnalités. Les notes existantes ne sont jamais écrasées.
 

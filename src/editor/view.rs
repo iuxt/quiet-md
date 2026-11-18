@@ -128,6 +128,7 @@ pub struct Editor {
     /// Scroll request applied once this frame's layout is known.
     pub(super) reveal: Option<(super::render::Reveal, u8)>,
     pub(super) frame: super::render::Frame,
+    pub(super) pending_text: Option<(BlockId, u64, u64, usize)>,
     /// Wrapped rows per hard line of code blocks (last frame).
     pub(super) code_rows: HashMap<BlockId, Vec<usize>>,
     /// Slash / "+" menu list (keyboard selection is kept in view).
@@ -162,6 +163,7 @@ pub struct Editor {
     /// Painted bounds of the callout bar and its colour panel (last frame).
     pub callout_zone: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     pub caret_visible: bool,
+    pub(super) text_shapes: Rc<RefCell<super::text::ShapeCache>>,
     blink: Option<Task<()>>,
     pub goal_x: Option<Pixels>,
     /// The caret was placed on a wrap boundary from the row above: draw it at
@@ -393,6 +395,7 @@ impl Editor {
             items_key: None,
             reveal: None,
             frame: Default::default(),
+            pending_text: None,
             code_rows: HashMap::new(),
             slash_scroll: ScrollHandle::new(),
             code_hscroll: Default::default(),
@@ -413,6 +416,7 @@ impl Editor {
             handle_targets: vec![],
             callout_zone: Rc::default(),
             caret_visible: true,
+            text_shapes: Default::default(),
             blink: None,
             goal_x: None,
             caret_row_end: None,
@@ -1627,6 +1631,8 @@ impl Editor {
         if self.cropping() {
             return self.cancel_crop(cx);
         }
+        let head = self.core.sel.head;
+        let plain = self.core.text_of(head.block).is_some_and(|t| t.text[..head.offset].chars().next_back().is_some_and(char::is_alphanumeric)).then(|| self.plain_edit_start()).flatten();
         if self.core.cell_sel.is_some() {
             self.core.table_clear_cells();
         } else if self.core.in_block_mode() {
@@ -1636,6 +1642,7 @@ impl Editor {
         }
         self.toolbar_hidden = true;
         self.changed(window, cx);
+        self.plain_edit_end(plain);
     }
 
     fn on_delete(&mut self, _: &k::Delete, window: &mut Window, cx: &mut Context<Self>) {
@@ -2609,6 +2616,29 @@ impl Editor {
 
     // ---- typing
 
+    fn plain_edit_start(&self) -> Option<(BlockId, u64, usize)> {
+        let head = self.core.sel.head;
+        if self.core.in_block_mode() || !self.core.sel.is_collapsed() || self.core.cell_sel.is_some() { return None }
+        let b = self.core.block(head.block)?;
+        if !matches!(b.kind, BlockKind::Text | BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. }) || b.text.text.contains('\u{fffc}') { return None }
+        let path = self.core.path(head.block)?;
+        let [core::Seg::Child(root)] = path.as_slice() else { return None };
+        let item = self.items.iter().position(|item| matches!(item, super::render::Item::Block { path, .. } if path.as_slice() == [*root]))?;
+        Some((head.block, self.core.generation, item))
+    }
+
+    fn plain_edit_end(&mut self, before: Option<(BlockId, u64, usize)>) {
+        let Some((id, from, item)) = before else { return };
+        let to = self.core.generation;
+        if to != from + 1 { return }
+        let old = match self.pending_text {
+            Some((block, first, last, _)) if block == id && last == from => first,
+            _ if self.frame.generation == Some(from) => from,
+            _ => return,
+        };
+        self.pending_text = Some((id, old, to, item));
+    }
+
     fn type_text(&mut self, s: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.core.cell_sel = None;
         if s.is_empty() {
@@ -2619,6 +2649,7 @@ impl Editor {
         if s == "\n" {
             return;
         }
+        let plain = s.chars().all(char::is_alphanumeric).then(|| self.plain_edit_start()).flatten();
         self.core.insert_text(&s);
         if s == " " {
             let _ = self.core.markdown_block_shortcut() || self.core.markdown_divider() || self.core.autolink();
@@ -2634,6 +2665,7 @@ impl Editor {
         self.toolbar_hidden = true;
         self.goal_x = None;
         self.changed(window, cx);
+        self.plain_edit_end(plain);
     }
 
     fn head_text(&self) -> Option<String> {

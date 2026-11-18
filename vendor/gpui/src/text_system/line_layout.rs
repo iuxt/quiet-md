@@ -393,6 +393,13 @@ impl WrappedLineLayout {
     }
 }
 
+/// quiet.md: Layouts retained by an external block cache, independent of frame indices.
+#[derive(Clone, Default)]
+pub struct ShapedTextCache {
+    lines: Vec<(Arc<CacheKey>, Arc<LineLayout>)>,
+    wrapped: Vec<(Arc<CacheKey>, Arc<WrappedLineLayout>)>,
+}
+
 pub(crate) struct LineLayoutCache {
     previous_frame: Mutex<FrameCache>,
     current_frame: RwLock<FrameCache>,
@@ -419,6 +426,24 @@ impl LineLayoutCache {
             previous_frame: Mutex::default(),
             current_frame: RwLock::default(),
             platform_text_system,
+        }
+    }
+
+    pub fn capture(&self, start: LineLayoutIndex) -> ShapedTextCache {
+        let frame = self.current_frame.read();
+        ShapedTextCache {
+            lines: frame.used_lines[start.lines_index..].iter().filter_map(|key| Some((key.clone(), frame.lines.get(key)?.clone()))).collect(),
+            wrapped: frame.used_wrapped_lines[start.wrapped_lines_index..].iter().filter_map(|key| Some((key.clone(), frame.wrapped_lines.get(key)?.clone()))).collect(),
+        }
+    }
+
+    pub fn retain(&self, saved: &ShapedTextCache) {
+        let mut frame = self.current_frame.write();
+        for (key, line) in &saved.lines {
+            if !frame.lines.contains_key(key) { frame.lines.insert(key.clone(), line.clone()); frame.used_lines.push(key.clone()); }
+        }
+        for (key, line) in &saved.wrapped {
+            if !frame.wrapped_lines.contains_key(key) { frame.wrapped_lines.insert(key.clone(), line.clone()); frame.used_wrapped_lines.push(key.clone()); }
         }
     }
 

@@ -2,6 +2,8 @@
 
 README 里的数字来自这里的测试流程。任何人都可以用同一套脚本在自己的机器上复现。
 
+2026-11-18 的 CPU、内存、磁盘写入及规模压力测试见 [资源压测报告](PERFORMANCE-AUDIT-2026-11-18.md)和[修复复测](PERFORMANCE-FIXES-2026-11-18.md)，复现工具见 [tools/perf](../tools/perf/README.md)。
+
 ## 环境
 
 | 项 | 值 |

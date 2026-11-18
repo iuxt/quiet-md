@@ -20,7 +20,8 @@ binary = os.environ.get('FDL_BIN') or os.path.join(repo, 'target', 'release', 'q
 # Release builds leave the script driver out and would just sit there.
 if b'devtools: cannot read' not in open(binary, 'rb').read():
     sys.exit(f'{binary} has no script driver: build it with `cargo build --release --features devtools`')
-env = {'HOME': os.path.expanduser('~'), 'QUIET_MD_HOME': lib, 'FDL_SCRIPT': script,
+env = {'HOME': os.path.expanduser('~'), 'QUIET_MD_HOME': os.path.realpath(lib), 'FDL_SCRIPT': script,
+       'TMPDIR': os.path.realpath(work), 'QUIET_MD_LOG_DIR': os.path.join(work, 'app-logs'),
        'FDL_SHOTS': work, 'PATH': '/opt/homebrew/bin:/usr/bin:/bin'}
 for k in ('FDL_TRACE', 'FDL_NOPARK', 'FDL_WINDOW_CAPTURE', 'FDL_NOBLINK', 'FDL_RECORD_FPS', 'QUIET_MD_ONBOARDING'):
     if k in os.environ: env[k] = os.environ[k]

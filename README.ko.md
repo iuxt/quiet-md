@@ -10,12 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?include_prereleases&label=release&color=2f6feb" alt="최신 릴리스"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="최신 릴리스"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="CI 상태"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS, Windows, Linux 지원">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="Rust와 GPUI로 제작">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/s1dashu/quiet-md?color=green" alt="MIT 라이선스"></a>
-  <img src="https://img.shields.io/badge/status-beta-orange" alt="베타">
+  <img src="https://img.shields.io/badge/status-stable-green" alt="정식 버전">
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 </p>
 
 > [!NOTE]
-> Quiet.md는 **베타** 단계이며 빠르게 바뀌고 있습니다. 버그를 발견했거나 아이디어가 있다면 [이슈를 남겨 주세요](https://github.com/s1dashu/quiet-md/issues). 풀 리퀘스트를 보내 주시면 더 좋습니다.
+> 버그를 발견했거나 아이디어가 있다면 [이슈를 남겨 주세요](https://github.com/s1dashu/quiet-md/issues). 풀 리퀘스트를 보내 주시면 더 좋습니다.
 
 ## Quiet.md를 쓰는 이유
 
@@ -66,11 +66,11 @@
 | **Linux**(x86_64, 실험적) | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases) | glibc 2.35 이상(Ubuntu 22.04 이상) |
 | **macOS**(Intel) | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 이상 |
 
-- **macOS**: 압축을 풀고 `quiet.md.app`을 응용 프로그램 폴더로 끌어다 놓습니다. 테스트 앱은 ad-hoc 서명을 사용하며 Apple 공증을 받지 않았습니다.
+- **macOS**: 압축을 풀고 `quiet.md.app`을 응용 프로그램 폴더로 끌어다 놓습니다. 앱은 ad-hoc 서명을 사용하며 Apple 공증을 받지 않았습니다.
 - **Windows**: 설치 프로그램을 실행합니다. 기본적으로 현재 사용자에게만 설치되며, 제거해도 노트는 지워지지 않습니다. 처음 실행할 때 SmartScreen 창이 뜨면 **추가 정보 → 실행**을 누르세요.
 - **Linux**(실험적): `chmod +x quiet-md-*.AppImage` 후 실행합니다. FUSE가 없으면 `--appimage-extract-and-run`을 붙이세요. 새 버전은 직접 다운로드하여 설치하세요. 직접 써 보는 테스트는 지금까지 Wayland의 Omarchy에서만 했습니다. 자세한 내용은 [Linux 안내](CONTRIBUTING.md#linux-experimental)를 참고하세요.
 
-현재 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases)에서 **무료 테스트 버전**을 제공합니다. macOS는 ad-hoc 서명이며 공증되지 않았고, Windows 설치 프로그램은 서명되지 않았습니다. 직접 다운로드하여 설치하세요. 각 패키지에 SHA-256 체크섬이 제공됩니다. [배포 안내](docs/RELEASES.md)를 참고하세요.
+현재 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases)에서 **정식 버전**을 제공합니다. macOS는 ad-hoc 서명이며 공증되지 않았고, Windows 설치 프로그램은 서명되지 않았습니다. 직접 다운로드하여 설치하세요. 각 패키지에 SHA-256 체크섬이 제공됩니다. [배포 안내](docs/RELEASES.md)를 참고하세요.
 
 처음 실행하면 인터페이스 언어, 라이브러리 위치, 빠른 메모 단축키를 고르고, Obsidian, Logseq, iA Writer, Typora의 노트를 복사해 가져올 수 있습니다. 빈 라이브러리에는 **Getting started** 가이드가 들어갑니다. 주요 기능을 10분 만에 둘러보는 안내입니다. 이미 있는 노트는 덮어쓰지 않습니다.
 

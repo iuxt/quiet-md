@@ -25,6 +25,8 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 - `examples/menus.txt` 依次打开「…」菜单和页宽子菜单、编辑模式菜单、斜杠菜单、块菜单、侧栏右键菜单、帮助菜单。
 - `python3 tools/harness/table_resize.py` 在临时文档库中验证调整表格列宽时页面位置不跳动，覆盖屏幕外光标、单元格内光标、无变化拖拽、保存和撤销重做；需要 Pillow。
 - `python3 tools/harness/table_paste.py` 用模拟剪贴板验证 Markdown 表格按内容分配初始列宽，覆盖中文、粘贴、文件导入、保存重开和撤销重做，并确认已有列宽保留。
+- `python3 tools/harness/large_content.py` 验证两种主题的长表格、合并格、屏幕外查找和编辑、撤销重做、长代码及窄窗口；设置 `LARGE_CONTENT_BASELINE=<旧版 devtools 二进制>` 可逐像素比较 20 张截图，并核对保存后的正文完全一致；需要 Pillow。
+- `python3 tools/harness/search_results.py` 验证标题优先排序、键盘选择并打开屏幕外结果、无命中和清空查询；设置 `SEARCH_BASELINE=<旧版 devtools 二进制>` 可比较截图和保存正文；需要 Pillow。
 - `python3 tools/harness/checkbox_toggle.py` 在临时文档库中验证点击任务框只切换完成状态，保留光标、选区和滚动位置，覆盖两种主题、嵌套、提示块、表格、保存和撤销重做；需要 Pillow。`CHECKBOX_CASES` 可指定逗号分隔的场景名。
 - `python3 tools/harness/scroll_intent.py` 验证标题折叠/展开保留视口和文字选区、隐藏光标迁到标题后仍可见、输入/方向键仍跟随光标，以及分栏调整与两种主题代码换行的保存和位置保持；需要 Pillow。`SCROLL_CASES` 可指定逗号分隔的场景名。
 - `python3 tools/harness/pointer_properties.py` 逐项验证图片对齐、附件卡片/预览、提示块颜色/图标/默认设置、倒计时、日期提醒和单元格背景/垂直对齐，核对视口、编辑位置、保存及撤销重做；需要 Pillow。`PROPERTY_CASES` 可指定逗号分隔的场景名；单独运行撤销场景时，会先验证对应基础操作确实生效。
@@ -57,7 +59,10 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 | 命令 | 作用 |
 |---|---|
 | `check-document-safety <阶段>` | 文档保存与导航回归断言，由 `document_safety.py` 使用；仅 devtools 构建提供 |
+| `check-render-cache` | 将增量渲染缓存与完整重建的条目、光标单元和编号比较；仅 devtools 构建提供 |
 | `wait <ms>` | 等待，期间自己绘制帧（锁屏时也能出图） |
+| `idle <ms>` / `phase <名字>` | 只等待原生事件循环，不主动绘帧；输出资源采样阶段标记，用于 `tools/perf/resource_probe.py` |
+| `churn-windows <n>` | 对同一篇已有笔记创建并关闭 n 个不显示、不聚焦的窗口，检查窗口任务回收 |
 | `key <按键>` | 发送按键，如 `key cmd-b`、`key escape` |
 | `type <文字>` | 输入文字（行尾空格有效） |
 | `move x y` / `click x y` / `dclick x y` / `rclick x y` / `drag x1 y1 x2 y2` | 鼠标操作（窗口坐标） |

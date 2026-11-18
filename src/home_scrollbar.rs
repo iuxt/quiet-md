@@ -22,17 +22,39 @@ pub struct Scrollbar {
     grab: Cell<Option<(Pixels, Pixels, Pixels)>>,
 }
 
+#[derive(Clone)]
+enum Scroll { Plain(ScrollHandle), List(ListState) }
+impl Scroll {
+    fn metrics(&self) -> (Pixels, Pixels, Pixels) {
+        match self {
+            Self::Plain(h) => { let view = h.bounds().size.height; (-h.offset().y, view + h.max_offset().height, view) }
+            Self::List(h) => h.estimated_scroll_metrics(),
+        }
+    }
+    fn scroll(&self, fraction: f32) {
+        match self {
+            Self::Plain(h) => h.set_offset(point(h.offset().x, -h.max_offset().height * fraction)),
+            Self::List(h) => { let (_, content, view) = h.estimated_scroll_metrics(); h.scroll_to_estimated_offset(if fraction >= 1. { px(f32::MAX) } else { (content - view) * fraction }); }
+        }
+    }
+}
+
 impl Scrollbar {
     pub fn render(self: &std::rc::Rc<Self>, handle: &ScrollHandle) -> impl IntoElement {
-        let list = handle.clone();
+        self.render_source(Scroll::Plain(handle.clone()))
+    }
+
+    pub fn render_list(self: &std::rc::Rc<Self>, state: &ListState) -> impl IntoElement {
+        self.render_source(Scroll::List(state.clone()))
+    }
+
+    fn render_source(self: &std::rc::Rc<Self>, list: Scroll) -> impl IntoElement {
         let sb = self.clone();
         let sb2 = sb.clone();
         let list2 = list.clone();
         canvas(
             move |bounds, window, _| {
-                let view = list.bounds().size.height;
-                let content = view + list.max_offset().height;
-                let offset = -list.offset().y;
+                let (offset, content, view) = list.metrics();
                 let (content, h) = match sb.grab.get() {
                     Some((_, content, h)) => (content, h),
                     None => (content, (view * (view / content)).max(px(MIN_H)).min(bounds.size.height)),
@@ -89,7 +111,7 @@ impl Scrollbar {
                                 let f = ((ev.position.y - dy - bounds.top()) / travel).clamp(0., 1.);
                                 // At the end, go to the real bottom: the rows there may not
                                 // be measured yet, so the estimate can stop short.
-                                list.set_offset(point(list.offset().x, -list.max_offset().height * f));
+                                list.scroll(f);
                                 window.refresh();
                             }
                             // The button went up somewhere we didn't see.

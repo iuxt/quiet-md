@@ -33,7 +33,7 @@ pub struct Row {
 
 pub struct TextLayout {
     pub bounds: Bounds<Pixels>,
-    pub lines: Vec<(usize, WrappedLine)>,
+    pub lines: Rc<Vec<(usize, WrappedLine)>>,
     pub rows: Vec<Row>,
     pub line_height: Pixels,
     /// Laid out as code (monospace).
@@ -284,10 +284,12 @@ pub struct RichTextElement {
     /// Unwrapped text as wide as its longest line (at least the parent), for
     /// a scroller around it: a code block that doesn't wrap (#161).
     pub fit_content: bool,
+    pub shapes: Option<Rc<RefCell<ShapeCache>>>,
 }
 
 pub struct Prepared {
-    lines: Vec<(usize, WrappedLine)>,
+    lines: Rc<Vec<(usize, WrappedLine)>>,
+    shaped: ShapedTextCache,
     wrap_width: Option<Pixels>,
     line_height: Pixels,
     /// (height, base_dy) of every row, in order.
@@ -296,6 +298,29 @@ pub struct Prepared {
     /// The longest line, the width of a `fit_content` element.
     width: Pixels,
     eqs: Vec<Rc<EqGeom>>,
+}
+
+#[derive(Default)]
+pub struct ShapeCache { clock: u64, entries: HashMap<BlockId, CachedShape> }
+struct CachedShape { used: u64, text: SharedString, runs: Vec<TextRun>, font_size: Pixels, value: Rc<Prepared> }
+impl ShapeCache {
+    fn get(&mut self, id: BlockId, text: &SharedString, runs: &[TextRun], font_size: Pixels, height: Pixels, wrap: Option<Pixels>) -> Option<Rc<Prepared>> {
+        let entry = self.entries.get_mut(&id)?;
+        if entry.text != *text || entry.runs != runs || entry.font_size != font_size || entry.value.line_height != height || entry.value.wrap_width != wrap { return None }
+        self.clock += 1; entry.used = self.clock;
+        Some(entry.value.clone())
+    }
+    fn insert(&mut self, id: BlockId, text: SharedString, runs: Vec<TextRun>, font_size: Pixels, value: Rc<Prepared>) {
+        self.clock += 1;
+        self.entries.insert(id, CachedShape { used: self.clock, text, runs, font_size, value });
+        let bytes = |e: &CachedShape| e.text.len() + e.runs.len() * std::mem::size_of::<TextRun>() + e.value.lines.len() * std::mem::size_of::<(usize, WrappedLine)>()
+            + e.value.lines.iter().flat_map(|(_, line)| &line.unwrapped_layout.runs).map(|run| run.glyphs.len() * std::mem::size_of::<ShapedGlyph>()).sum::<usize>();
+        let mut total: usize = self.entries.values().map(bytes).sum();
+        while total > 64 << 20 {
+            let Some(old) = self.entries.iter().min_by_key(|(_, e)| e.used).map(|(&id, _)| id) else { break };
+            total -= bytes(&self.entries.remove(&old).unwrap());
+        }
+    }
 }
 
 /// The equation box is `vertical-align: middle`: its centre sits this
@@ -682,7 +707,8 @@ pub fn build_runs(
             cuts.push(mr.end.clamp(range.start, range.end));
         }
         if let Some(h) = highlight {
-            for (r, _, _) in h {
+            let first = h.partition_point(|(r, _, _)| r.end <= range.start);
+            for (r, _, _) in h[first..].iter().take_while(|(r, _, _)| r.start < range.end) {
                 cuts.push(r.start.clamp(range.start, range.end));
                 cuts.push(r.end.clamp(range.start, range.end));
             }
@@ -705,7 +731,8 @@ pub fn build_runs(
             let mut color = span_color(spec, m);
             let mut hl_italic = false;
             if let Some(h) = highlight
-                && let Some((_, hc, it)) = h.iter().find(|(r, _, _)| r.start <= a && b <= r.end)
+                && let Some((r, hc, it)) = h.get(h.partition_point(|(r, _, _)| r.end <= a))
+                && r.start <= a && b <= r.end
             {
                 color = *hc;
                 hl_italic = *it;
@@ -758,7 +785,7 @@ impl IntoElement for RichTextElement {
 }
 
 impl Element for RichTextElement {
-    type RequestLayoutState = Rc<RefCell<Option<Prepared>>>;
+    type RequestLayoutState = Rc<RefCell<Option<Rc<Prepared>>>>;
     type PrepaintState = Prepaint;
 
     fn id(&self) -> Option<ElementId> {
@@ -776,7 +803,7 @@ impl Element for RichTextElement {
         window: &mut Window,
         _cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let state: Rc<RefCell<Option<Prepared>>> = Rc::new(RefCell::new(None));
+        let state: Rc<RefCell<Option<Rc<Prepared>>>> = Rc::new(RefCell::new(None));
         let font_size = px(self.spec.size);
         let line_height = px(self.spec.line_height);
         // Linux fallback fonts change during IME composition; keep the title baseline stable.
@@ -858,6 +885,8 @@ impl Element for RichTextElement {
         let fit = self.fit_content && !wrap;
         if fit { style.min_size.width = relative(1.).into(); style.flex_shrink = 0.; } else { style.size.width = relative(1.).into() }
         let st = state.clone();
+        let shapes = self.shapes.clone().filter(|_| text.len() >= 4096 && spacing == px(0.) && eq_src.is_empty());
+        let id = self.id;
         let layout_id = window.request_measured_layout(style, move |known, available, window, _cx| {
             let wrap_width = if wrap {
                 known.width.or(match available.width {
@@ -872,11 +901,18 @@ impl Element for RichTextElement {
             {
                 return size(known.width.unwrap_or(if fit { p.width } else { px(0.) }), p.height);
             }
+            if let Some(cache) = &shapes && let Some(p) = cache.borrow_mut().get(id, &text, &runs, font_size, line_height, wrap_width) {
+                window.text_system().retain_shaped_text(&p.shaped);
+                let measured = size(known.width.unwrap_or(if fit { p.width } else { px(0.) }), p.height);
+                *st.borrow_mut() = Some(p);
+                return measured;
+            }
             let custom = spacing != px(0.) || !eq_src.is_empty();
-            let mut lines = window
-                .text_system()
-                .shape_text(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None)
-                .unwrap_or_default();
+            let (mut lines, shaped) = if shapes.is_some() {
+                window.text_system().shape_text_with_cache(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None).unwrap_or_default()
+            } else {
+                (window.text_system().shape_text(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None).unwrap_or_default(), ShapedTextCache::default())
+            };
             let row_w = wrap_width.or(known.width).map_or(f32::INFINITY, f32::from);
             let mut eqno = eq_counter;
             let eqs: Vec<Rc<EqGeom>> = eq_src
@@ -941,7 +977,9 @@ impl Element for RichTextElement {
             if out.is_empty() {
                 h = line_height;
             }
-            *st.borrow_mut() = Some(Prepared { lines: out, wrap_width, line_height, rows, height: h, width: w, eqs });
+            let prepared = Rc::new(Prepared { lines: Rc::new(out), shaped, wrap_width, line_height, rows, height: h, width: w, eqs });
+            if let Some(cache) = &shapes { cache.borrow_mut().insert(id, text.clone(), runs.clone(), font_size, prepared.clone()); }
+            *st.borrow_mut() = Some(prepared);
             size(known.width.unwrap_or(w), h)
         });
         (layout_id, state)
@@ -1003,9 +1041,9 @@ impl Element for RichTextElement {
                 y += h;
             }
         }
-        let mut layout = TextLayout { bounds: Bounds::new(text_origin, bounds.size), lines: p.lines, rows, line_height: lh, mono: self.spec.mono, eqs: vec![], buttons: vec![] };
+        let mut layout = TextLayout { bounds: Bounds::new(text_origin, bounds.size), lines: p.lines.clone(), rows, line_height: lh, mono: self.spec.mono, eqs: vec![], buttons: vec![] };
         let mut placed = vec![];
-        for e in p.eqs {
+        for e in &p.eqs {
             let ri = layout.row_for(e.ix);
             let Some(r) = layout.rows.get(ri) else { continue };
             let (start, line) = &layout.lines[r.hard];
@@ -1022,7 +1060,7 @@ impl Element for RichTextElement {
                 layout.eqs.push((e.ix, view));
             }
             let hitbox = window.insert_hitbox(view, HitboxBehavior::Normal);
-            placed.push(PlacedEq { origin, view, hitbox, geom: e });
+            placed.push(PlacedEq { origin, view, hitbox, geom: e.clone() });
         }
         self.cache.borrow_mut().insert(self.id, layout);
         Prepaint { placed, sx }
@@ -1068,7 +1106,11 @@ impl Element for RichTextElement {
         let sx = prepaint.sx;
         let o = point(bounds.left() + dx - sx, bounds.top());
         for (hi, (_, line)) in layout.lines.iter().enumerate() {
-            let tops: Vec<Pixels> = layout.rows.iter().filter(|r| r.hard == hi).map(|r| r.y + r.base_dy).collect();
+            let first = layout.rows.partition_point(|r| r.hard < hi);
+            let rows = &layout.rows[first..first + layout.rows[first..].partition_point(|r| r.hard == hi)];
+            let mask = window.content_mask().bounds;
+            if rows.first().zip(rows.last()).is_some_and(|(a, b)| o.y + b.y + b.h + lh < mask.top() || o.y + a.y - lh > mask.bottom()) { continue }
+            let tops: Vec<Pixels> = rows.iter().map(|r| r.y + r.base_dy).collect();
             let _ = line.paint_background_rows(o, lh, &tops, gpui_align, Some(bounds), window, cx);
         }
         if let Some(sel) = &self.selection {
@@ -1118,7 +1160,11 @@ impl Element for RichTextElement {
             }
         }
         for (hi, (_, line)) in layout.lines.iter().enumerate() {
-            let tops: Vec<Pixels> = layout.rows.iter().filter(|r| r.hard == hi).map(|r| r.y + r.base_dy).collect();
+            let first = layout.rows.partition_point(|r| r.hard < hi);
+            let rows = &layout.rows[first..first + layout.rows[first..].partition_point(|r| r.hard == hi)];
+            let mask = window.content_mask().bounds;
+            if rows.first().zip(rows.last()).is_some_and(|(a, b)| o.y + b.y + b.h + lh < mask.top() || o.y + a.y - lh > mask.bottom()) { continue }
+            let tops: Vec<Pixels> = rows.iter().map(|r| r.y + r.base_dy).collect();
             let _ = line.paint_rows(o, lh, &tops, gpui_align, Some(bounds), window, cx);
         }
         for eq in prepaint.placed.iter() {

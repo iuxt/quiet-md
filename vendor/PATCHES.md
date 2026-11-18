@@ -53,6 +53,9 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 31 | `text_system/line_wrapper.rs` | `is_word_char` 把希伯来、阿拉伯、叙利亚、它拿、N'Ko 字母及阿拉伯/希伯来表现形式算作单词字符，并加了测试 | 这些文字用空格分词，按词换行，不再在词中间断开 |
 | 32 | `text_system/line.rs` | `WrappedLine::paint` / `paint_background`：折成多行、且第一个字母属于从右到左文字的段落，默认的左对齐改成右对齐（`rtl_align`）；单行文字、显式指定的对齐和编辑器用的 `paint_rows` 不变 | 阿拉伯文等的多行说明文字贴右边排，符合这些文字的阅读习惯 |
 | 33 | `platform/mac/metal_renderer.rs` | `CAMetalLayer` 的 `maximumDrawableCount` 从 3 改为 2 | 每张 drawable 是一整窗 BGRA（2560×1600 时 16MB），第三张只在帧堆积时才会建出来并一直留着。我们每帧的 GPU 时间只有一两毫秒，滚动文件夹页时 `nextDrawable` 等待最长 0.17ms，和 3 张时一样 |
+| 34 | `text_system/line.rs` | 显式行偏移的绘制层从第一行的位置开始，高度只覆盖本次硬行的折行；裁掉屏幕外硬行 | 避免万行代码为不可见行插入覆盖整个视口的层，造成边界树二次复杂度；字形位置不变 |
+| 35 | `text_system.rs`、`text_system/line_layout.rs` | `ShapedTextCache`、`shape_text_with_cache` / `retain_shaped_text`：供块级布局缓存持有并续用平台排版缓存 | 复用长代码块布局时，平台缓存也保持热状态，修改一行不用重新排版其余万行 |
+| 36 | `elements/list.rs` | `ListState::set_measure_all` 支持切换完整 / 可见行测量 | 小搜索结果保持精确滚动条，大结果恢复虚拟测量，避免全量布局 |
 
 ## taffy 0.9.0
 

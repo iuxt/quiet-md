@@ -4,7 +4,7 @@ impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
     pub fn tree_writer(&self) -> Self {
         Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat, manifest: self.manifest.clone(),
-            loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), warnings: vec![], batch: Default::default() }
+            loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: self.parsed_disk.clone(), warnings: vec![], batch: Default::default() }
     }
 
     /// Adopt a completed worker's tree and parse cache, keeping open editors'
@@ -13,6 +13,7 @@ impl Store {
         assert_eq!(self.root, writer.root);
         self.index = writer.index; self.trash = writer.trash; self.manifest = writer.manifest; self.flat = writer.flat;
         self.parsed = writer.parsed;
+        self.parsed_disk = writer.parsed_disk;
         self.warnings.extend(writer.warnings);
         self.loaded.get_mut().retain(|id, _| self.index.contains_key(id));
         self.loaded_titles.get_mut().retain(|id, _| self.index.contains_key(id));

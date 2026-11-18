@@ -36,7 +36,7 @@ pub(super) struct R<'a> {
 #[derive(Default)]
 pub(super) struct Frame {
     /// `core.generation` that `units` / `eqnos` were computed at.
-    generation: Option<u64>,
+    pub(super) generation: Option<u64>,
     units: Rc<Vec<Unit>>,
     pub eqnos: Rc<HashMap<BlockId, u32>>,
     selected: Rc<HashSet<BlockId>>,
@@ -261,6 +261,7 @@ impl R<'_> {
             button_edit: if self.ghost { None } else { self.ed.button_preview(id) },
             scroll: None,
             fit_content: false,
+            shapes: Some(self.ed.text_shapes.clone()),
         }
     }
 
@@ -1036,18 +1037,38 @@ impl R<'_> {
                                 .text_size(px(12.))
                                 .line_height(px(code_line))
                                 .text_color(Theme::code_line_number())
-                                .children(
-                                    rows_per_line
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, n)| div().h(px(code_line * *n as f32)).child(format!("{}", i + 1))),
-                                ),
+                                .child(code_numbers(&rows_per_line, code_line)),
                         ))
                         .child(self.code_column(id, wrap, el, 12.)),
                 )
             })
             .into_any_element()
     }
+}
+
+fn code_numbers(rows: &[usize], line_height: f32) -> impl IntoElement {
+    let mut tops = Vec::with_capacity(rows.len() + 1);
+    tops.push(0.);
+    for &n in rows { tops.push(tops.last().copied().unwrap() + line_height * n as f32); }
+    let height = *tops.last().unwrap();
+    canvas(move |bounds, window, _| {
+        let mask = window.content_mask().bounds;
+        let top = f32::from(mask.top() - bounds.top()) - line_height;
+        let bottom = f32::from(mask.bottom() - bounds.top()) + line_height;
+        let first = tops.partition_point(|&y| y < top).saturating_sub(1);
+        let last = tops.partition_point(|&y| y <= bottom).min(tops.len() - 1);
+        let style = window.text_style();
+        (first..last).map(|i| {
+            let text = (i + 1).to_string();
+            let run = style.to_run(text.len());
+            let line = window.text_system().shape_line(text.into(), style.font_size.to_pixels(window.rem_size()), &[run], None);
+            let x = bounds.right() - line.width.ceil();
+            let at = point(x, bounds.top() + px(tops[i]));
+            (line, at)
+        }).collect::<Vec<_>>()
+    }, move |_, lines, window, cx| {
+        for (line, at) in lines { let _ = line.paint(at, px(line_height), window, cx); }
+    }).w_full().h(px(height)).flex_none()
 }
 
 /// Code blocks: SF Mono 13 / 20, a 36pt line-number gutter.
@@ -1084,6 +1105,28 @@ impl Editor {
         let frame_key = fh.finish();
         if self.items_key == Some(frame_key) {
             return;
+        }
+        if let Some((id, from, to, item)) = self.pending_text
+            && self.frame.generation == Some(from) && self.core.generation == to {
+            let mut previous = FxHasher::default();
+            (from, seed, keys[0], links, &nonces).hash(&mut previous);
+            if self.items_key == Some(previous.finish())
+                && let Some(Item::Block { path, gap }) = self.items.get(item)
+                && let [root] = path.as_slice()
+                && let Some(block) = self.core.doc.blocks.get(*root).filter(|b| b.id == id) {
+                let mut h = FxHasher::default();
+                seed.hash(&mut h); gap.to_bits().hash(&mut h); path.len().hash(&mut h);
+                hash_block(block, &self.heading_orders, &mut h);
+                let key = h.finish();
+                if self.item_keys[item] != key {
+                    let top = self.list.logical_scroll_top();
+                    self.list.splice(item..item + 1, 1);
+                    if top.item_ix == item { self.list.scroll_to(top); }
+                    self.item_keys[item] = key;
+                }
+                self.items_key = Some(frame_key);
+                return;
+            }
         }
         self.items_key = Some(frame_key);
         self.heading_orders = core::heading_orders(&self.core.doc.blocks);
@@ -1144,6 +1187,19 @@ impl Editor {
         }
         self.items = items;
         self.item_keys = keys;
+    }
+
+    #[cfg(feature = "devtools")]
+    pub(crate) fn check_render_cache(&mut self, window: &mut Window) {
+        assert_eq!(self.frame.generation, Some(self.core.generation));
+        assert_eq!(&*self.frame.units, &self.core.units());
+        assert_eq!(&*self.frame.eqnos, &equation_numbers(&self.core.doc));
+        assert_eq!(self.heading_orders, core::heading_orders(&self.core.doc.blocks));
+        let keys = self.item_keys.clone();
+        self.items_key = None;
+        self.sync_items(self.frame.focused, super::cover::cover_height(window));
+        assert_eq!(keys, self.item_keys, "incremental item keys differ from a complete rebuild");
+        eprintln!("devtools: render cache checked");
     }
 
     /// The list item showing `id` (the deepest row on its path).
@@ -1376,6 +1432,10 @@ impl Editor {
             .and_then(|id| self.block_bounds.borrow().get(&id).copied())
             .is_some_and(|b| b.top() < viewport.top() || b.top() + px(26.) > viewport.bottom());
         self.code_rows = code_rows(&self.cache.borrow());
+        // Ordinary letters inside one root text block leave units, headings
+        // and equation numbering unchanged; structural edits take the full path.
+        let text_only = self.pending_text.is_some_and(|(_, from, to, _)| self.frame.generation == Some(from) && self.core.generation == to);
+        if text_only && self.cat_generation == self.frame.generation { self.cat_generation = Some(self.core.generation); }
         // Sets the margins `sync_items` keys on.
         self.update_catalogue();
         let catalogue = self.render_catalogue(window, cx);
@@ -1402,7 +1462,7 @@ impl Editor {
         let focused = self.focus.is_focused(window);
         self.sync_items(focused, super::cover::cover_height(window));
         let generation = self.core.generation;
-        let (units, eqnos) = match self.frame.generation == Some(generation) {
+        let (units, eqnos) = match text_only || self.frame.generation == Some(generation) {
             true => (self.frame.units.clone(), self.frame.eqnos.clone()),
             false => (Rc::new(self.core.units()), Rc::new(equation_numbers(&self.core.doc))),
         };
@@ -1413,6 +1473,7 @@ impl Editor {
             selected: Rc::new(self.core.block_sel_ids().into_iter().collect()),
             focused,
         };
+        self.pending_text = None;
         // Filled in as the list renders its visible items.
         self.handle_targets.clear();
 
@@ -2304,12 +2365,7 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
                                 .text_size(px(14.))
                                 .line_height(px(22.))
                                 .text_color(Theme::text_caption())
-                                .children(
-                                    rows_per_line
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, n)| div().h(px(22. * *n as f32)).child(format!("{}", i + 1))),
-                                ),
+                                .child(code_numbers(&rows_per_line, 22.)),
                         )
                         .child(self.code_column(id, wrap, el, 14.)),
                 )

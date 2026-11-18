@@ -555,6 +555,7 @@ impl Render for TextField {
             caret: Some(self.cursor()),
             caret_row_end: false,
             fit_content: false,
+            shapes: None,
             marked: self.marked.clone(),
             cache: self.cache.clone(),
             show_caret: focused && !self.hide_caret && self.sel.is_empty(),

@@ -10,12 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?include_prereleases&label=release&color=2f6feb" alt="最新版本"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="最新版本"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="CI 状态"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="支持 macOS、Windows 和 Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="使用 Rust 和 GPUI 构建">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/s1dashu/quiet-md?color=green" alt="MIT 许可"></a>
-  <img src="https://img.shields.io/badge/status-beta-orange" alt="Beta">
+  <img src="https://img.shields.io/badge/status-stable-green" alt="Stable">
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 </p>
 
 > [!NOTE]
-> Quiet.md 目前是 **Beta 版本**，还在快速迭代。遇到 bug 或有想法，欢迎[提 issue](https://github.com/s1dashu/quiet-md/issues)，更欢迎直接提 PR，一起把它打磨好。
+> 遇到 bug 或有想法，欢迎[提 issue](https://github.com/s1dashu/quiet-md/issues)，更欢迎直接提 PR，一起把它打磨好。
 
 ## 为什么是 Quiet.md
 
@@ -66,11 +66,11 @@
 | **Linux**（x86_64，实验性） | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases) | glibc 2.35 及以上（Ubuntu 22.04 及更新） |
 | **macOS**（Intel） | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 及以上 |
 
-- **macOS**：解压后把 `quiet.md.app` 拖进「应用程序」。测试包采用 ad-hoc 签名，未经 Apple 公证。
+- **macOS**：解压后把 `quiet.md.app` 拖进「应用程序」。安装包采用 ad-hoc 签名，未经 Apple 公证。
 - **Windows**：运行安装程序，默认只装到当前用户目录，卸载不会删除笔记。如果首次运行出现 SmartScreen 提示，点「更多信息 → 仍要运行」即可。
 - **Linux**（实验性）：`chmod +x quiet-md-*.AppImage` 后直接运行；没有 FUSE 时加 `--appimage-extract-and-run`。新版本需手动下载安装。目前只在 Omarchy（Wayland）上做过交互测试，详见 [Linux 说明](CONTRIBUTING.md#linux-experimental)。
 
-当前提供 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) 上的**免费测试版**：macOS 使用 ad-hoc 签名且未经 Apple 公证，Windows 安装包未签名。请手动下载安装；每个包附带 SHA-256 校验文件。详见[发布说明](docs/RELEASES.md)。
+当前提供 [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) 上的**正式版**：macOS 使用 ad-hoc 签名且未经 Apple 公证，Windows 安装包未签名。请手动下载安装；每个包附带 SHA-256 校验文件。详见[发布说明](docs/RELEASES.md)。
 
 首次启动时可以选择界面语言、文档库位置和随手记快捷键，并可从 Obsidian、Logseq、iA Writer、Typora 复制已有笔记进来。空文档库里会放一套「开始指南」，十分钟带你过一遍主要功能；已有的笔记不会被覆盖。
 

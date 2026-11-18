@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare manual-install packages and checksums, or publish a verified prerelease.
+"""Prepare manual-install packages and checksums, or publish a verified release.
 
 Dry-run is read-only. --prepare writes eight assets into a new directory.
 --publish additionally uploads and verifies a draft, then publishes it unless
@@ -25,7 +25,7 @@ PLATFORMS = {
     "windows-x64": "quiet-md-{version}-windows-x64-setup.exe",
     "linux-x86_64": "quiet-md-{version}-x86_64.AppImage",
 }
-TEST_NOTICE = """**免费测试包 / Free test build**
+INSTALL_NOTICE = """**安装说明 / Installation**
 
 macOS 包采用 ad-hoc 签名，未经 Apple 公证；Windows 安装包未签名，系统可能提示安全警告。
 请手动下载和安装，并使用随包的 SHA-256 文件检查下载完整性。
@@ -135,10 +135,10 @@ def publish(output, assets, release, notes=None, draft=False):
         raise ValueError("The remote release tag must also point at HEAD")
     run(sys.executable, ROOT / "scripts/check.py")
     # Do not update/overwrite an existing release or its assets.
-    notes_args = ["--notes", TEST_NOTICE + ("\n" + notes.read_text() if notes is not None else ""),
+    notes_args = ["--notes", INSTALL_NOTICE + ("\n" + notes.read_text() if notes is not None else ""),
                   *([] if notes is not None else ["--generate-notes"])]
-    flags = ["--prerelease", "--latest=false"]
-    title = f"{tag} — Test build (unsigned)"
+    flags = ["--prerelease=false", "--latest=false"]
+    title = tag
     run("gh", "release", "create", tag, "--repo", REPO, "--verify-tag", "--draft", "--title", title, *flags, *notes_args)
     run("gh", "release", "upload", tag, "--repo", REPO, *assets)
     with tempfile.TemporaryDirectory(prefix="quiet-release-check-") as temp:
@@ -149,8 +149,11 @@ def publish(output, assets, release, notes=None, draft=False):
         print(f"Verified draft: {BASE}/tag/{tag}")
         return
     # Everything is present and verified before the release becomes public.
-    flags = ["--prerelease=true", "--latest=false"]
+    flags = ["--prerelease=false", "--latest=true"]
     run("gh", "release", "edit", tag, "--repo", REPO, "--draft=false", *flags)
+    state = json.loads(run("gh", "release", "view", tag, "--repo", REPO, "--json", "tagName,isDraft,isPrerelease", capture=True))
+    if state.get("tagName") != tag or state.get("isDraft") is not False or state.get("isPrerelease") is not False:
+        raise ValueError("The published release must be public and not a prerelease")
     with tempfile.TemporaryDirectory(prefix="quiet-public-check-") as temp:
         downloaded = Path(temp)
         for asset in assets:

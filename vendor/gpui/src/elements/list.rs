@@ -238,6 +238,12 @@ impl ListState {
         self
     }
 
+    /// quiet.md: Measure small result sets exactly, and restore visible-only
+    /// measurement when the same list receives a large result set.
+    pub fn set_measure_all(&self, measure: bool) {
+        self.0.borrow_mut().measuring_behavior = if measure { ListMeasuringBehavior::Measure(false) } else { ListMeasuringBehavior::Visible };
+    }
+
     /// Reset this instantiation of the list state.
     ///
     /// Note that this will cause scroll events to be dropped until the next paint.

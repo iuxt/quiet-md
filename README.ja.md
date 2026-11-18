@@ -10,12 +10,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?include_prereleases&label=release&color=2f6feb" alt="最新リリース"></a>
+  <a href="https://github.com/iuxt/quiet-md/releases"><img src="https://img.shields.io/github/v/release/iuxt/quiet-md?label=release&color=2f6feb" alt="最新リリース"></a>
   <a href="https://github.com/s1dashu/quiet-md/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/s1dashu/quiet-md/ci.yml?branch=main&label=CI" alt="CI のステータス"></a>
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey" alt="macOS、Windows、Linux">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20GPUI-dea584?logo=rust" alt="Rust と GPUI で構築">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/s1dashu/quiet-md?color=green" alt="MIT ライセンス"></a>
-  <img src="https://img.shields.io/badge/status-beta-orange" alt="ベータ版">
+  <img src="https://img.shields.io/badge/status-stable-green" alt="正式版">
 </p>
 
 <p align="center">
@@ -39,7 +39,7 @@
 </p>
 
 > [!NOTE]
-> Quiet.md は**ベータ版**で、急速に変化しています。バグを見つけたり、アイデアがあったりしたら、[issue を作成](https://github.com/s1dashu/quiet-md/issues)してください。プルリクエストを送ってもらえると、もっとうれしいです。
+> バグを見つけたり、アイデアがあったりしたら、[issue を作成](https://github.com/s1dashu/quiet-md/issues)してください。プルリクエストを送ってもらえると、もっとうれしいです。
 
 ## Quiet.md を選ぶ理由
 
@@ -66,11 +66,11 @@
 | **Linux**（x86_64、試験的） | [quiet-md-x86_64.AppImage](https://github.com/iuxt/quiet-md/releases) | glibc 2.35 以降（Ubuntu 22.04 以降） |
 | **macOS**（Intel） | [quiet-md-macos-x86_64.zip](https://github.com/iuxt/quiet-md/releases) | macOS 13 以降 |
 
-- **macOS**: 展開して、`quiet.md.app` をアプリケーションフォルダーにドラッグします。テスト版は ad-hoc 署名で、Apple の公証を受けていません。
+- **macOS**: 展開して、`quiet.md.app` をアプリケーションフォルダーにドラッグします。アプリは ad-hoc 署名で、Apple の公証を受けていません。
 - **Windows**: インストーラーを実行します。デフォルトでは現在のユーザーだけにインストールされ、アンインストールしてもノートが削除されることはありません。初回の起動時に SmartScreen が表示された場合は、**詳細情報 → 実行** をクリックしてください。
 - **Linux**（試験的）: `chmod +x quiet-md-*.AppImage` を実行してから起動します。FUSE がない場合は `--appimage-extract-and-run` を付けてください。新しいバージョンは手動でダウンロードしてインストールしてください。現在の対話的なテストは Wayland 上の Omarchy のみです。詳しくは [Linux の説明](CONTRIBUTING.md#linux-experimental)を参照してください。
 
-現在は [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) で**無料のテスト版**を配布しています。macOS は ad-hoc 署名で未公証、Windows インストーラーは未署名です。手動でダウンロードしてインストールしてください。各パッケージに SHA-256 を添付しています。[公開の説明](docs/RELEASES.md)を参照してください。
+現在は [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases) で**正式版**を配布しています。macOS は ad-hoc 署名で未公証、Windows インストーラーは未署名です。手動でダウンロードしてインストールしてください。各パッケージに SHA-256 を添付しています。[公開の説明](docs/RELEASES.md)を参照してください。
 
 初回の起動時に、表示言語、ライブラリの場所、クイックノートのショートカットを選び、Obsidian、Logseq、iA Writer、Typora のノートをコピーして取り込めます。空のライブラリには **Getting started** ガイドが入ります。主な機能を 10 分で紹介するツアーです。既存のノートが上書きされることはありません。
 

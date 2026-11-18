@@ -249,6 +249,7 @@ pub struct Store {
     /// the same: re-reading every document on each window activation stalled
     /// the main thread for seconds on big or iCloud-evicted libraries.
     parsed: HashMap<String, (std::time::SystemTime, u64, Parsed)>,
+    parsed_disk: ParsedDisk,
     root: PathBuf,
     /// Every document and virtual folder by its stable UUID; quiet.json
     /// stores the tree while document links remain relative file paths.
@@ -274,10 +275,16 @@ struct Parsed { title: String, icon: Option<String>, body: std::sync::Arc<str>, 
 /// are this machine's mtimes, so it lives in the cache folder, not in the
 /// (possibly synced) library. Bump `PARSED_CACHE` when what `list` takes from
 /// a file changes; a release discards it anyway.
-const PARSED_CACHE: u32 = 1;
+const PARSED_CACHE: u32 = 2;
+
+#[derive(Clone, Default)]
+struct ParsedDisk { generation: Option<String>, stamps: HashMap<String, (std::time::SystemTime, u64)>, deltas: HashSet<PathBuf> }
 
 #[derive(Serialize, Deserialize)]
-struct ParsedCache { version: String, docs: HashMap<PathBuf, CachedDoc> }
+struct ParsedCache { version: String, generation: String, docs: HashMap<PathBuf, CachedDoc> }
+
+#[derive(Serialize, Deserialize)]
+struct ParsedDelta { generation: String, path: PathBuf, doc: CachedDoc }
 
 #[derive(Serialize, Deserialize)]
 struct CachedDoc {
@@ -438,6 +445,25 @@ fn with_suffix(path: &std::path::Path, suffix: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// A separate inode, with the filesystem's copy-on-write clone when available.
+/// Never a hard link: an external in-place edit must not change the backup.
+fn backup_atomic(path: &Path, backup: &Path, previous: &[u8]) -> Result<()> {
+    let tmp = with_suffix(backup, &format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        std::fs::copy(path, &tmp)?;
+        std::fs::OpenOptions::new().write(true).open(&tmp)?.sync_all()?;
+        std::fs::rename(&tmp, backup)?;
+        #[cfg(unix)]
+        if let Some(parent) = backup.parent() { std::fs::File::open(parent)?.sync_all()?; }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(tmp);
+        return write_atomic(backup, previous);
+    }
+    result
+}
+
 /// Read a JSON index written by `save_json`. A file that exists but does not
 /// parse is set aside as `<name>.corrupt-<time>` (never overwritten) and the
 /// previous version, `<name>.bak`, is used instead.
@@ -480,7 +506,7 @@ fn save_json<T: Serialize>(path: &std::path::Path, v: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(v)?;
     match std::fs::read(path) {
         Ok(old) if old == bytes => return Ok(()),
-        Ok(old) => write_atomic(&with_suffix(path, ".bak"), &old)?,
+        Ok(old) => backup_atomic(path, &with_suffix(path, ".bak"), &old)?,
         Err(_) => {}
     }
     write_atomic(path, &bytes)
@@ -723,7 +749,7 @@ impl Store {
         let base = if flat { root.clone() } else { internal.clone() };
         let trash = if !flat && reread::<FormatMarker>(&marker).is_some_and(|m| m.format == FORMAT) { HashMap::new() }
             else { load_json(&base.join("trash").join("index.json"), "回收站索引", &mut warnings) };
-        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, manifest: None, warnings, loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, manifest: None, warnings, loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: Default::default(), batch: Default::default() };
         if flat {
             store.index = load_json(&base.join("index.json"), "文档索引", &mut store.warnings);
             store.flat_folders()?;
@@ -1375,6 +1401,15 @@ impl Store {
         let Some(c) = std::fs::read(parsed_cache_path(&self.root)).ok().and_then(|b| serde_json::from_slice::<ParsedCache>(&b).ok()) else { return };
         if c.version != parsed_cache_version() { return }
         let mut docs = c.docs;
+        let dir = parsed_cache_path(&self.root).with_extension("d");
+        for file in std::fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|e| e == "json")) {
+            if let Some(delta) = std::fs::read(file.path()).ok().and_then(|b| serde_json::from_slice::<ParsedDelta>(&b).ok())
+                && delta.generation == c.generation {
+                docs.insert(delta.path, delta.doc);
+                self.parsed_disk.deltas.insert(file.path());
+            }
+        }
+        self.parsed_disk.generation = Some(c.generation);
         let ids: Vec<String> = self.index.iter().filter(|(_, m)| m.folder.is_none()).map(|(k, _)| k.clone()).collect();
         for id in ids {
             let Some(d) = docs.remove(&self.path(&id)) else { continue };
@@ -1382,17 +1417,44 @@ impl Store {
             let links = d.links.into_iter().map(|(target, block, line)| crate::model::DocLink { target, block, line }).collect();
             self.parsed.insert(id, (d.modified, d.len, Parsed { title: d.title, icon: d.icon, body: d.body.into(), reminders, links }));
         }
+        self.parsed_disk.stamps = self.parsed.iter().map(|(id, (time, len, _))| (id.clone(), (*time, *len))).collect();
     }
 
-    fn save_parsed(&self) -> Result<()> {
-        let docs = self.parsed.iter().map(|(id, (modified, len, p))| (self.path(id), CachedDoc {
-            modified: *modified, len: *len, title: p.title.clone(), icon: p.icon.clone(), body: p.body.to_string(),
+    fn cached_doc(time: std::time::SystemTime, len: u64, p: &Parsed) -> CachedDoc {
+        CachedDoc { modified: time, len, title: p.title.clone(), icon: p.icon.clone(), body: p.body.to_string(),
             reminders: p.reminders.iter().map(|r| (r.expire, r.notify, r.should_notify, r.whole_day)).collect(),
-            links: p.links.iter().map(|l| (l.target.clone(), l.block, l.line.clone())).collect(),
-        })).collect();
+            links: p.links.iter().map(|l| (l.target.clone(), l.block, l.line.clone())).collect() }
+    }
+
+    fn save_parsed(&mut self) -> Result<()> {
         let path = parsed_cache_path(&self.root);
-        if let Some(dir) = path.parent() { std::fs::create_dir_all(dir)?; }
-        write_atomic(&path, &serde_json::to_vec(&ParsedCache { version: parsed_cache_version(), docs })?)
+        let dir = path.with_extension("d");
+        let compact = self.parsed_disk.deltas.len() >= 64 || self.parsed_disk.stamps.keys().any(|id| !self.parsed.contains_key(id));
+        match self.parsed_disk.generation.clone().filter(|_| !compact) {
+        None => {
+            let generation = uuid::Uuid::new_v4().to_string();
+            let docs = self.parsed.iter().map(|(id, (time, len, p))| (self.path(id), Self::cached_doc(*time, *len, p))).collect();
+            if let Some(parent) = path.parent() { std::fs::create_dir_all(parent)?; }
+            write_atomic(&path, &serde_json::to_vec(&ParsedCache { version: parsed_cache_version(), generation: generation.clone(), docs })?)?;
+            // Publish a new generation before cleanup: old deltas cannot undo
+            // a compacted snapshot, even if cleanup is interrupted.
+            self.parsed_disk.generation = Some(generation);
+            self.parsed_disk.deltas.clear();
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        Some(generation) => {
+            for (id, (time, len, p)) in &self.parsed {
+                if self.parsed_disk.stamps.get(id) == Some(&(*time, *len)) { continue }
+                std::fs::create_dir_all(&dir)?;
+                let doc_path = self.path(id);
+                let delta = dir.join(format!("{}.json", library_key(&doc_path)));
+                write_atomic(&delta, &serde_json::to_vec(&ParsedDelta { generation: generation.clone(), path: doc_path, doc: Self::cached_doc(*time, *len, p) })?)?;
+                self.parsed_disk.deltas.insert(delta);
+            }
+        }
+        }
+        self.parsed_disk.stamps = self.parsed.iter().map(|(id, (time, len, _))| (id.clone(), (*time, *len))).collect();
+        Ok(())
     }
 
     fn read_doc_text(&self, id: &str) -> Result<String> {
@@ -1457,7 +1519,7 @@ impl Store {
             let current = meta.name.as_deref().unwrap_or_default();
             anyhow::ensure!(current == expected || current == doc.title.text.trim(), "文档标题已被另一个实例修改，请重新载入磁盘版本");
         }
-        let disk = if self.is_markdown(id) || self.loaded.borrow().contains_key(id) { std::fs::read_to_string(self.path(id)).ok() } else { None };
+        let disk = std::fs::read_to_string(self.path(id)).ok();
         let (xml, copies) = self.serialize_with_copies(id, doc, disk.as_deref());
         if let Some(previous) = self.loaded.borrow().get(id) {
             let disk = disk.as_deref().ok_or_else(|| anyhow::anyhow!("无法读取文档"))?;
@@ -1466,7 +1528,7 @@ impl Store {
         }
         // A Markdown file whose content did not change is left alone: its
         // formatting is the user's.
-        let same = self.is_markdown(id) && disk.as_deref().is_some_and(|d| d == xml || self.parse_doc(id, d).is_ok_and(|was| self.serialize_doc(id, &was, Some(d)) == xml));
+        let same = disk.as_deref().is_some_and(|d| d == xml || self.is_markdown(id) && self.parse_doc(id, d).is_ok_and(|was| self.serialize_doc(id, &was, Some(d)) == xml));
         if !same {
             // Images and attachments first, so the file never links to a missing one.
             if let Some(base) = self.base(id) {
@@ -1495,6 +1557,9 @@ impl Store {
         }
         self.loaded.borrow_mut().insert(id.to_string(), if same { disk.unwrap_or(xml) } else { xml });
         let title = doc.title.text.trim().to_string();
+        if same && (!self.virtual_folders() && !self.is_markdown(id) || title == self.markdown_title(id)) {
+            return self.index.get(id).cloned().ok_or_else(|| anyhow::anyhow!("文档不存在"));
+        }
         let changed = if self.is_markdown(id) { title != self.markdown_title(id) } else { true };
         if changed && !(self.is_markdown(id) && title.is_empty()) && let Err(e) = self.follow_title(id, &title) {
             self.warnings.push(format!("未能按标题重命名文件：{e}"));
@@ -2157,6 +2222,7 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
             let _ = std::fs::remove_file(super::parsed_cache_path(&self.0));
+            let _ = std::fs::remove_dir_all(super::parsed_cache_path(&self.0).with_extension("d"));
         }
     }
 
@@ -2577,6 +2643,66 @@ mod tests {
     }
 
     #[test]
+    fn json_backup_is_independent_of_in_place_external_edits() {
+        let lib = Lib::new("backup-independent");
+        std::fs::create_dir_all(&lib.0).unwrap();
+        let path = lib.0.join("quiet.json");
+        save_json(&path, &["old"]).unwrap();
+        let previous = std::fs::read(&path).unwrap();
+        save_json(&path, &["new"]).unwrap();
+        std::fs::write(&path, b"external in-place edit").unwrap();
+        assert_eq!(std::fs::read(with_suffix(&path, ".bak")).unwrap(), previous);
+        assert!(std::fs::read_dir(&lib.0).unwrap().flatten().all(|e| !e.path().to_string_lossy().ends_with(".tmp")));
+    }
+
+    #[test]
+    fn unchanged_saves_preserve_body_metadata_and_history() {
+        let lib = Lib::new("unchanged-save");
+        let mut s = lib.open();
+        s.use_virtual_folders().unwrap();
+        let id = s.create_from(&doc("Original")).unwrap();
+        let d = s.load_for_edit(&id, false).unwrap();
+        let body = std::fs::metadata(s.path(&id)).unwrap().modified().unwrap();
+        let index = std::fs::read(s.index_file()).unwrap();
+        let modified = s.index[&id].modified;
+        for _ in 0..8 { assert_eq!(s.save(&id, &d).unwrap().modified, modified); }
+        assert_eq!(std::fs::metadata(s.path(&id)).unwrap().modified().unwrap(), body);
+        assert_eq!(std::fs::read(s.index_file()).unwrap(), index);
+        assert!(s.versions(&id).is_empty());
+    }
+
+    #[test]
+    fn parsed_cache_updates_one_document_and_ignores_old_generations() {
+        let lib = Lib::new("cache-delta");
+        let mut s = lib.open();
+        let a = s.create_from(&doc("First")).unwrap();
+        s.create_from(&doc("Second")).unwrap();
+        s.list();
+        let path = parsed_cache_path(&lib.0);
+        let base = std::fs::read(&path).unwrap();
+        let mut stale = None;
+        for i in 0..5 {
+            s.save(&a, &doc(&format!("Changed {i}"))).unwrap();
+            s.list();
+            assert_eq!(std::fs::read(&path).unwrap(), base);
+            assert_eq!(s.parsed_disk.deltas.len(), 1);
+            let delta = s.parsed_disk.deltas.iter().next().unwrap();
+            stale = Some((delta.clone(), std::fs::read(delta).unwrap()));
+        }
+        let opened = lib.open();
+        assert_eq!(opened.parsed[&a].2.title, "Changed 4");
+        s.parsed_disk.generation = None;
+        s.save_parsed().unwrap();
+        let (delta, bytes) = stale.unwrap();
+        std::fs::create_dir_all(delta.parent().unwrap()).unwrap();
+        std::fs::write(delta, bytes).unwrap();
+        let mut cache: ParsedCache = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        cache.docs.get_mut(&s.path(&a)).unwrap().title = "Compacted".into();
+        std::fs::write(path, serde_json::to_vec(&cache).unwrap()).unwrap();
+        assert_eq!(lib.open().parsed[&a].2.title, "Compacted", "a leftover delta must not override a new snapshot");
+    }
+
+    #[test]
     fn list_cache_survives_a_relaunch() {
         let lib = Lib::new("listcache-disk");
         let mut s = lib.open();
@@ -2596,6 +2722,28 @@ mod tests {
         c.version = "0.0.0-0".into();
         std::fs::write(&path, serde_json::to_vec(&c).unwrap()).unwrap();
         assert!(lib.open().parsed.is_empty());
+    }
+
+    #[test]
+    fn parsed_cache_compacts_at_limit_and_after_deletion() {
+        let lib = Lib::new("cache-compact");
+        let mut s = lib.open();
+        let ids: Vec<_> = (0..65).map(|i| s.create_from(&doc(&format!("Note {i}"))).unwrap()).collect();
+        s.list();
+        let first = s.parsed_disk.generation.clone();
+        for (i, id) in ids.iter().enumerate() {
+            s.save(id, &doc(&format!("Changed {i}"))).unwrap();
+            s.list();
+            if i < 64 { assert_eq!(s.parsed_disk.generation, first); }
+        }
+        assert_ne!(s.parsed_disk.generation, first);
+        assert!(s.parsed_disk.deltas.is_empty());
+        let mut reopened = lib.open();
+        assert_eq!(reopened.list().len(), 65);
+        for (i, id) in ids.iter().enumerate() { assert_eq!(reopened.parsed[id].2.title, format!("Changed {i}")); }
+        std::fs::remove_file(s.path(&ids[0])).unwrap();
+        assert_eq!(s.list().len(), 64);
+        assert!(!lib.open().parsed.contains_key(&ids[0]));
     }
 
     #[test]
@@ -2747,7 +2895,7 @@ mod tests {
         let index = std::fs::read(trash.join("index.json")).unwrap();
         std::fs::rename(&trash, lib.0.join(".quiet/trash-away")).unwrap();
         std::fs::write(&trash, b"").unwrap();
-        let mut s = Store { file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), flat: false, manifest: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), batch: Default::default() };
+        let mut s = Store { file_changes: vec![], root: lib.0.clone(), index: HashMap::new(), flat: false, manifest: None, trash: serde_json::from_slice(&index).unwrap(), warnings: vec![], loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: Default::default(), batch: Default::default() };
         assert_eq!(s.list_trash().len(), 1);
         assert_eq!(s.trash.len(), 1);
     }

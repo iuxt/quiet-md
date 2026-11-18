@@ -115,7 +115,7 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Checksum mismatch"):
             release.inventory(packages, self.version)
 
-    def test_publish_verifies_assets_before_making_prerelease_public(self):
+    def test_publish_verifies_assets_before_making_stable_release_public(self):
         packages = []
         for platform, pattern in release.PLATFORMS.items():
             path = self.root / pattern.format(version=self.version)
@@ -132,6 +132,8 @@ class ReleaseTests(unittest.TestCase):
                 commands.append(tuple(map(str, args)))
                 if args[:3] == ("git", "status", "--porcelain"):
                     return ""
+                if args[:3] == ("gh", "release", "view"):
+                    return json.dumps({"tagName": f"v{self.version}", "isDraft": False, "isPrerelease": False})
                 if capture:
                     return "release-commit"
                 if args[:3] == ("gh", "release", "download"):
@@ -152,19 +154,42 @@ class ReleaseTests(unittest.TestCase):
                 else:
                     release.publish(output, assets, self.version, notes, draft=draft)
             create = next(c for c in commands if c[:3] == ("gh", "release", "create"))
-            self.assertIn("--prerelease", create)
+            self.assertIn("--prerelease=false", create)
             self.assertIn("--latest=false", create)
+            self.assertEqual(create[create.index("--title") + 1], f"v{self.version}")
             body = create[create.index("--notes") + 1]
             self.assertIn("ad-hoc", body)
             self.assertIn(notes.read_text(), body)
             edits = [c for c in commands if c[:3] == ("gh", "release", "edit")]
             self.assertEqual(len(edits), int(not draft and not corrupt))
             if edits:
-                self.assertIn("--prerelease=true", edits[0])
-                self.assertIn("--latest=false", edits[0])
+                self.assertIn("--prerelease=false", edits[0])
+                self.assertIn("--latest=true", edits[0])
             self.assertEqual(public_download.call_count, len(assets) if not draft and not corrupt else 0)
         with self.assertRaises(FileExistsError):
             release.prepare(release.inventory(packages, self.version), output)
+
+    def test_publish_rejects_draft_or_prerelease_metadata(self):
+        output = self.root / "assets"
+        assets = release.prepare(release.inventory(self.packages, self.version), output)
+        for field, value in [("isDraft", True), ("isPrerelease", True), ("tagName", "v0.0.0")]:
+            state = {"tagName": f"v{self.version}", "isDraft": False, "isPrerelease": False, field: value}
+
+            def run(*args, capture=False):
+                if args[:3] == ("git", "status", "--porcelain"):
+                    return ""
+                if args[:3] == ("gh", "release", "view"):
+                    return json.dumps(state)
+                if capture:
+                    return "release-commit"
+                if args[:3] == ("gh", "release", "download"):
+                    shutil.copytree(output, Path(args[args.index("--dir") + 1]), dirs_exist_ok=True)
+
+            with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
+                    patch.object(release, "https_download") as download:
+                with self.assertRaisesRegex(ValueError, "public and not a prerelease"):
+                    release.publish(output, assets, self.version)
+            download.assert_not_called()
 
 
 if __name__ == "__main__":

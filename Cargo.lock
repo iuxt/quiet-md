@@ -1771,7 +1771,7 @@ dependencies = [
 
 [[package]]
 name = "fdl_core"
-version = "0.3.6"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -4466,7 +4466,7 @@ dependencies = [
 
 [[package]]
 name = "quiet_md"
-version = "0.3.6"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "async-lock",

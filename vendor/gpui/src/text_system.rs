@@ -344,6 +344,17 @@ impl WindowTextSystem {
         }
     }
 
+    /// quiet.md: Keep the platform layouts behind a reused block's shaped text
+    /// warm, so editing one line does not reshape every other hard line.
+    pub fn retain_shaped_text(&self, saved: &ShapedTextCache) { self.line_layout_cache.retain(saved); }
+
+    /// quiet.md: Shape a block and retain the platform cache entries it used.
+    pub fn shape_text_with_cache(&self, text: SharedString, font_size: Pixels, runs: &[TextRun], wrap_width: Option<Pixels>, line_clamp: Option<usize>) -> Result<(SmallVec<[WrappedLine; 1]>, ShapedTextCache)> {
+        let start = self.layout_index();
+        let lines = self.shape_text(text, font_size, runs, wrap_width, line_clamp)?;
+        Ok((lines, self.line_layout_cache.capture(start)))
+    }
+
     pub(crate) fn layout_index(&self) -> LineLayoutIndex {
         self.line_layout_cache.layout_index()
     }

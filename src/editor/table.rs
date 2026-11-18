@@ -33,6 +33,7 @@ pub struct TableUi {
     /// The pointer is on the toolbar's delete button: what would go turns red.
     pub danger: bool,
     pub geo: Geo,
+    measured: RefCell<HashMap<BlockId, Rc<RefCell<TableMeasure>>>>,
     /// Header rows pinned below the page top this frame, by table.
     pub stuck: Stuck,
     /// When a moving drag last scrolled the page (it runs while the pointer
@@ -475,14 +476,102 @@ impl Element for Sticky {
     }
 }
 
+#[derive(Default)]
+struct TableMeasure { key: u64, size: Size<Pixels>, rows: Vec<f32>, top: Pixels }
+
+type TableFactory = Rc<dyn Fn(Option<std::ops::Range<usize>>, &mut Window, &mut App) -> AnyElement>;
+struct VirtualTable { key: u64, measure: Rc<RefCell<TableMeasure>>, factory: TableFactory, geo: Geo, id: BlockId }
+impl IntoElement for VirtualTable { type Element = Self; fn into_element(self) -> Self { self } }
+impl Element for VirtualTable {
+    type RequestLayoutState = Rc<RefCell<Option<AnyElement>>>;
+    type PrepaintState = AnyElement;
+    fn id(&self) -> Option<ElementId> { None }
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> { None }
+    fn request_layout(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, window: &mut Window, cx: &mut App) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default(); style.size.width = relative(1.).into();
+        let m = self.measure.borrow();
+        if m.key == self.key && !m.rows.is_empty() && m.rows.iter().all(|&h| h > 0.) {
+            style.size.height = m.size.height.into();
+            return (window.request_layout(style, [], cx), Rc::new(RefCell::new(None)));
+        }
+        drop(m);
+        let mut m = self.measure.borrow_mut(); m.key = self.key; m.rows.clear(); drop(m);
+        let mut child = (self.factory)(None, window, cx);
+        let layout = child.request_layout(window, cx);
+        (window.request_layout(style, [layout], cx), Rc::new(RefCell::new(Some(child))))
+    }
+
+    fn prepaint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, bounds: Bounds<Pixels>, slot: &mut Self::RequestLayoutState, window: &mut Window, cx: &mut App) -> AnyElement {
+        let mut child = slot.borrow_mut().take().unwrap_or_else(|| {
+            let m = self.measure.borrow();
+            let mask = window.content_mask().bounds;
+            let top = f32::from(mask.top() - bounds.top() - m.top) - 100.;
+            let bottom = f32::from(mask.bottom() - bounds.top() - m.top) + 100.;
+            let mut y = 0.; let mut first = 0; let mut last = m.rows.len();
+            for (i, &height) in m.rows.iter().enumerate() {
+                if y + height < top { first = i + 1; }
+                if y > bottom { last = i; break }
+                y += height;
+            }
+            drop(m);
+            let mut child = (self.factory)(Some(first..last), window, cx);
+            child.layout_as_root(size(AvailableSpace::Definite(bounds.size.width), AvailableSpace::MinContent), window, cx);
+            child
+        });
+        child.prepaint_at(bounds.origin, window, cx);
+        let mut geo = self.geo.borrow_mut();
+        let mut measure = self.measure.borrow_mut();
+        measure.size = bounds.size;
+        if let Some(row) = geo.get(&(self.id, false, 0)) { measure.top = row.top() - bounds.top(); }
+        if let Some(row) = geo.iter().find(|((id, cols, _), _)| *id == self.id && !cols).map(|(_, b)| *b) {
+            let mut y = bounds.top() + measure.top;
+            for (i, &height) in measure.rows.iter().enumerate() {
+                geo.insert((self.id, false, i), Bounds::new(point(row.left(), y), size(row.size.width, px(height))));
+                y += px(height);
+            }
+        }
+        child
+    }
+    fn paint(&mut self, _: Option<&GlobalElementId>, _: Option<&InspectorElementId>, _: Bounds<Pixels>, _: &mut Self::RequestLayoutState, child: &mut AnyElement, window: &mut Window, cx: &mut App) { child.paint(window, cx); }
+}
+
 impl R<'_> {
     pub(super) fn table(&self, b: &Block, t: &Table, root: bool, cx: &mut Context<Editor>) -> AnyElement {
+        if t.rows.len() < 100 || self.ghost { return self.table_rows(b, t, root, None, false, cx) }
+        use std::hash::{Hash, Hasher};
+        let mut hash = rustc_hash::FxHasher::default();
+        (self.ed.core.generation, self.ed.img.generation, crate::themes::generation(), root).hash(&mut hash);
+        for w in self.ed.table_widths(b.id, t) { w.to_bits().hash(&mut hash); }
+        let key = hash.finish();
+        let measure = {
+            let mut all = self.ed.tables.measured.borrow_mut();
+            if all.len() > 64 { all.clear(); }
+            all.entry(b.id).or_default().clone()
+        };
+        let (editor, id, units, eqnos, selected, focused, cache, bounds) = (cx.entity(), b.id, self.units.clone(), self.eqnos.clone(), self.selected.clone(), self.focused, self.cache.clone(), self.bounds.clone());
+        let factory: TableFactory = Rc::new(move |range, _, cx| editor.update(cx, |ed, cx| {
+            let Some(b) = ed.core.block(id) else { return div().into_any_element() };
+            let BlockKind::Table(t) = &b.kind else { return div().into_any_element() };
+            let r = R { ed, units: units.clone(), eqnos: eqnos.clone(), focused, selected: selected.clone(), targets: RefCell::new(vec![]), flat: None, cache: cache.clone(), bounds: bounds.clone(), ghost: false };
+            r.table_rows(b, t, root, range, true, cx)
+        }));
+        let total: f32 = self.ed.table_widths(b.id, t).iter().sum();
+        let grid = div().relative().w(px(BAR + total)).child(VirtualTable { key, measure, factory, geo: self.ed.tables.geo.clone(), id });
+        self.table_scroll(id, root, grid)
+    }
+
+    fn table_rows(&self, b: &Block, t: &Table, root: bool, visible: Option<std::ops::Range<usize>>, grid_only: bool, cx: &mut Context<Editor>) -> AnyElement {
         let ed = self.ed;
         let id = b.id;
         let env = Env { depth: 0, cell: true, color: None, in_callout: false, root: false, column: false, quote: false, width: 0. };
         let widths = ed.table_widths(id, t);
         let n = widths.len();
         let nrows = t.rows.len();
+        let reveal = ed.reveal.map(|(request, _)| match request {
+            super::render::Reveal::Caret => ed.core.sel.head.block,
+            super::render::Reveal::Find(p) => p.block,
+            super::render::Reveal::Block(id) => id,
+        }).and_then(|block| ed.core.cell_of(block)).filter(|cell| cell.0 == id).map(|cell| cell.1);
         let total: f32 = widths.iter().sum();
         let sel = ed.core.cell_sel.filter(|s| s.table == id);
         let range = sel.map(|s| t.expand(s.raw(t)));
@@ -517,7 +606,14 @@ impl R<'_> {
             grid = grid.child(canvas(move |b, _, _| st.grid.set(b), |_, _, _, _| {}).absolute().top_0().left_0().size_full());
         }
 
+        if visible.is_some() && let Some(measure) = ed.tables.measured.borrow().get(&id) {
+            for (r, &height) in measure.borrow().rows.iter().enumerate() {
+                grid = grid.child(div().col_start(1).row_start(r as i16 + 2).h(px(height)).w(px(0.)));
+            }
+        }
         for (r, c, cell) in t.cells() {
+            if visible.as_ref().is_some_and(|v| r >= v.end || r + cell.rowspan.max(1) as usize <= v.start)
+                && !reveal.is_some_and(|target| (r..r + cell.rowspan.max(1) as usize).contains(&target)) && !(sticky && r == 0) { continue }
             let (rs, cs) = (cell.rowspan.max(1) as usize, cell.colspan.max(1) as usize);
             let w: f32 = widths[c..(c + cs).min(n)].iter().sum();
             let header = r < t.header_rows || (t.header_col && c == 0);
@@ -569,9 +665,15 @@ impl R<'_> {
 
         let geo = |cols: bool, i: usize| {
             let g = ed.tables.geo.clone();
+            let measure = ed.tables.measured.borrow().get(&id).cloned();
             canvas(
                 move |bounds, _, _| {
                     g.borrow_mut().insert((id, cols, i), bounds);
+                    if !cols && let Some(m) = &measure {
+                        let mut m = m.borrow_mut();
+                        m.rows.resize(nrows, 0.);
+                        m.rows[i] = f32::from(bounds.size.height);
+                    }
                 },
                 |_, _, _, _| {},
             )
@@ -666,6 +768,7 @@ impl R<'_> {
 
         // Row bar.
         for r in 0..nrows {
+            if visible.as_ref().is_some_and(|v| !v.contains(&r)) && reveal != Some(r) && !(sticky && r == 0) { continue }
             let on = bar_sel == Some(CellSelKind::Rows) && range.is_some_and(|g| (g.top..=g.bottom).contains(&r));
             let mut seg = div().id(("trow", key(2, r))).relative().col_start(1).row_start(r as i16 + 2).child(geo(false, r));
             if active {
@@ -760,6 +863,12 @@ impl R<'_> {
             grid = grid.child(if cols { line.left(d.off).top_0().bottom_0().w(px(2.)) } else { line.top(d.off).left_0().right_0().h(px(2.)) });
         }
 
+        if grid_only { return grid.into_any_element() }
+        self.table_scroll(id, root, grid)
+    }
+
+    fn table_scroll(&self, id: BlockId, root: bool, mut grid: Div) -> AnyElement {
+        let ed = self.ed;
         // The scroller's padding leaves room for the bars and pins (its clip
         // would cut them off); negative margins keep the block's bounds on
         // the table itself. A page-level table may also use the side margins

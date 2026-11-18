@@ -208,6 +208,53 @@ pub(crate) fn result_info(e: &Entry, q: &str, summary: Option<(String, Vec<Range
         .child(extra_line(e))
 }
 
+#[derive(Default)]
+pub(crate) struct SearchCache {
+    stamp: u64,
+    query: String,
+    revision: u64,
+    rendered: u64,
+    lower: std::collections::HashMap<String, (String, std::sync::Arc<str>, String, String)>,
+    hits: std::rc::Rc<Vec<usize>>,
+}
+
+impl SearchCache {
+    fn results(&mut self, entries: &[Entry], query: &str) -> std::rc::Rc<Vec<usize>> {
+        use std::hash::{Hash, Hasher};
+        let mut hash = rustc_hash::FxHasher::default();
+        for e in entries {
+            (&e.id, &e.title, std::sync::Arc::as_ptr(&e.body) as *const u8 as usize, e.meta.opened, e.meta.modified).hash(&mut hash);
+        }
+        let stamp = hash.finish();
+        if stamp == self.stamp && query == self.query { return self.hits.clone() }
+        let mut hits = vec![];
+        if query.is_empty() {
+            hits.extend(0..entries.len());
+            hits.sort_by_key(|&i| std::cmp::Reverse(entries[i].meta.opened.max(entries[i].meta.modified)));
+            hits.truncate(RECENT);
+        } else {
+            let mut body = vec![];
+            for (i, e) in entries.iter().enumerate() {
+                let lower = self.lower.entry(e.id.clone()).or_insert_with(|| (e.title.clone(), e.body.clone(), e.title.to_lowercase(), e.body.to_lowercase()));
+                if lower.0 != e.title || !std::sync::Arc::ptr_eq(&lower.1, &e.body) {
+                    *lower = (e.title.clone(), e.body.clone(), e.title.to_lowercase(), e.body.to_lowercase());
+                }
+                if lower.2.contains(query) { hits.push(i) } else if lower.3.contains(query) { body.push(i) }
+            }
+            hits.extend(body);
+            if stamp != self.stamp {
+                let ids: std::collections::HashSet<_> = entries.iter().map(|e| e.id.as_str()).collect();
+                self.lower.retain(|id, _| ids.contains(id.as_str()));
+            }
+        }
+        self.stamp = stamp;
+        self.query = query.to_string();
+        self.revision += 1;
+        self.hits = std::rc::Rc::new(hits);
+        self.hits.clone()
+    }
+}
+
 impl Workspace {
     pub(crate) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = true;
@@ -223,7 +270,7 @@ impl Workspace {
             s.set_text("", cx)
         });
         window.focus(&search.focus_handle(cx));
-        self.search_scroll.set_offset(point(px(0.), px(0.)));
+        self.search_scroll.scroll_to(ListOffset::default());
         cx.notify();
     }
 
@@ -232,6 +279,7 @@ impl Workspace {
             return;
         }
         self.search_open = false;
+        self.search_cache.borrow_mut().lower.clear();
         if let Some(ed) = &self.editor {
             ed.read(cx).focus(window);
         }
@@ -262,34 +310,21 @@ impl Workspace {
         };
         self.search_sel = Some(next);
         let title = usize::from(self.query(cx).is_empty());
-        self.search_scroll.scroll_to_item(next + title);
+        self.search_scroll.scroll_to_reveal_item(next + title);
         cx.notify();
     }
 
     /// Title hits first, then body hits; with no query, 最近浏览.
     pub fn search_results(&self, cx: &App) -> Vec<&Entry> {
+        let mut cache = self.search_cache.borrow_mut();
         let q = self.query(cx);
-        if q.is_empty() {
-            let mut recent: Vec<&Entry> = self.entries.iter().collect();
-            recent.sort_by_key(|e| std::cmp::Reverse(e.meta.opened.max(e.meta.modified)));
-            recent.truncate(RECENT);
-            return recent;
+        let hits = cache.results(&self.entries, &q);
+        if cache.rendered != cache.revision {
+            self.search_scroll.set_measure_all(hits.len() <= 100);
+            self.search_scroll.reset((hits.len() + usize::from(q.is_empty() && !hits.is_empty())).max(usize::from(!q.is_empty())));
+            cache.rendered = cache.revision;
         }
-        let mut hits: Vec<(u8, &Entry)> = self
-            .entries
-            .iter()
-            .filter_map(|e| {
-                if e.title.to_lowercase().contains(&q) {
-                    Some((0, e))
-                } else if e.body.to_lowercase().contains(&q) {
-                    Some((1, e))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        hits.sort_by_key(|(rank, _)| *rank);
-        hits.into_iter().map(|(_, e)| e).collect()
+        hits.iter().filter_map(|&i| self.entries.get(i)).collect()
     }
 
     fn search_row(&self, e: &Entry, ix: usize, q: &str, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -299,6 +334,7 @@ impl Workspace {
         div()
             .id(("search-hit", ix))
             .flex_none()
+            .w_full()
             .pt(px(8.))
             .pr(px(8.))
             .pb(px(8.))
@@ -325,7 +361,17 @@ impl Workspace {
         }
         let q = self.query(cx);
         let has_text = !self.search.read(cx).text.is_empty();
-        let results: Vec<Entry> = self.search_results(cx).into_iter().cloned().collect();
+        let (results, recent) = {
+            let mut cache = self.search_cache.borrow_mut();
+            let hits = cache.results(&self.entries, &q);
+            let recent = q.is_empty() && !hits.is_empty();
+            if cache.rendered != cache.revision {
+                self.search_scroll.set_measure_all(hits.len() <= 100);
+                self.search_scroll.reset((hits.len() + usize::from(recent)).max(usize::from(!q.is_empty())));
+                cache.rendered = cache.revision;
+            }
+            (hits, recent)
+        };
         let vh = f32::from(window.viewport_size().height);
 
         let input = div()
@@ -352,53 +398,27 @@ impl Workspace {
                         w.search.update(cx, |s, cx| s.set_text("", cx));
                         window.focus(&w.search.focus_handle(cx));
                         w.search_sel = Some(0);
-                        w.search_scroll.set_offset(point(px(0.), px(0.)));
+                        w.search_scroll.scroll_to(ListOffset::default());
                         cx.notify();
                     },
                 )))
             })
             ;
 
-        let mut list = div()
-            .id("search-results")
-            .flex_1()
-            .min_h_0()
-            .pt(px(4.))
-            .px(px(6.))
-            .flex()
-            .flex_col()
-            .overflow_y_scroll()
-            .track_scroll(&self.search_scroll);
-        if q.is_empty() && !results.is_empty() {
-            list = list.child(
-                div()
-                    .flex_none()
-                    .h(px(36.))
-                    .pt(px(2.))
-                    .px(px(12.))
-                    .flex()
-                    .items_center()
-                    .text_size(px(12.))
-                    .line_height(px(18.))
-                    .text_color(Theme::text_caption())
-                    .child(crate::settings::tr("最近浏览", "Recently viewed")),
-            );
-        }
-        if results.is_empty() && !q.is_empty() {
-            list = list.child(
-                div()
-                    .flex_none()
-                    .m(px(8.))
-                    .px(px(10.))
-                    .text_size(px(12.))
-                    .line_height(px(18.))
-                    .text_color(Theme::text_caption())
-                    .child(crate::settings::text("没有找到匹配的结果，尝试其他关键词进行搜索")),
-            );
-        }
-        for (i, e) in results.iter().enumerate() {
-            list = list.child(self.search_row(e, i, &q, window, cx));
-        }
+        let this = cx.entity();
+        let list = gpui::list(self.search_scroll.clone(), move |i, window, cx| this.update(cx, |w, cx| {
+            if recent && i == 0 {
+                return div().flex_none().h(px(36.)).pt(px(2.)).px(px(12.)).flex().items_center()
+                    .text_size(px(12.)).line_height(px(18.)).text_color(Theme::text_caption())
+                    .child(crate::settings::tr("最近浏览", "Recently viewed")).into_any_element();
+            }
+            let row = i - usize::from(recent);
+            match results.get(row).and_then(|&index| w.entries.get(index)) {
+                Some(e) => w.search_row(e, row, &q, window, cx).into_any_element(),
+                None => div().flex_none().py(px(8.)).px(px(18.)).text_size(px(12.)).line_height(px(18.))
+                    .text_color(Theme::text_caption()).child(crate::settings::text("没有找到匹配的结果，尝试其他关键词进行搜索")).into_any_element(),
+            }
+        })).flex_1().min_h_0().pt(px(4.));
 
         let footer = div()
             .flex_none()
@@ -433,7 +453,9 @@ impl Workspace {
             .child(input)
             .child(div().flex_none().h(px(1.)).bg(Theme::line_divider()))
             // The thumb sits in the list's right padding, over no row.
-            .child(div().flex_1().min_h_0().relative().flex().flex_col().child(list).child(self.home.search_scrollbar.render(&self.search_scroll)))
+            .child(div().flex_1().min_h_0().relative().flex().flex_col()
+                .child(div().flex_1().min_h_0().px(px(6.)).flex().flex_col().child(list))
+                .child(self.home.search_scrollbar.render_list(&self.search_scroll)))
             .child(footer);
 
         Some(
@@ -459,6 +481,26 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::snippet;
+
+    #[test]
+    fn cached_search_keeps_ranking_and_tracks_edits_and_reordering() {
+        use crate::store::{Entry, Meta};
+        let entry = |id: &str, title: &str, body: &str| Entry { id: id.into(), title: title.into(), body: body.into(),
+            meta: Meta::default(), icon: None, reminders: vec![], links: vec![] };
+        let mut entries = vec![entry("a", "First", "A NEEDLE in the body"), entry("b", "Needle title", "Other"), entry("c", "Third", "Other")];
+        let mut cache = super::SearchCache::default();
+        let hits = cache.results(&entries, "needle");
+        assert_eq!(*hits, [1, 0]);
+        assert!(std::rc::Rc::ptr_eq(&hits, &cache.results(&entries, "needle")));
+        entries[0].body = "Removed".into();
+        assert_eq!(*cache.results(&entries, "needle"), [1]);
+        entries[2].title = "NEEDLE changed".into();
+        entries.reverse();
+        assert_eq!(*cache.results(&entries, "needle"), [0, 1]);
+        entries.remove(1);
+        assert_eq!(*cache.results(&entries, "needle"), [0]);
+        assert!(!cache.lower.contains_key("b"));
+    }
 
     #[test]
     fn snippet_context() {
