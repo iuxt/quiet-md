@@ -396,13 +396,15 @@ impl Theme {
     pub fn danger() -> Hsla { c(craft::R500) }
 
     // ---- Quiet.md shell
-    /// A light gray tint separates the sidebar from the white page while keeping wallpaper colors quiet.
-    /// The document pane paints its own opaque white surface.
+    /// The window tint keeps the native glass readable over both light and dark backdrops.
+    /// The document pane paints its own opaque surface.
     pub fn window() -> Hsla {
         // 外观 › 窗口背景: an opaque window keeps a moving desktop from showing
         // through the sidebar (which some people find distracting).
         if crate::settings::prefs().opaque_window || fullscreen() { return ca(craft::WINDOW, 1.) }
-        if crate::native_header::supported() { ca(craft::WINDOW, 0.) } else if crate::theme::glass() { ca(craft::WINDOW, 0.84) } else { ca(craft::WINDOW, 1.) }
+        if crate::native_header::supported() { ca(craft::CHROME, 0.76) }
+        else if crate::theme::glass() { ca(craft::WINDOW, 0.84) }
+        else { c(craft::WINDOW) }
     }
 
     /// Sidebar row label: text at 85%.
