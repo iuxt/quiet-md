@@ -439,6 +439,7 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     assert_eq!(added.title, "Preview note");
     assert!(added.lines.iter().all(|l| l.kind == Kind::Added));
     assert!(added.source.is_some());
+    assert!(added.formatted.as_ref().unwrap().rows.iter().all(|(k, _)| *k == Kind::Added));
     assert!(repo.change_preview("../outside").is_err());
     std::fs::write(lib.0.join("unmanaged.txt"), "private").unwrap();
     assert!(repo.change_preview("unmanaged.txt").is_err());
@@ -448,6 +449,11 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     let formatting = repo.change_preview(&path).unwrap();
     assert_eq!(counts(&formatting.lines), (0, 0));
     assert_ne!(counts(formatting.source.as_ref().unwrap()), (0, 0));
+    assert!(formatting.formatted.as_ref().unwrap().rows.iter().all(|(k, _)| *k == Kind::Same));
+    std::fs::write(lib.0.join(&path), original.replace("Before", "<b>Before</b>")).unwrap();
+    let styled = repo.change_preview(&path).unwrap();
+    assert_eq!(counts(&styled.lines), (0, 0));
+    assert!(styled.formatted.as_ref().unwrap().rows.iter().any(|(k, b)| *k == Kind::Added && b.text.runs[0].marks.bold));
     let body = original.replace("Before", "After");
     std::fs::write(lib.0.join(&path), body).unwrap();
     let changed = repo.change_preview(&path).unwrap();

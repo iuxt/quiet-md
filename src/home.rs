@@ -102,30 +102,7 @@ fn thumb_blocks(blocks: &[crate::model::Block], budget: &mut usize, depth: usize
             kind => kind.clone(),
         };
         let text = b.text.slice(0..end);
-        let mut preview = crate::model::RichText::default();
-        for (range, marks) in text.spans() {
-            let mut marks = marks.clone();
-            if marks.inline.as_ref().is_some_and(|i| i.equation().is_some()) {
-                preview.push(&text.text[range], marks);
-                continue;
-            }
-            let label = marks.inline.as_ref().map(|inline| match &inline.kind {
-                crate::model::InlineKind::Equation(_) => unreachable!(),
-                crate::model::InlineKind::File(file) => file.name.clone(),
-                crate::model::InlineKind::Button(button) => button.text.clone(),
-                crate::model::InlineKind::Reminder(reminder) => crate::editor::reminder::reminder_label(reminder, " "),
-                crate::model::InlineKind::DocLink(doc) => display_title(&doc.title).to_string(),
-                crate::model::InlineKind::Other { tag } => tag.clone(),
-            }).map(|label| label.chars().take(160).collect::<String>());
-            if let Some(inline) = &marks.inline { match &inline.kind {
-                crate::model::InlineKind::Equation(_) => {},
-                crate::model::InlineKind::Button(_) => marks.bold = true,
-                crate::model::InlineKind::DocLink(_) | crate::model::InlineKind::File(_) => marks.link = Some(String::new()),
-                _ => {},
-            } }
-            marks.inline = None;
-            preview.push(&text.text[range].replace('\u{fffc}', label.as_deref().unwrap_or("")), marks);
-        }
+        let preview = preview_text(&text);
         let mut copy = crate::model::Block::new(kind, preview);
         if let Some(n) = numbers.get(&b.id) { eqnos.insert(copy.id, *n); }
         if let BlockKind::Ordered { seq } = &mut copy.kind { sequence = seq.unwrap_or(sequence + 1); *seq = Some(sequence); } else { sequence = 0; }
@@ -136,6 +113,34 @@ fn thumb_blocks(blocks: &[crate::model::Block], budget: &mut usize, depth: usize
     out
 }
 
+fn preview_text(text: &crate::model::RichText) -> crate::model::RichText {
+    let mut preview = crate::model::RichText::default();
+    for (range, marks) in text.spans() {
+        let mut marks = marks.clone();
+        if marks.inline.as_ref().is_some_and(|i| i.equation().is_some()) {
+            preview.push(&text.text[range], marks);
+            continue;
+        }
+        let label = marks.inline.as_ref().map(|inline| match &inline.kind {
+            crate::model::InlineKind::Equation(_) => unreachable!(),
+            crate::model::InlineKind::File(file) => file.name.clone(),
+            crate::model::InlineKind::Button(button) => button.text.clone(),
+            crate::model::InlineKind::Reminder(reminder) => crate::editor::reminder::reminder_label(reminder, " "),
+            crate::model::InlineKind::DocLink(doc) => display_title(&doc.title).to_string(),
+            crate::model::InlineKind::Other { tag } => tag.clone(),
+        }).map(|label| label.chars().take(160).collect::<String>());
+        if let Some(inline) = &marks.inline { match &inline.kind {
+            crate::model::InlineKind::Equation(_) => {},
+            crate::model::InlineKind::Button(_) => marks.bold = true,
+            crate::model::InlineKind::DocLink(_) | crate::model::InlineKind::File(_) => marks.link = Some(String::new()),
+            _ => {},
+        } }
+        marks.inline = None;
+        preview.push(&text.text[range].replace('\u{fffc}', label.as_deref().unwrap_or("")), marks);
+    }
+    preview
+}
+
 /// Home cards decode pictures at this share of the size they are drawn:
 /// a card is small and glanced at, so a softer picture costs nothing.
 const THUMB: f32 = 0.75;
@@ -144,11 +149,16 @@ const THUMB: f32 = 0.75;
 fn thumb_long(w: f32, ratio: f32) -> f32 { (if ratio >= 1. { w } else { w / ratio }) * THUMB }
 
 fn thumb_block(b: &crate::model::Block, depth: usize, inherited: Hsla, quote: bool, eqnos: &EquationNumbers) -> AnyElement {
-    thumb_block_in(b, depth, inherited, quote, false, 0, eqnos)
+    thumb_block_in(b, depth, inherited, quote, (false, 0), eqnos, bs::SCALE)
 }
 
-fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote: bool, cell: bool, list_depth: usize, eqnos: &EquationNumbers) -> AnyElement {
-    let s = bs::SCALE;
+/// Inert document rendering for the Git panel, at the normal reading size.
+pub(crate) fn formatted_block(b: &crate::model::Block, eqnos: &EquationNumbers) -> AnyElement {
+    thumb_block_in(b, 0, Theme::text(), false, (false, 0), eqnos, 1.)
+}
+
+fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote: bool, list: (bool, usize), eqnos: &EquationNumbers, s: f32) -> AnyElement {
+    let (cell, list_depth) = list;
     let metrics = bs::typography(&b.kind);
     let (font_size, line_height) = if cell && !matches!(b.kind, BlockKind::Heading { .. } | BlockKind::Code { .. }) { (14., 22.) } else { (metrics.size, metrics.line_height) };
     let done = matches!(b.kind, BlockKind::Todo { done: true });
@@ -180,9 +190,9 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
         BlockKind::Callout { emoji, bg, border, text_color } => {
             let tc = text_color.as_ref().and_then(|c| theme::text_color(&c.0)).map(bs::display_ink).unwrap_or(color);
             let mut body = div().flex_1().min_w_0().flex().flex_col();
-            if depth < 8 { for (i, child) in b.children.iter().enumerate() {
+            if s == 1. || depth < 8 { for (i, child) in b.children.iter().enumerate() {
                 let gap = if i == 0 { 0. } else { bs::gap(&b.children[i - 1].kind).1.max(bs::gap(&child.kind).0) };
-                body = body.child(div().mt(px(gap * s)).child(thumb_block_in(child, depth + 1, tc, quote, cell, list_depth, eqnos)));
+                body = body.child(div().mt(px(gap * s)).child(thumb_block_in(child, depth + 1, tc, quote, (cell, list_depth), eqnos, s)));
             } }
             let first_line = b.children.first().map(|b| bs::typography(&b.kind).line_height).unwrap_or(theme::BODY_LINE);
             return node.relative().p(px(bs::INSET * s)).rounded(px(bs::CALLOUT_RADIUS * s)).border(px(s)).border_color(bs::border(border.as_ref().map(|c| c.0.as_str()))).bg(bs::fill(bg.as_ref().map(|c| c.0.as_str())))
@@ -209,14 +219,16 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
                 }).collect::<Vec<_>>();
                 body = body.child(div().flex().items_start()
                     .child(div().w(px(bs::CODE_GUTTER * s)).mr(px(bs::CODE_GAP * s)).flex_none().text_right().text_color(Theme::text_caption()).child((i + 1).to_string()))
-                    .child(div().min_w_0().flex_1().overflow_hidden().when(!*wrap, |d| d.whitespace_nowrap()).child(if line.is_empty() { StyledText::new(" ") } else { StyledText::new(line.to_string()).with_runs(runs) })));
+                    .child(div().min_w_0().flex_1().when(s != 1., |d| d.overflow_hidden()).when(!*wrap, |d| d.whitespace_nowrap()).child(if line.is_empty() { StyledText::new(" ") } else { StyledText::new(line.to_string()).with_runs(runs) })));
                 off = end + 1;
             }
-            return node.child(body).into_any_element();
+            return node.child(if s == 1. {
+                div().id(("diff-code", b.id.0)).w_full().overflow_x_scroll().child(body).into_any_element()
+            } else { body.into_any_element() }).into_any_element();
         }
         BlockKind::Table(table) => {
             let widths: Vec<f32> = table.col_widths.iter().map(|w| w * s).collect();
-            let mut table_el = div().grid().grid_col_widths(widths.clone()).w(px(widths.iter().sum())).max_w_full();
+            let mut table_el = div().grid().grid_col_widths(widths.clone()).w(px(widths.iter().sum())).when(s != 1., |d| d.max_w_full());
             for (r, c, value) in table.cells() {
                 let (rs, cs) = (value.rowspan as usize, value.colspan as usize);
                 let header = r < table.header_rows || (table.header_col && c == 0);
@@ -226,11 +238,13 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
                     .map(|d| match value.valign.as_deref() { Some("middle") => d.justify_center(), Some("bottom") => d.justify_end(), _ => d });
                 for (i, child) in value.blocks.iter().enumerate() {
                     let gap = if i == 0 { 0. } else { bs::gap(&value.blocks[i - 1].kind).1.min(6.).max(bs::gap(&child.kind).0.min(8.)) };
-                    col = col.child(div().mt(px(gap * s)).child(thumb_block_in(child, depth + 1, color, quote, true, 0, eqnos)));
+                    col = col.child(div().mt(px(gap * s)).child(thumb_block_in(child, depth + 1, color, quote, (true, 0), eqnos, s)));
                 }
                 table_el = table_el.child(col);
             }
-            return node.child(table_el).into_any_element();
+            return node.child(if s == 1. {
+                div().id(("diff-table", b.id.0)).w_full().overflow_x_scroll().child(table_el).into_any_element()
+            } else { table_el.into_any_element() }).into_any_element();
         }
         BlockKind::File(f) => return node.p(px(12. * s)).rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(bs::code_surface()).flex_row().items_center().gap(px(12. * s))
             .child(icon("file-text", 30. * s, Theme::icon())).child(div().flex_1().min_w_0().text_size(px(15. * s)).font_weight(FontWeight::MEDIUM).child(f.name.clone())).into_any_element(),
@@ -255,7 +269,8 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
         _ => {}
     }
     if b.kind.has_text() {
-        let runs = b.text.runs.iter().map(|r| {
+        let text = preview_text(&b.text);
+        let runs = text.runs.iter().map(|r| {
             let mut f = font(if r.marks.code { theme::MONO_FONT } else { theme::UI_FONT });
             f.weight = if r.marks.bold { FontWeight::BOLD } else { bs::weight(&b.kind) };
             if r.marks.italic || quote { f.style = FontStyle::Italic; }
@@ -277,18 +292,18 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
             BlockKind::Todo { done } => Some(div().w(px(24. * s)).h(px(line_height * s)).flex_none().flex().items_center().child(div().size(px(16. * s)).rounded(px(4. * s)).border(px(s)).border_color(if done { Theme::primary_500() } else { Theme::text_disabled() }).bg(if done { Theme::primary_500() } else { Theme::bg_body() }).flex().items_center().justify_center().when(done, |d| d.child(icon("todo-check", 12. * s, gpui::white())))).into_any_element()),
             _ => None,
         };
-        let text = if b.text.runs.iter().any(|r| r.marks.inline.as_ref().is_some_and(|i| i.equation().is_some())) {
-            text_preview::PreviewText { text: b.text.clone(), runs, size: font_size * s, line_height: line_height * s, align: b.align, eq_counter: eqnos.get(&b.id).copied().unwrap_or(0) }.into_any_element()
-        } else { StyledText::new(b.text.text.clone()).with_runs(runs).into_any_element() };
+        let text = if text.runs.iter().any(|r| r.marks.inline.as_ref().is_some_and(|i| i.equation().is_some())) {
+            text_preview::PreviewText { text: text.clone(), runs, size: font_size * s, line_height: line_height * s, align: b.align, scale: s, eq_counter: eqnos.get(&b.id).copied().unwrap_or(0) }.into_any_element()
+        } else { StyledText::new(text.text.clone()).with_runs(runs).into_any_element() };
         node = node.child(div().flex().items_start().children(marker).child(div().min_w_0().flex_1().map(|d| match b.align { crate::model::Align::Center => d.text_center(), crate::model::Align::Right => d.text_right(), _ => d }).child(text)));
     }
-    if depth < 8 { for (i, child) in b.children.iter().enumerate() {
+    if s == 1. || depth < 8 { for (i, child) in b.children.iter().enumerate() {
         let nested = b.kind.nests();
         let gap = if i == 0 { if nested { 8. } else { 0. } } else { bs::gap(&b.children[i - 1].kind).1.max(bs::gap(&child.kind).0) };
         node = node.child(div().min_w_0().when(!matches!(b.kind, BlockKind::Grid), |d| d.mt(px(gap * s)))
             .when(nested, |d| d.pl(px(25. * s)))
             .when(matches!(b.kind, BlockKind::Grid), |d| d.flex().w_0().map(|mut d| { d.style().flex_grow = Some(match child.kind { BlockKind::Column { ratio } => ratio, _ => 1. }); d }))
-            .child(thumb_block_in(child, depth + 1, color, quote || matches!(b.kind, BlockKind::Quote), cell, list_depth + usize::from(nested), eqnos)));
+            .child(thumb_block_in(child, depth + 1, color, quote || matches!(b.kind, BlockKind::Quote), (cell, list_depth + usize::from(nested)), eqnos, s)));
     } }
     node.into_any_element()
 }

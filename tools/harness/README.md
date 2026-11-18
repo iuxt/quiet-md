@@ -42,6 +42,10 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 `python3 tools/harness/git_changes.py` 在临时 Git 库中验证文件列表、正文 / 源码对比、Markdown / JSON / 附件、只读保护、窄窗口、整库与单文件暂存提交，以及确认后恢复已跟踪文件、移除新增文章和对应清单。
 
+`python3 tools/harness/git_formatting.py` 验证 XML 富文本对比、纯样式变化、嵌套列表、表格、代码与公式，以及源码切换、窄窗口和只读保护。
+
+`python3 tools/harness/git_diff_scroll.py` 验证长文件对比的滚动、长行换行、正文 / 源码切换、窗口缩放和只读保护，并输出滚动耗时；设置 `GIT_DIFF_BASELINE=<旧版 devtools 二进制>` 可逐像素对比优化前后的截图和耗时（需要 Pillow）。
+
 `python3 tools/harness/trash.py` 在临时文档库中验证回收站嵌套文件夹浏览、XML / Markdown 只读打开、本地历史预览、历史另存副本及恢复后编辑，并核对查看期间正文与历史未被改写。
 
 `python3 tools/harness/document_safety.py` 验证多窗口历史预览保留最新编辑、导入成功后打开正文、删除后打开下一篇，以及主页和侧栏混合拖入多个文件夹与文件；只使用临时文档库。

@@ -1,6 +1,7 @@
 //! Line-level diff between two document versions. DocxXML is turned into
 //! plain text first, so the view compares what the reader sees rather than
-//! markup; Markdown files are compared as written. No diff crate: the LCS
+//! markup; Git also offers formatted block comparisons below. Markdown files
+//! are compared as written. No diff crate: the LCS
 //! table is bounded, which keeps a million-character note from allocating
 //! hundreds of megabytes during a preview.
 
@@ -35,6 +36,10 @@ fn split(text: &str, markdown: bool) -> Vec<String> {
 pub fn diff(old: &str, new: &str, markdown: bool) -> Vec<Line> {
     let a = split(old, markdown);
     let b = split(new, markdown);
+    sequence(&a, &b).into_iter().map(|(kind, i)| Line { kind, text: if kind == Kind::Removed { a[i].clone() } else { b[i].clone() } }).collect()
+}
+
+fn sequence<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(Kind, usize)> {
     let (n, m) = (a.len(), b.len());
     let w = m + 1;
     let mut dp = vec![0u32; (n + 1) * w];
@@ -51,19 +56,60 @@ pub fn diff(old: &str, new: &str, markdown: bool) -> Vec<Line> {
     let (mut i, mut j) = (0, 0);
     while i < n && j < m {
         if a[i] == b[j] {
-            out.push(Line { kind: Kind::Same, text: a[i].clone() });
+            out.push((Kind::Same, j));
             i += 1; j += 1;
         } else if dp[(i + 1) * w + j] >= dp[i * w + j + 1] {
-            out.push(Line { kind: Kind::Removed, text: a[i].clone() });
+            out.push((Kind::Removed, i));
             i += 1;
         } else {
-            out.push(Line { kind: Kind::Added, text: b[j].clone() });
+            out.push((Kind::Added, j));
             j += 1;
         }
     }
-    while i < n { out.push(Line { kind: Kind::Removed, text: a[i].clone() }); i += 1 }
-    while j < m { out.push(Line { kind: Kind::Added, text: b[j].clone() }); j += 1 }
+    while i < n { out.push((Kind::Removed, i)); i += 1 }
+    while j < m { out.push((Kind::Added, j)); j += 1 }
     out
+}
+
+/// Read-only block comparisons retain styles and containers, including changes
+/// that leave the plain text identical. Canonical XML ignores per-parse ids.
+pub struct FormattedDiff {
+    pub rows: Vec<(Kind, crate::model::Block)>,
+    pub truncated: bool,
+}
+
+pub fn formatted(old: &str, new: &str) -> Option<FormattedDiff> {
+    use crate::{docxml, model::{Block, BlockKind, Document}};
+    let blocks = |xml: &str| -> Option<Vec<Block>> {
+        if xml.is_empty() { return Some(vec![]) }
+        let doc = docxml::parse(xml).ok()?;
+        let mut blocks = doc.blocks;
+        fn number_lists(blocks: &mut [Block]) {
+            let mut number = 0;
+            for block in blocks {
+                if let BlockKind::Ordered { seq } = &mut block.kind {
+                    number = seq.unwrap_or(number + 1); *seq = Some(number);
+                } else { number = 0; }
+                number_lists(&mut block.children);
+                if let BlockKind::Table(table) = &mut block.kind {
+                    for row in &mut table.rows { for cell in row { number_lists(&mut cell.blocks); } }
+                }
+            }
+        }
+        number_lists(&mut blocks);
+        if !doc.title.is_empty() { blocks.insert(0, Block::new(BlockKind::Heading { level: 1, seq_auto: false }, doc.title)); }
+        Some(blocks)
+    };
+    let mut a = blocks(old)?; let mut b = blocks(new)?;
+    let truncated = a.len() > MAX_LINES || b.len() > MAX_LINES;
+    a.truncate(MAX_LINES); b.truncate(MAX_LINES);
+    let keys = |blocks: &[Block]| blocks.iter().map(|block| {
+        docxml::serialize(&Document { blocks: vec![block.clone()], ..Document::default() })
+    }).collect::<Vec<_>>();
+    let rows = sequence(&keys(&a), &keys(&b)).into_iter().map(|(kind, i)| {
+        (kind, if kind == Kind::Removed { a[i].clone() } else { b[i].clone() })
+    }).collect();
+    Some(FormattedDiff { rows, truncated })
 }
 
 pub fn counts(lines: &[Line]) -> (usize, usize) {
@@ -103,6 +149,61 @@ mod tests {
         assert_eq!(counts(&d), (1, 1));
         assert!(d.iter().any(|l| l.text == "first" && l.kind == Kind::Removed));
         assert!(d.iter().any(|l| l.text == "second" && l.kind == Kind::Added));
+    }
+
+    #[test]
+    fn formatted_diff_detects_styles_without_text_changes() {
+        let a = "<p>same text</p><p>unchanged</p>";
+        let b = "<p><b>same text</b></p><p>unchanged</p>";
+        assert_eq!(counts(&diff(a, b, false)), (0, 0));
+        let rich = formatted(a, b).unwrap();
+        assert_eq!(rich.rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![Kind::Removed, Kind::Added, Kind::Same]);
+        assert!(!rich.rows[0].1.text.runs[0].marks.bold);
+        assert!(rich.rows[1].1.text.runs[0].marks.bold);
+        assert!(!rich.truncated);
+    }
+
+    #[test]
+    fn formatted_diff_preserves_structure_and_ignores_parse_ids() {
+        use crate::model::BlockKind;
+        let xml = "<title>Title</title><h2>Heading</h2><blockquote><p>Quote</p></blockquote><ul><li>Item</li></ul>";
+        let rich = formatted(xml, xml).unwrap();
+        assert!(rich.rows.iter().all(|(k, _)| *k == Kind::Same));
+        assert!(matches!(rich.rows[1].1.kind, BlockKind::Heading { level: 2, .. }));
+        assert!(matches!(rich.rows[2].1.kind, BlockKind::Quote));
+        assert_eq!(rich.rows[2].1.children[0].text.text, "Quote");
+        let added = formatted("", xml).unwrap();
+        assert!(added.rows.iter().all(|(k, _)| *k == Kind::Added));
+        let removed = formatted(xml, "").unwrap();
+        assert!(removed.rows.iter().all(|(k, _)| *k == Kind::Removed));
+        assert!(formatted("<p>broken", xml).is_none());
+        assert!(formatted("", "").unwrap().rows.is_empty());
+    }
+
+    #[test]
+    fn formatted_diff_keeps_ordered_list_numbers_in_each_version() {
+        use crate::model::BlockKind;
+        let rich = formatted("<ol><li>One</li><li>Two</li></ol>", "<ol><li>One</li><li>New</li><li>Two</li></ol>").unwrap();
+        let numbers = rich.rows.iter().filter(|(k, _)| *k != Kind::Removed).map(|(_, b)| match b.kind {
+            BlockKind::Ordered { seq } => seq.unwrap(), _ => panic!("ordered list expected"),
+        }).collect::<Vec<_>>();
+        assert_eq!(numbers, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn formatted_diff_detects_heading_container_and_table_style_changes() {
+        for (a, b) in [
+            ("<p>Heading</p>", "<h1>Heading</h1>"),
+            ("<blockquote><p>Quote</p></blockquote>", "<blockquote><p><i>Quote</i></p></blockquote>"),
+            ("<table><tr><td><p>Cell</p></td></tr></table>", "<table><tr><td><p><b>Cell</b></p></td></tr></table>"),
+        ] {
+            let rich = formatted(a, b).unwrap();
+            assert_eq!(rich.rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![Kind::Removed, Kind::Added]);
+        }
+        let many = "<p>line</p>".repeat(MAX_LINES + 1);
+        let rich = formatted("", &many).unwrap();
+        assert!(rich.truncated);
+        assert_eq!(rich.rows.len(), MAX_LINES);
     }
 
     #[test]

@@ -11,7 +11,7 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 文档库采用 FORMAT 7：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
 
-Git 是可选功能。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。旧 FORMAT 5 的路径索引 Git 历史仍可读取。配置界面在 `src/git.rs`，变更列表与只读行级对比在 `src/git_panel.rs`，仓库与网络操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
+Git 是可选功能。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。旧 FORMAT 5 的路径索引 Git 历史仍可读取。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行），仓库与网络操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
 
 ```
 main.rs ─ 窗口
@@ -52,7 +52,7 @@ main.rs ─ 窗口
 
 回收站文件夹按原父级逐层浏览，文章通过 `Store::load_trash` 只读加载，不建立编辑冲突基线。`trash_document` 在应用层阻止保存、同步和切换编辑模式，存储层也拒绝保存回收站正文。历史抽屉复用普通文章的实现，本地快照按文章状态从 `history/` 或 `history-trash/` 读取，Git 历史仍按 UUID 查询；恢复文章后重新打开可编辑正文。
 
-差异分两层：`changes.rs` 按块做 LCS，回答「这一版哪些块是新加的、哪些被改写」，用来给正文上色；`diff.rs` 按行做 LCS，只用来算抽屉每行的 `+N 行 −M 行`。规则见 FORMAT.md。
+差异分两层：`changes.rs` 按块做 LCS，回答「这一版哪些块是新加的、哪些被改写」，用来给正文上色；`diff.rs` 按行做 LCS，计算抽屉每行的 `+N 行 −M 行` 和 Git 文本 / 源码对比；Git XML 正文另用规范化 XML 做块级 LCS，保留格式并识别纯样式变更，复用主页的无交互 block 渲染器以正常字号显示。规则见 FORMAT.md。
 
 Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机编辑后检查：
 

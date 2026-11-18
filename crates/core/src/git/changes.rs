@@ -6,6 +6,7 @@ pub struct ChangePreview {
     pub title: String,
     pub lines: Vec<Line>,
     pub source: Option<Vec<Line>>,
+    pub formatted: Option<diff::FormattedDiff>,
     pub binary: bool,
     pub truncated: bool,
     pub source_truncated: bool,
@@ -35,13 +36,13 @@ impl LibraryRepo {
         // LFS blobs are text pointers, but assets are never shown as text documents.
         let binary = path.starts_with(".assets/") || old.contains(&0) || new.contains(&0)
             || std::str::from_utf8(&old).is_err() || std::str::from_utf8(&new).is_err();
-        if binary { return Ok(ChangePreview { title, lines: vec![], source: None, binary, truncated: false, source_truncated: false }); }
+        if binary { return Ok(ChangePreview { title, lines: vec![], source: None, formatted: None, binary, truncated: false, source_truncated: false }); }
         let old = std::str::from_utf8(&old)?; let new = std::str::from_utf8(&new)?;
         let xml = path.ends_with(".xml");
         let old_text = diff::readable(old, !xml); let new_text = diff::readable(new, !xml);
         let exceeds = |a: &str, b: &str| a.lines().count() > diff::MAX_LINES || b.lines().count() > diff::MAX_LINES;
         Ok(ChangePreview { title, lines: diff::diff(&old_text, &new_text, true),
-            source: xml.then(|| diff::diff(old, new, true)), binary,
+            source: xml.then(|| diff::diff(old, new, true)), formatted: if xml { diff::formatted(old, new) } else { None }, binary,
             truncated: exceeds(&old_text, &new_text), source_truncated: xml && exceeds(old, new) })
     }
 }

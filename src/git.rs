@@ -1,6 +1,6 @@
 //! Library Git settings. All repository and network work runs off the UI thread.
 use crate::{app::{Confirm, Workspace}, editor::core::Core, input::TextField, settings::tr, theme::{self, Theme}, ui};
-use fdl_core::{git::{Auth, Config, LibraryRepo, Status, ChangePreview}, store::Store};
+use fdl_core::{git::{Auth, Config, LibraryRepo, Status}, store::Store};
 use gpui::{prelude::FluentBuilder, *};
 
 pub(crate) struct GitPanel {
@@ -8,7 +8,7 @@ pub(crate) struct GitPanel {
     ssh_key: Entity<TextField>, ssh_passphrase: Entity<TextField>, lfs_ca_info: Entity<TextField>,
     username: Entity<TextField>, token: Entity<TextField>, pub(super) message: Entity<TextField>,
     pub(super) status: Option<Status>, settings_feedback: bool, pub(super) error: Option<String>, pub(super) notice: Option<String>,
-    pub(super) selected: Option<String>, pub(super) preview: Option<ChangePreview>, pub(super) loading: bool,
+    pub(super) selected: Option<String>, pub(super) preview: Option<crate::git_panel::GitPreview>, pub(super) loading: bool,
     pub(super) source: bool, pub(super) request: u64,
 }
 

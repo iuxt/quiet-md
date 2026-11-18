@@ -10,6 +10,7 @@ pub struct PreviewText {
     pub text: RichText,
     pub runs: Vec<TextRun>,
     pub size: f32,
+    pub scale: f32,
     pub line_height: f32,
     pub align: Align,
     pub eq_counter: u32,
@@ -29,8 +30,7 @@ enum Body { Math(Rc<math::Math>), Invalid(ShapedLine) }
 struct Placed { equation: Rc<Equation>, x: Pixels, baseline: Pixels }
 pub struct Prepared { lines: Vec<(WrappedLine, Vec<Pixels>)>, equations: Vec<Placed>, height: Pixels, width: Pixels }
 
-fn equation(ix: usize, source: &str, width: f32, color: Hsla, eqno: u32, window: &Window) -> Rc<Equation> {
-    let scale = super::bs::SCALE;
+fn equation(ix: usize, source: &str, width: f32, color: Hsla, eqno: u32, scale: f32, window: &Window) -> Rc<Equation> {
     let pad = 2. * scale;
     let display = math::is_block(source);
     if let Some(mut m) = math::layout(source, display, math::FONT_PX * scale, color, eqno, window) {
@@ -99,12 +99,13 @@ impl Element for PreviewText {
         let text: SharedString = text.into();
         let (fs, lh, align) = (px(self.size), px(self.line_height), self.align);
         let eq_counter = self.eq_counter;
+        let scale = self.scale;
         let mut style = Style::default(); style.size.width = relative(1.).into();
         let id = window.request_measured_layout(style, move |known, available, window, _| {
-            let width = known.width.or(match available.width { AvailableSpace::Definite(w) => Some(w), _ => None }).unwrap_or(px(690. * super::bs::SCALE)).max(px(1.));
+            let width = known.width.or(match available.width { AvailableSpace::Definite(w) => Some(w), _ => None }).unwrap_or(px(690. * scale)).max(px(1.));
             let mut eqno = eq_counter;
             let eqs: Vec<_> = sources.iter().map(|(ix, src)| {
-                let eq = equation(*ix, src, width.into(), colors.iter().find(|c| c.0 == *ix).map_or(Theme::text(), |c| c.1), eqno, window);
+                let eq = equation(*ix, src, width.into(), colors.iter().find(|c| c.0 == *ix).map_or(Theme::text(), |c| c.1), eqno, scale, window);
                 eqno += math::numbers_in(src);
                 eq
             }).collect();
@@ -148,7 +149,7 @@ impl Element for PreviewText {
             for placed in &ready.equations {
                 let origin = point(bounds.left() + placed.x + px(placed.equation.left), bounds.top() + placed.baseline);
                 match &placed.equation.body {
-                    Body::Math(math) => { math.paint(origin, window, cx); if let Some(tag) = &math.tag { tag.paint(point(origin.x + px(math.width + 8. * super::bs::SCALE), origin.y), window, cx); } }
+                    Body::Math(math) => { math.paint(origin, window, cx); if let Some(tag) = &math.tag { tag.paint(point(origin.x + px(math.width + 8. * self.scale), origin.y), window, cx); } }
                     Body::Invalid(line) => { let _ = line.paint(point(origin.x, origin.y - line.ascent), line.ascent + line.descent, window, cx); }
                 }
             }
