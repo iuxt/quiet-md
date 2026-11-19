@@ -39,6 +39,6 @@ key down
 key down
 key cmd-right
 key enter
-type /
+type /drawing
 wait 900
 SHOT slash

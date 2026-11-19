@@ -40,7 +40,7 @@ pub fn gap(kind: &BlockKind) -> (f32, f32) {
         BlockKind::Heading { .. } => { let m = typography(kind); (m.mt, m.mb) }
         BlockKind::Bullet | BlockKind::Ordered { .. } | BlockKind::Todo { .. } => (0., LIST_GAP),
         BlockKind::Table(_) => (11., 11.),
-        BlockKind::Code { .. } | BlockKind::Callout { .. } | BlockKind::Image { .. } | BlockKind::File(_) | BlockKind::Grid => (16., 16.),
+        BlockKind::Code { .. } | BlockKind::Callout { .. } | BlockKind::Image { .. } | BlockKind::Drawing(_) | BlockKind::File(_) | BlockKind::Grid => (16., 16.),
         BlockKind::Quote => (8., 14.),
         BlockKind::Divider => (12., 12.),
         _ => (0., PARAGRAPH_GAP),

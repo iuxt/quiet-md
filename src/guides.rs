@@ -11,7 +11,7 @@ pub(crate) fn seeded(root: &Path) -> std::io::Result<bool> {
     if root.join(".guides-pending").exists() { return Ok(false); }
     let quiet = root.join(crate::store::INTERNAL);
     let internal = quiet.is_dir() && fs::read_dir(&quiet)?.any(|e| e.map_or(true, |e| e.file_name() != ".lock"));
-    Ok(internal || fs::read_dir(root)?.any(|e| e.map_or(true, |e| { let n = e.file_name().to_string_lossy().into_owned(); !n.starts_with('.') || n == crate::store::ASSETS })))
+    Ok(internal || fs::read_dir(root)?.any(|e| e.map_or(true, |e| { let n = e.file_name().to_string_lossy().into_owned(); !n.starts_with('.') || n == crate::store::LEGACY_ASSETS })))
 }
 
 /// A guide document (not an asset or the index).
@@ -142,6 +142,8 @@ mod tests {
             assert_eq!(name, e.id, "guide body must use its fixed UUID: {}", e.title);
         }
         assert!(!root.join("docs").exists() && !root.join("index.json").exists());
+        assert!(!root.join(crate::store::LEGACY_ASSETS).exists());
+        assert!(root.join(crate::store::ASSETS).join("guides/home.jpg").is_file());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

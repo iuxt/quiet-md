@@ -144,6 +144,12 @@ impl Writer<'_> {
                 indent(&format!("{emoji} {body}"), "> ")
             }
             BlockKind::Divider => "---".into(),
+            BlockKind::Drawing(d) => {
+                let preview = self.file_link(&FileBlock { src_kind: "path".into(), src: d.preview.clone(), name: String::new(), view: FileView::Card });
+                let source = self.file_link(&FileBlock { src_kind: "path".into(), src: d.source.clone(), name: String::new(), view: FileView::Card });
+                let image = preview.map_or_else(String::new, |url| format!("![Excalidraw]({url})"));
+                match source { Some(url) => format!("{image} [Excalidraw]({url})").trim_start().to_string(), None => image }
+            }
             BlockKind::Image { src, caption, .. } if self.opts.in_place => {
                 format!("![{}]({})", escape(caption.as_deref().unwrap_or_default()), link_target(&self.keep(src, true)))
             }
@@ -179,7 +185,7 @@ impl Writer<'_> {
     }
 
     /// A source as the file being written should say it: relative to the
-    /// file's folder when under it; a library asset (`.assets/…`) stays
+    /// file's folder when under it; a library asset stays
     /// relative in the library and becomes absolute outside it.
     fn keep(&mut self, src: &str, image: bool) -> String {
         if src.contains("://") && !src.starts_with("file://") || src.starts_with("data:") {
@@ -188,7 +194,7 @@ impl Writer<'_> {
         if self.opts.base.is_none() && !self.opts.absolute { return src.to_string() }
         let raw = Path::new(src.strip_prefix("file://").unwrap_or(src));
         let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
-        // Relative sources left after `parse_file` are the library's (`.assets/…`).
+        // Relative sources left after `parse_file` belong to the library.
         let abs = if raw.is_absolute() { raw.to_path_buf() } else { root.join(raw) };
         if let Some(from) = self.opts.relative_from && let Ok(rel) = abs.strip_prefix(&root) {
             let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
@@ -199,8 +205,8 @@ impl Writer<'_> {
             return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         }
         // The library's own image or attachment: a copy beside the file.
-        let assets = crate::store::Store::assets_in(&root);
-        match self.opts.name.filter(|_| abs.starts_with(&assets) && abs.is_file()) {
+        use crate::store::{ASSETS, LEGACY_ASSETS};
+        match self.opts.name.filter(|_| [ASSETS, LEGACY_ASSETS].iter().any(|dir| abs.starts_with(root.join(dir))) && abs.is_file()) {
             Some(name) => self.beside(&abs, base, name, image),
             None => abs.to_string_lossy().into_owned(),
         }

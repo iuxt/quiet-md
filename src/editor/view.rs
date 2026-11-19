@@ -20,6 +20,8 @@ use std::time::Duration;
 
 pub enum EditorEvent {
     Changed,
+    Drawing,
+    DrawingExitCanceled,
     /// ⌘S: write to disk now instead of waiting for the autosave debounce.
     Save,
     /// Toolbar 更多 → 文档库内搜索: the search dialog with this query.
@@ -111,6 +113,7 @@ enum ScrollIntent { RevealCaret, PreserveViewport }
 
 pub struct Editor {
     pub core: Core,
+    pub(crate) drawing: Option<Entity<super::drawing::DrawingEditor>>,
     pub focus: FocusHandle,
     pub cache: LayoutCache,
     /// Window bounds of every rendered block wrapper (last frame).
@@ -386,6 +389,7 @@ impl Editor {
         subs.extend(rm_subs);
         let mut e = Editor {
             core: Core::new(doc),
+            drawing: None,
             focus: cx.focus_handle(),
             cache: Default::default(),
             block_bounds: Default::default(),
@@ -969,6 +973,10 @@ impl Editor {
                 let nid = self.core.insert_block(g);
                 self.core.ensure_paragraph_after(nid);
                 self.core.sel = Selection::caret(Pos::new(first, 0));
+            }
+            SlashKind::Drawing => {
+                self.changed(window, cx);
+                return self.new_drawing(window, cx);
             }
             SlashKind::Image => self.pick_image(window, cx),
             SlashKind::File => self.pick_files(window, cx),

@@ -1979,6 +1979,21 @@ impl Core {
         id
     }
 
+    pub fn insert_drawing(&mut self, drawing: Drawing) -> BlockId {
+        self.clear_block_sel();
+        let id = self.insert_block(Block::new(BlockKind::Drawing(drawing), RichText::default()));
+        let paragraph = self.ensure_paragraph_after(id);
+        self.sel = Selection::caret(Pos::new(paragraph, 0));
+        id
+    }
+
+    pub fn replace_drawing(&mut self, id: BlockId, drawing: Drawing) {
+        if matches!(self.block(id).map(|b| &b.kind), Some(BlockKind::Drawing(current)) if *current != drawing) {
+            self.checkpoint(EditKind::Other);
+            self.block_mut(id).unwrap().kind = BlockKind::Drawing(drawing);
+        }
+    }
+
     /// Make sure something editable follows `id` (used after inserting atomic blocks).
     pub fn ensure_paragraph_after(&mut self, id: BlockId) -> BlockId {
         let us = self.units();

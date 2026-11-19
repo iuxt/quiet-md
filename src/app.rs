@@ -364,6 +364,7 @@ pub struct Workspace {
     pub(crate) unsaved: bool,
     /// Held back by a failed save: runs after 重试 succeeds or 放弃修改.
     pub(crate) after_save: Option<AfterSave>,
+    after_drawing: Option<AfterSave>,
     pub(crate) editor_sub: Option<Subscription>,
     _subs: Vec<Subscription>,
 }
@@ -586,6 +587,7 @@ impl Workspace {
             dirty_since: None,
             unsaved: false,
             after_save: None,
+            after_drawing: None,
             editor_sub: None,
             _subs: subs,
         };
@@ -691,6 +693,19 @@ impl Workspace {
                     this.schedule_save(window, cx);
                 }
             }
+            EditorEvent::Drawing => {
+                if !this.drawing_open(cx) && let Some(next) = this.after_drawing.take() {
+                    let workspace = cx.weak_entity();
+                    window.on_next_frame(move |window, cx| {
+                        let _ = workspace.update(cx, |w, cx| {
+                            if w.flush(cx) { next(w, window, cx); }
+                            else { w.after_save = Some(next); w.confirm = Some(Confirm::SaveFailed); cx.notify(); }
+                        });
+                    });
+                }
+                cx.notify();
+            }
+            EditorEvent::DrawingExitCanceled => this.after_drawing = None,
             EditorEvent::Mode(reading) => this.set_mode(*reading, window, cx),
             EditorEvent::Info(info) => this.set_info_row(*info),
             EditorEvent::Toast => {
@@ -901,6 +916,7 @@ impl Workspace {
 
     /// Switch the main pane to 主页 or 回收站 (or back to the document).
     pub fn show_view(&mut self, view: View, cx: &mut Context<Self>) {
+        if self.drawing_open(cx) { return; }
         self.cancel_shortcut_recording(cx);
         self.close_history(cx);
         // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
@@ -1162,8 +1178,17 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn drawing_open(&self, cx: &App) -> bool {
+        self.editor.as_ref().is_some_and(|e| e.read(cx).drawing.is_some())
+    }
+
     pub fn save_before(&mut self, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> bool {
         if self.store.file_task_busy() { return false; }
+        if let Some(draft) = self.editor.as_ref().and_then(|e| e.read(cx).drawing.clone())
+            && draft.update(cx, |d, cx| d.confirm_exit(cx)) {
+            self.after_drawing = Some(Box::new(then));
+            return false;
+        }
         if self.flush(cx) {
             return true;
         }
@@ -1526,7 +1551,7 @@ impl Workspace {
                     )
                     .child(
                         // Straight to a new document: no 新建 menu, as 导入 is rare.
-                        seg("doc-new", "plus").tip(crate::settings::tr("新建文档", "New document"), None).on_click(cx.listener(|w, _, window, cx| w.new_doc(window, cx))),
+                        seg("doc-new", "plus").tip(crate::settings::tr("新建文档", "New document"), None).on_click(cx.listener(|w, _, window, cx| { if !w.drawing_open(cx) { w.new_doc(window, cx); } })),
                     ).into_any_element()
             )
     }
@@ -1657,24 +1682,23 @@ impl Render for Workspace {
             .on_action(|_: &Zoom, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
             .on_action(cx.listener(|w, _: &OpenSettings, _, cx| w.show_view(View::Settings, cx)))
-            .on_action(cx.listener(|w, _: &ReplayOnboarding, window, cx| w.replay_onboarding(window, cx)))
-            .on_action(cx.listener(|w, _: &OpenAbout, _, cx| w.open_settings(crate::settings::Page::About, cx)))
+            .on_action(cx.listener(|w, _: &ReplayOnboarding, window, cx| { if !w.drawing_open(cx) { w.replay_onboarding(window, cx); } }))
+            .on_action(cx.listener(|w, _: &OpenAbout, _, cx| { if !w.drawing_open(cx) { w.open_settings(crate::settings::Page::About, cx); } }))
             .on_action(cx.listener(|w, _: &GoHome, _, cx| w.show_view(View::Home, cx)))
-            .on_action(cx.listener(|w, _: &NewDoc, window, cx| w.new_doc(window, cx)))
-            .on_action(cx.listener(|w, _: &ImportDoc, window, cx| w.open_import(window, cx)))
-            .on_action(cx.listener(|w, _: &OpenFile, window, cx| w.open_file_dialog(window, cx)))
-            .on_action(cx.listener(|w, _: &ImportFolder, window, cx| w.open_import_folder(window, cx)))
+            .on_action(cx.listener(|w, _: &NewDoc, window, cx| { if !w.drawing_open(cx) { w.new_doc(window, cx); } }))
+            .on_action(cx.listener(|w, _: &ImportDoc, window, cx| { if !w.drawing_open(cx) { w.open_import(window, cx); } }))
+            .on_action(cx.listener(|w, _: &OpenFile, window, cx| { if !w.drawing_open(cx) { w.open_file_dialog(window, cx); } }))
+            .on_action(cx.listener(|w, _: &ImportFolder, window, cx| { if !w.drawing_open(cx) { w.open_import_folder(window, cx); } }))
             .on_action(cx.listener(|w, _: &ToggleSidebar, _, cx| {
                 w.sidebar_open = !w.sidebar_open;
                 cx.notify();
             }))
-            .on_action(cx.listener(|w, _: &FindInDoc, window, cx| w.find_in_doc(false, window, cx)))
+            .on_action(cx.listener(|w, _: &FindInDoc, window, cx| { if !w.drawing_open(cx) { w.find_in_doc(false, window, cx); } }))
             .on_action(cx.listener(|w, _: &ReplaceInDoc, window, cx| {
-                let replace = !w.reading();
-                w.find_in_doc(replace, window, cx)
+                if !w.drawing_open(cx) { w.find_in_doc(!w.reading(), window, cx); }
             }))
-            .on_action(cx.listener(|w, _: &crate::modes::EditMode, window, cx| w.set_mode(false, window, cx)))
-            .on_action(cx.listener(|w, _: &crate::modes::ReadMode, window, cx| w.set_mode(true, window, cx)))
+            .on_action(cx.listener(|w, _: &crate::modes::EditMode, window, cx| { if !w.drawing_open(cx) { w.set_mode(false, window, cx); } }))
+            .on_action(cx.listener(|w, _: &crate::modes::ReadMode, window, cx| { if !w.drawing_open(cx) { w.set_mode(true, window, cx); } }))
             .on_action(cx.listener(|w, _: &crate::modes::ToggleShortcuts, _, cx| {
                 w.shortcuts = !w.shortcuts;
                 cx.notify();
@@ -1742,7 +1766,9 @@ impl Render for Workspace {
                 cx.notify();
             }))
             .on_action(cx.listener(|w, _: &FocusSearch, window, cx| {
-                if w.search_open { w.close_search(window, cx); } else { w.open_search(window, cx); }
+                if !w.drawing_open(cx) {
+                    if w.search_open { w.close_search(window, cx); } else { w.open_search(window, cx); }
+                }
                 cx.stop_propagation();
             }))
             .children(sidebar)
@@ -1772,6 +1798,9 @@ impl Render for Workspace {
             .children(import_menu)
             .children(place_menu)
             .children(toast)
+            .when_some(self.editor.as_ref().and_then(|ed| ed.read(cx).drawing.clone()), |d, drawing| {
+                d.child(deferred(div().absolute().inset_0().child(drawing)).with_priority(26))
+            })
             // Over everything, toasts included, until its last page is done.
             .when_some(self.onboarding.clone(), |d, o| d.child(deferred(div().id("onboarding-cover").absolute().inset_0().occlude().child(o)).with_priority(30)))
     }

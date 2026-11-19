@@ -68,7 +68,7 @@ impl Store {
             std::fs::create_dir_all(crate::git::safe_path(&self.root, NOTES)?)?;
             for (_, to, text) in &outputs { write_atomic(&crate::git::safe_path(&self.root, to)?, text.as_bytes())?; }
             save_json(&self.root.join(FILE), &manifest)?;
-            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
+            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FIRST_VIRTUAL_FORMAT })?)?;
             Ok(())
         })();
         if let Err(error) = converted {
@@ -90,7 +90,7 @@ pub(super) fn recover(root: &Path) -> Result<()> {
     let state: Migration = serde_json::from_slice(&std::fs::read(root.join(JOURNAL))?)?;
     anyhow::ensure!(state.backup.starts_with(".quiet/before-virtual-6-"), "迁移备份路径无效");
     crate::git::safe_path(root, &state.backup)?;
-    let committed = reread::<FormatMarker>(&root.join(".quiet/format.json")).is_some_and(|m| m.format == FORMAT)
+    let committed = Store::format_at(root).is_some_and(virtual_format)
         && std::fs::read(root.join(FILE)).is_ok_and(|b| Manifest::parse(&b).is_ok());
     if committed { finish(root, &state) } else { rollback(root, &state) }
 }

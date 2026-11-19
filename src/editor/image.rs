@@ -558,7 +558,7 @@ impl ImageUi {
             toast: None,
             toast_task: None,
             remote: RefCell::default(),
-            remote_dir: Store::assets_dir().join("remote"),
+            remote_dir: Store::assets_in(&Store::root_dir()).join("remote"),
             generation: 0,
             retried: HashMap::new(),
             file_drop: None,
@@ -566,7 +566,8 @@ impl ImageUi {
     }
 
     fn remote_path(&self, url: &str) -> PathBuf {
-        self.remote_dir.join(remote_name(url))
+        let name = remote_name(url);
+        cached_remote_in(&self.remote_dir, &name).unwrap_or_else(|| self.remote_dir.join(name))
     }
 
     fn resolve(&self, src: &str) -> Src {
@@ -2285,7 +2286,17 @@ fn remote_name(url: &str) -> String {
 
 /// The downloaded copy of a remote image, if it has been fetched.
 pub fn cached_remote(url: &str) -> Option<PathBuf> {
-    Some(Store::assets_dir().join("remote").join(remote_name(url))).filter(|p| p.is_file())
+    let root = Store::root_dir();
+    cached_remote_in(&Store::assets_in(&root).join("remote"), &remote_name(url))
+}
+
+fn cached_remote_in(dir: &Path, name: &str) -> Option<PathBuf> {
+    let path = dir.join(name);
+    if path.is_file() { return Some(path) }
+    let assets = dir.parent()?;
+    if assets.file_name()? != crate::store::ASSETS { return None }
+    let legacy = assets.parent()?.join(crate::store::LEGACY_ASSETS).join("remote").join(name);
+    legacy.is_file().then_some(legacy)
 }
 
 /// Pasted HTML images: `data:` URIs and local files become owned assets;

@@ -198,6 +198,14 @@ impl Writer<'_> {
                 out.push_str("</div></div>");
             }
             BlockKind::Divider => out.push_str("<hr>"),
+            BlockKind::Drawing(d) => {
+                let _ = write!(out, "<div class=\"img\"{align}>");
+                if let Some(uri) = data_uri(&d.preview) {
+                    let width = d.width.min(640) as f32;
+                    out.push_str(&image(&uri, Some(width), Some(width * d.height as f32 / d.width as f32), None));
+                } else { out.push_str("Excalidraw"); }
+                out.push_str("</div>");
+            }
             BlockKind::Image { src, width, height, caption, crop, .. } => {
                 let _ = write!(out, "<div class=\"img\"{align}>");
                 match data_uri(src) {

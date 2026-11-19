@@ -148,11 +148,14 @@ fn legacy_physical_library_migrates_titles_links_images_with_backup() {
 fn virtual_markdown_assets_stay_relative_and_git_moves_only_change_manifest() {
     use crate::{model::{Block, BlockKind, RichText}, git::{LibraryRepo, Config}};
     let lib = Library::new(); let mut s = lib.open();
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap(); std::fs::write(lib.0.join(".assets/test.png"), b"picture").unwrap();
-    let mut document = doc("Images"); document.blocks = vec![Block::new(BlockKind::Image { src_kind: "path".into(), src: ".assets/test.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default())];
+    let shape = Store::shape_at(&lib.0);
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap(); std::fs::write(lib.0.join("assets/test.png"), b"picture").unwrap();
+    std::fs::write(lib.0.join("assets/attachment.md"), b"attachment").unwrap();
+    assert_eq!(Store::shape_at(&lib.0), shape);
+    let mut document = doc("Images"); document.blocks = vec![Block::new(BlockKind::Image { src_kind: "path".into(), src: "assets/test.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default())];
     let id = s.create_markdown(&document, "").unwrap(); let path = s.file_path(&id).unwrap();
-    assert!(std::fs::read_to_string(&path).unwrap().contains("../.assets/test.png"));
-    assert_eq!(s.load(&id).unwrap().asset_sources(), vec![lib.0.join(".assets/test.png").to_string_lossy().into_owned()]);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("../assets/test.png"));
+    assert_eq!(s.load(&id).unwrap().asset_sources(), vec![lib.0.join("assets/test.png").to_string_lossy().into_owned()]);
     let loaded = s.load_for_edit(&id, false).unwrap(); s.save(&id, &loaded).unwrap();
     assert!(!std::fs::read_to_string(&path).unwrap().contains(lib.0.to_str().unwrap()));
     let folder = s.create_folder("Virtual", None).unwrap(); s.enable_git().unwrap();

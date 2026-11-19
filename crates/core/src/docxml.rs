@@ -116,7 +116,7 @@ fn is_block_tag(name: &str) -> bool {
     matches!(
         name,
         "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "h7" | "h8" | "h9" | "ul" | "ol" | "li"
-            | "checkbox" | "blockquote" | "hr" | "pre" | "img" | "table" | "grid" | "column"
+            | "checkbox" | "blockquote" | "hr" | "pre" | "img" | "drawing" | "table" | "grid" | "column"
             | "callout" | "whiteboard" | "source" | "figure" | "sheet" | "task" | "chat_card"
             | "bookmark" | "html5-block" | "okr" | "sub-page-list" | "countdown"
     )
@@ -247,6 +247,12 @@ fn parse_block(e: &Element, out: &mut Vec<Block>) {
                 RichText::plain(text),
             )
         }
+        "drawing" => Block::new(BlockKind::Drawing(Drawing {
+            source: e.attr("path").unwrap_or_default().into(),
+            preview: e.attr("preview").unwrap_or_default().into(),
+            width: e.attr("width").and_then(|s| s.parse().ok()).unwrap_or(1).max(1),
+            height: e.attr("height").and_then(|s| s.parse().ok()).unwrap_or(1).max(1),
+        }), RichText::default()),
         "img" => {
             let (kind, src) = ["path", "href", "src"]
                 .iter()
@@ -897,6 +903,9 @@ fn write_block(b: &Block, s: &mut String, depth: usize) {
         BlockKind::File(f) => {
             let view = if f.view == FileView::Preview { "Preview" } else { "Card" };
             s.push_str(&format!("<figure view-type=\"{view}\"{al}>{}</figure>\n", source_xml(f)));
+        }
+        BlockKind::Drawing(d) => {
+            s.push_str(&format!("<drawing path=\"{}\" preview=\"{}\" width=\"{}\" height=\"{}\"{al}/>\n", esc_attr(&d.source), esc_attr(&d.preview), d.width, d.height));
         }
         BlockKind::Image { src_kind, src, width, height, caption, crop } => {
             s.push_str(&format!("<img {}=\"{}\"", src_kind, esc_attr(src)));

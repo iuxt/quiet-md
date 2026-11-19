@@ -87,10 +87,7 @@ impl Store {
         if let Some(cover) = &doc.cover { sources.push(cover.src.clone()); }
         let mut paths = HashMap::new();
         for source in sources {
-            let normalized = source.replace('\\', "/");
-            let relative = normalized.strip_prefix(".assets/").map(|s| format!(".assets/{s}"))
-                .or_else(|| normalized.split_once("/.assets/").map(|(_, s)| format!(".assets/{s}")));
-            if let Some(relative) = relative { paths.insert(source, repo.revision_asset(commit, &relative, preview)?); }
+            if let Some(path) = repo.revision_asset(commit, &source, preview)? { paths.insert(source, path); }
         }
         rewrite_asset_sources(&mut doc.blocks, &paths);
         if let Some(cover) = &mut doc.cover && let Some(path) = paths.get(&cover.src) { cover.src = path.clone(); }
@@ -126,6 +123,9 @@ pub(super) fn rewrite_asset_sources(blocks: &mut [crate::model::Block], paths: &
     for block in blocks {
         match &mut block.kind {
             BlockKind::Image { src, .. } => if let Some(path) = paths.get(src) { *src = path.clone(); },
+            BlockKind::Drawing(d) => for src in [&mut d.source, &mut d.preview] {
+                if let Some(path) = paths.get(src) { *src = path.clone(); }
+            },
             BlockKind::File(file) => if let Some(path) = paths.get(&file.src) { file.src = path.clone(); },
             BlockKind::Table(table) => for cell in table.rows.iter_mut().flatten() { rewrite_asset_sources(&mut cell.blocks, paths); },
             _ => {},

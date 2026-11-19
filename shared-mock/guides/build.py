@@ -9,9 +9,9 @@ Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{reminder-day:YYYY-MM-DD}}       whole-day reminder, notified 09:00 that day
   {{countdown:YYYY-MM-DD HH:MM}}    countdown block to that moment (blue)
   {{button:Action|url|text|color}}  inline button (OpenLink / DuplicatePage)
-Assets under guides/assets are copied to <out>/.assets/guides.
+Assets under guides/assets are copied to <out>/assets/guides.
 
-The output is a FORMAT 7 library: virtual folder identities in quiet.json,
+The output is a FORMAT 8 library: virtual folder identities in quiet.json,
 fixed notes/<UUID>.xml bodies and relative document links.
 """
 import datetime as dt, json, re, shutil, sys, time, uuid
@@ -103,9 +103,8 @@ def fill(x):
     def cover(m):
         name = m.group(1)
         covers.add(name)
-        return f'cover=".assets/guides/covers/{name}"'
-    x = re.sub(r'cover="covers/([^"]+)"', cover, x)
-    return re.sub(r'(src|path)="assets/', r'\1=".assets/', x)
+        return f'cover="assets/guides/covers/{name}"'
+    return re.sub(r'cover="covers/([^"]+)"', cover, x)
 
 covers = set()
 
@@ -151,9 +150,9 @@ for k, parent, _ in order:
                   "createdAt": stamp(meta["created"]), "updatedAt": stamp(meta["modified"]), "options": options})
 manifest = {"version": 2, "folders": sorted(folders, key=lambda f: f["id"]), "notes": sorted(notes, key=lambda n: n["id"]), "trash": []}
 (out / "quiet.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-(out / ".quiet" / "format.json").write_text('{\n  "format": 7\n}')
-shutil.copytree(here / "assets", out / ".assets" / "guides")
-(out / ".assets" / "guides" / "covers").mkdir()
+(out / ".quiet" / "format.json").write_text('{\n  "format": 8\n}')
+shutil.copytree(here / "assets", out / "assets" / "guides")
+(out / "assets" / "guides" / "covers").mkdir()
 for name in sorted(covers):
-    shutil.copy2(here.parent.parent / "assets" / "covers" / name, out / ".assets" / "guides" / "covers" / name)
+    shutil.copy2(here.parent.parent / "assets" / "covers" / name, out / "assets" / "guides" / "covers" / name)
 print(out)

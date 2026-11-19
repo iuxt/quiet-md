@@ -1,4 +1,4 @@
-//! Library storage: FORMAT 7 virtual folders in quiet.json, fixed notes/<UUID> bodies.
+//! Library storage: virtual folders in quiet.json, fixed notes/<UUID> bodies.
 //! FORMAT 4/5 physical folders and older layouts remain readable for migration.
 
 use crate::docxml;
@@ -326,12 +326,15 @@ struct Batch { lock: Option<WriteLock>, depth: u32, index: std::cell::Cell<bool>
 /// files named by title, internal data in `.quiet/`. 5: opt-in UUID names
 /// with shared metadata for Git. 6: virtual folders, one quiet.json,
 /// fixed notes/<UUID> body paths regardless of Git. 7: trash changes only
-/// metadata; deleted bodies keep their notes/ paths.
-pub const FORMAT: u32 = 7;
+/// metadata; deleted bodies keep their notes/ paths. 8: visible assets/.
+pub const FORMAT: u32 = 8;
+const FIRST_VIRTUAL_FORMAT: u32 = 7;
+pub(crate) fn virtual_format(format: u32) -> bool { (FIRST_VIRTUAL_FORMAT..=FORMAT).contains(&format) }
 /// The hidden folder holding the library's own data.
 pub const INTERNAL: &str = ".quiet";
-/// The hidden folder holding pasted and inserted images and attachments.
-pub const ASSETS: &str = ".assets";
+/// The folder holding pasted and inserted images and attachments.
+pub const ASSETS: &str = "assets";
+pub const LEGACY_ASSETS: &str = ".assets";
 
 #[path = "folders.rs"]
 mod folders;
@@ -520,7 +523,7 @@ pub fn image_path_in(root: &Path, src: &str) -> Option<PathBuf> {
     if p.is_absolute() {
         return Some(moved_asset(root, &p).unwrap_or(p));
     }
-    // Relative to the library (`.assets/…`); not a URI or a cloud token.
+    // Relative to the library; not a URI or a cloud token.
     (!src.is_empty() && !src.contains(':') && src.contains('/')).then(|| root.join(p))
 }
 
@@ -532,12 +535,14 @@ fn moved_asset(root: &Path, p: &Path) -> Option<PathBuf> {
     use std::path::Component;
     if p.exists() { return None; }
     let parts: Vec<Component> = p.components().collect();
-    let dir = Store::assets_in(root);
     // The last folder so named that leads to a file; a file may be named `assets` itself.
-    (0..parts.len()).rev().filter(|&i| matches!(parts[i].as_os_str().to_str(), Some("assets" | ".assets"))).find_map(|i| {
+    (0..parts.len()).rev().filter(|&i| matches!(parts[i].as_os_str().to_str(), Some(ASSETS | LEGACY_ASSETS))).find_map(|i| {
         let rest = &parts[i + 1..];
         if rest.is_empty() || !rest.iter().all(|c| matches!(c, Component::Normal(_))) { return None; }
-        Some(dir.join(rest.iter().collect::<PathBuf>())).filter(|q| q.exists())
+        let name = parts[i].as_os_str();
+        let other = if name == ASSETS { LEGACY_ASSETS } else { ASSETS };
+        [root.join(name), root.join(other)].into_iter()
+            .map(|dir| dir.join(rest.iter().collect::<PathBuf>())).find(|q| q.exists())
     })
 }
 
@@ -632,15 +637,23 @@ impl Store {
     /// Whether `root` is (still) in the old layout.
     pub fn flat_at(root: &Path) -> bool { !root.join(INTERNAL).join("format.json").is_file() && migrate::legacy(root) }
 
-    /// Where images and attachments are in library `root`.
-    pub fn assets_in(root: &Path) -> PathBuf { root.join(if Self::flat_at(root) { "assets" } else { ASSETS }) }
+    pub(crate) fn format_at(root: &Path) -> Option<u32> {
+        reread::<FormatMarker>(&root.join(INTERNAL).join("format.json")).map(|m| m.format)
+    }
+
+    /// Where new images and attachments go.
+    pub fn assets_in(root: &Path) -> PathBuf {
+        root.join(if Self::format_at(root).is_some_and(|format| format < FIRST_VIRTUAL_FORMAT) { LEGACY_ASSETS } else { ASSETS })
+    }
 
     /// What the library's files are, without reading them: changes when a
     /// document or folder is added, removed or renamed (by hand, or a model
     /// writing a note), not when one is saved. Cheap enough to poll.
     pub fn shape_at(root: &Path) -> u64 {
         use std::hash::{Hash, Hasher};
-        let found = layout::scan(&if Self::flat_at(root) { root.join("docs") } else { root.to_path_buf() });
+        let notes = if Self::format_at(root).is_some_and(virtual_format) { root.join(crate::manifest::NOTES) }
+            else if Self::flat_at(root) { root.join("docs") } else { root.to_path_buf() };
+        let found = layout::scan(&notes);
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (found.dirs, found.docs, found.pending).hash(&mut h);
         if let Ok(meta) = std::fs::metadata(root.join(crate::manifest::FILE)) { (meta.len(), meta.modified().ok()).hash(&mut h); }
@@ -672,11 +685,27 @@ impl Store {
         Ok(())
     }
 
-    /// Where pasted / inserted images are copied to (`.assets/`).
+    /// Where pasted / inserted images are copied to.
     pub fn assets_dir() -> PathBuf {
         let d = Self::assets_in(&Self::root_dir());
         let _ = std::fs::create_dir_all(&d);
         d
+    }
+
+    /// A drawing save always writes a new pair of assets. Publish their paths
+    /// only after both writes succeed so undo and history never see half a save.
+    pub fn save_drawing_assets(source: &[u8], preview: &[u8], width: u32, height: u32) -> Result<crate::model::Drawing> {
+        let dir = Self::assets_dir();
+        let id = uuid::Uuid::new_v4();
+        let original = dir.join(format!("{id}.excalidraw"));
+        let thumbnail = dir.join(format!("{id}.png"));
+        write_atomic(&original, source)?;
+        if let Err(err) = write_atomic(&thumbnail, preview) {
+            let _ = std::fs::remove_file(&original);
+            return Err(err);
+        }
+        let base = dir.file_name().context("missing asset directory name")?.to_string_lossy();
+        Ok(crate::model::Drawing { source: format!("{base}/{id}.excalidraw"), preview: format!("{base}/{id}.png"), width, height })
     }
 
     /// The library at `root_dir`, moved to the new layout first when that
@@ -747,13 +776,14 @@ impl Store {
             }
         }
         let base = if flat { root.clone() } else { internal.clone() };
-        let trash = if !flat && reread::<FormatMarker>(&marker).is_some_and(|m| m.format == FORMAT) { HashMap::new() }
+        let virtual_folders = !flat && Self::format_at(&root).is_some_and(virtual_format);
+        let trash = if virtual_folders { HashMap::new() }
             else { load_json(&base.join("trash").join("index.json"), "回收站索引", &mut warnings) };
         let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash, flat, manifest: None, warnings, loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: Default::default(), batch: Default::default() };
         if flat {
             store.index = load_json(&base.join("index.json"), "文档索引", &mut store.warnings);
             store.flat_folders()?;
-        } else if reread::<FormatMarker>(&marker).is_some_and(|m| m.format == FORMAT) {
+        } else if virtual_folders {
             store.open_virtual()?;
         } else {
             let disk: DiskIndex = load_json(&store.index_file(), "文档索引", &mut store.warnings);
@@ -1014,7 +1044,7 @@ impl Store {
         // version in memory is written back unchanged.
         if self.flat {
             if let Some(index) = reread(&self.index_file()) { self.index = index; }
-        } else if marker.format == FORMAT {
+        } else if virtual_format(marker.format) {
             self.reload_virtual()?;
         } else if let Some(disk) = reread::<DiskIndex>(&self.index_file()) {
             let local = self.read_local();
@@ -1119,8 +1149,18 @@ impl Store {
     fn require_uuid_format(&self) -> Result<()> {
         let path = self.internal().join("format.json");
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(&path)?)?;
-        let required = if self.virtual_folders() { FORMAT } else { 5 };
+        let required = if self.virtual_folders() { FIRST_VIRTUAL_FORMAT } else { 5 };
         if marker.format < required { write_atomic(&path, &serde_json::to_vec_pretty(&FormatMarker { format: required })?)?; }
+        Ok(())
+    }
+
+    /// Publish the format change with the first note save that can refer to new assets.
+    /// The caller holds the library write lock, and old asset paths stay valid.
+    fn require_asset_format(&self) -> Result<()> {
+        if Self::format_at(&self.root) == Some(FIRST_VIRTUAL_FORMAT) && self.root.join(ASSETS).is_dir() {
+            if self.git_enabled() { crate::git::write_rules(&self.root, FORMAT)?; }
+            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
+        }
         Ok(())
     }
 
@@ -1530,6 +1570,7 @@ impl Store {
         // formatting is the user's.
         let same = disk.as_deref().is_some_and(|d| d == xml || self.is_markdown(id) && self.parse_doc(id, d).is_ok_and(|was| self.serialize_doc(id, &was, Some(d)) == xml));
         if !same {
+            if self.virtual_folders() && !self.index.get(id).is_some_and(Meta::local) { self.require_asset_format()?; }
             // Images and attachments first, so the file never links to a missing one.
             if let Some(base) = self.base(id) {
                 for (src, rel) in &copies {
@@ -1605,6 +1646,7 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let lock = self.begin_write()?;
         self.validate_folder(None, parent)?;
+        if self.virtual_folders() { self.require_asset_format()?; }
         let t = now();
         if self.flat {
             self.require_markdown_format()?;
@@ -2506,7 +2548,7 @@ mod tests {
         let file = dir.join("Plan.md");
         std::fs::write(&file, "text\n").unwrap();
         let mut s = lib.open();
-        std::fs::create_dir_all(lib.0.join(ASSETS)).unwrap();
+        std::fs::create_dir_all(lib.0.join(LEGACY_ASSETS)).unwrap();
         let pasted = lib.0.join(".assets/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
         let picked = lib.0.join(".assets/1a2b3c4d-截图说明.png");
         std::fs::write(&pasted, b"p").unwrap();

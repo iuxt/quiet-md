@@ -743,6 +743,7 @@ pub enum BlockKind {
         /// image (the `image.crop` attribute); None: uncropped.
         crop: Option<[f32; 4]>,
     },
+    Drawing(Drawing),
     Table(Table),
     Grid,
     /// One column of a grid; children hold content.
@@ -817,6 +818,16 @@ pub struct Countdown {
     /// …and the end as "YYYY-MM-DD" / "HH:mm".
     pub date: String,
     pub time: String,
+}
+
+/// A revision of an Excalidraw scene and its rendered preview. Both paths
+/// are immutable assets so older document snapshots keep the original drawing.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Drawing {
+    pub source: String,
+    pub preview: String,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// An attachment: a local file (`path`, under the library's assets) or a
@@ -1075,6 +1086,7 @@ impl Document {
         self.for_each_block(|b| {
             match &b.kind {
                 BlockKind::Image { src, .. } => out.push(src.clone()),
+                BlockKind::Drawing(d) => out.extend([d.source.clone(), d.preview.clone()]),
                 BlockKind::File(f) if f.src_kind == "path" => out.push(f.src.clone()),
                 _ => {}
             }

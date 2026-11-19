@@ -97,8 +97,14 @@ impl LibraryRepo {
         let tree = self.repo.find_tree(snapshot.write_tree_to(&self.repo)?)?;
         let changed = !parent.as_ref().is_some_and(|p| p.tree_id() == tree.id());
         if staged && changed {
-            validate_tree(&self.repo, &tree_files(&self.repo, &tree)?)
+            let format = validate_tree(&self.repo, &tree_files(&self.repo, &tree)?)
                 .context("暂存区中的文档库不完整，请同时暂存相关的 quiet.json、正文和格式标记")?;
+            ensure!(format >= self.tree_format(&working)?, "请先暂存文档库格式标记，再提交");
+            if format >= FORMAT && before.as_ref().map(|t| self.tree_format(t)).transpose()?.unwrap_or_default() < FORMAT {
+                let attr = tree.get_path(Path::new(".gitattributes")).context("请同时暂存 Git LFS 规则")?;
+                let attr = self.repo.find_blob(attr.id())?;
+                ensure!(std::str::from_utf8(attr.content())?.lines().any(|line| line == VISIBLE_ASSET_ATTRIBUTE), "请同时暂存 Git LFS 规则");
+            }
             for pointer in self.pointers(None, &tree)? { lfs::Lfs::new(self.repo.path()).read(&pointer)?; }
         }
         for (path, expected, original) in restore {
@@ -126,9 +132,12 @@ impl LibraryRepo {
         if let Ok(entry) = index.get_path(Path::new(path)) {
             ensure!(entry.filemode() == 0o100644, "Git 文档库不允许符号链接或可执行文件");
             let blob = self.repo.find_blob(entry.id())?;
-            let bytes = if path.starts_with(".assets/") {
+            let bytes = if is_asset_path(path, self.tree_format(&index)?) {
                 lfs::Lfs::new(self.repo.path()).read(&Pointer::parse(blob.content())?.context("图片缺少 LFS 指针")?)?
             } else { blob.content().to_vec() };
+            if path == FORMAT_PATH {
+                ensure!(parse_format(&bytes)? >= Store::format_at(&self.root).unwrap_or_default(), "不能丢弃文档库格式升级");
+            }
             if path == MANIFEST {
                 let restored = manifest(&bytes)?;
                 let current = manifest(&std::fs::read(&target)?)?;

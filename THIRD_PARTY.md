@@ -4,7 +4,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 
 ## Rust 依赖
 
-由 `cargo metadata` 生成，共 775 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
+由 `cargo metadata` 生成，共 779 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
 
@@ -221,6 +221,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | getrandom | 0.2.17 | MIT OR Apache-2.0 |
 | getrandom | 0.3.4 | MIT OR Apache-2.0 |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 |
+| gif | 0.13.3 | MIT OR Apache-2.0 |
 | gif | 0.14.2 | MIT OR Apache-2.0 |
 | git2 | 0.21.0 | MIT OR Apache-2.0 |
 | glob | 0.3.4 | MIT OR Apache-2.0 |
@@ -397,6 +398,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | pathfinder_simd | 0.5.6 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.12.2 | MIT OR Apache-2.0 |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
+| perfect_freehand | 0.1.1 | MIT |
 | phf | 0.11.3 | MIT |
 | phf | 0.14.0 | MIT |
 | phf_codegen | 0.11.3 | MIT |
@@ -439,6 +441,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | quick-error | 2.0.1 | MIT/Apache-2.0 |
 | quick-xml | 0.37.5 | MIT |
 | quick-xml | 0.41.0 | MIT |
+| quiet_excalidraw | 0.1.9 | MIT |
 | quinn | 0.11.12 | MIT OR Apache-2.0 |
 | quinn-proto | 0.11.19 | MIT OR Apache-2.0 |
 | quinn-udp | 0.5.16 | MIT OR Apache-2.0 |
@@ -780,8 +783,10 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | zerovec-derive | 0.11.6 | Unicode-3.0 |
 | zlib-rs | 0.6.8 | Zlib |
 | zmij | 1.0.23 | MIT |
+| zune-core | 0.4.12 | MIT OR Apache-2.0 OR Zlib |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib |
 | zune-inflate | 0.2.54 | MIT OR Apache-2.0 OR Zlib |
+| zune-jpeg | 0.4.21 | MIT OR Apache-2.0 OR Zlib |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib |
 | zvariant | 5.15.1 | MIT |
 | zvariant_derive | 5.15.1 | MIT |
@@ -793,11 +798,16 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 |---|---|
 | `assets/fonts/katex/`（20 个 KaTeX 字体） | KaTeX 字体，SIL Open Font License / MIT，见同目录 `LICENSE`。9 个粗体、斜体字重改过 OS/2 `fsSelection` 和 `head.macStyle` 的样式位（原文件都标成 Regular，Windows 和 Linux 会把斜体当正体选中），字形未改 |
 
+## 画板渲染
+
+`quiet_excalidraw` 包含 [gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw) 的场景与手绘渲染代码，版权为 pujianquan，使用 MIT 许可。见 [原始许可](vendor/gpui-excalidraw/LICENSE) 和 [本地改动](vendor/PATCHES.md#gpui-excalidraw-019)。
+
 ## 图标
 
 | 素材 | 许可 |
 |---|---|
-| `assets/editor-icons/`（编辑器与文档里的 195 个图标） | 其中 49 个直接取自 Lucide（ISC，见同目录 `LICENSE-lucide`），其余按同一 24px / 2px 描边规格绘制 |
+| `assets/editor-icons/`（编辑器与文档里的 192 个图标） | 其中 49 个直接取自 Lucide（ISC，见同目录 `LICENSE-lucide`），其余按同一 24px / 2px 描边规格绘制 |
+| `assets/editor-icons/drawing-*.svg`（20 个） | 本项目绘制，MIT，包含画板工具、图层和属性图标 |
 | `assets/icons/`（界面外壳的 67 个图标，含一个在 Nucleo 图标上加了 MD 字样的 `doc-md.svg`） | Nucleo UI Outline / Fill 18。本项目持有 Nucleo 商业授权，按授权条款「公开源码项目中最多 100 个图标」使用（<https://nucleoapp.com/license>）。**这些图标不在 MIT 范围内**：fork 时请自行确认授权，或换成自己的图标；不得把它们抽出来做成图标库或图标包。 |
 | `assets/icons/folder.svg`、`assets/icons/disclosure.svg`、`assets/icons/import.svg`、`assets/icons/globe.svg` | 本项目绘制，MIT；不属于上述 67 个 Nucleo 图标 |
 | `assets/branding/app-icon.png`、`assets/branding/app-icon-dev.png`（预览版，带 dev 丝带，由 `tools/branding/dev_icon.py` 生成） | 本项目自有 |

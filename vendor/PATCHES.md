@@ -56,6 +56,7 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 34 | `text_system/line.rs` | 显式行偏移的绘制层从第一行的位置开始，高度只覆盖本次硬行的折行；裁掉屏幕外硬行 | 避免万行代码为不可见行插入覆盖整个视口的层，造成边界树二次复杂度；字形位置不变 |
 | 35 | `text_system.rs`、`text_system/line_layout.rs` | `ShapedTextCache`、`shape_text_with_cache` / `retain_shaped_text`：供块级布局缓存持有并续用平台排版缓存 | 复用长代码块布局时，平台缓存也保持热状态，修改一行不用重新排版其余万行 |
 | 36 | `elements/list.rs` | `ListState::set_measure_all` 支持切换完整 / 可见行测量 | 小搜索结果保持精确滚动条，大结果恢复虚拟测量，避免全量布局 |
+| 37 | `window.rs` | 对应用层开放已有的 `with_element_opacity` | 画板手动绘制图片时可应用透明度 |
 
 ## taffy 0.9.0
 
@@ -73,3 +74,11 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 ## 删掉的上游文件
 
 `gpui/examples/image/black-cat-typing.gif`（4.3 MB）只在 `examples/gif_viewer.rs` 和 `examples/opacity.rs` 里用到，这两个示例不参与本项目的构建；为了减小仓库体积删掉了。
+
+## gpui-excalidraw 0.1.9
+
+`vendor/gpui-excalidraw` 取自 [LittleGuest/gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw/tree/2641e1b9c00b51e5e8329094a7d88cd1223ed630)。只保留场景、几何、手绘路径和 SVG/PNG 渲染所需的 Rust 模块。用本地 `quiet_excalidraw` crate 暴露这部分代码，界面、字体与图标由 Quiet.md 提供。
+
+- PNG 预览使用系统字体、只解析内嵌图片，长边限制为 2048 像素。
+- SVG 输出处理旋转、透明度和填充线条颜色，补充 PNG 渲染所需的内嵌图片命名空间和图片透明度。
+- 路径生成对大尺寸图形采样，并限制虚线细分。非 ASCII 颜色值不会触发字节边界错误。

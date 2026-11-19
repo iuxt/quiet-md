@@ -110,6 +110,7 @@ fn hash_block(b: &Block, orders: &rustc_hash::FxHashMap<BlockId, String>, h: &mu
         }
         BlockKind::Column { ratio } => ratio.to_bits().hash(h),
         BlockKind::File(f) => (&f.src, &f.name, f.view).hash(h),
+        BlockKind::Drawing(d) => d.hash(h),
         BlockKind::Table(t) => {
             t.col_widths.iter().for_each(|w| w.to_bits().hash(h));
             (t.header_rows, t.header_col).hash(h);
@@ -455,6 +456,7 @@ impl R<'_> {
                 )
                 .into_any_element(),
             BlockKind::Image { .. } => self.image(b, env, cx),
+            BlockKind::Drawing(d) => self.ed.drawing_block(b.id, d, env, cx),
             BlockKind::SubPageList => self.sub_page_list(b, cx),
             BlockKind::Countdown(c) => self.countdown(b, c, cx),
             BlockKind::File(f) => self.file(b, f, env, cx),
@@ -1880,6 +1882,7 @@ pub(super) fn block_feishu(&self, b: &Block, siblings: &[Block], idx: usize, env
                 .child(div().h(px(1.)).w_full().bg(Theme::line_divider()))
                 .into_any_element(),
             BlockKind::Image { .. } => self.image(b, env, cx),
+            BlockKind::Drawing(d) => self.ed.drawing_block(b.id, d, env, cx),
             BlockKind::SubPageList => self.sub_page_list(b, cx),
             BlockKind::Countdown(c) => self.countdown(b, c, cx),
             BlockKind::File(f) => self.file(b, f, env, cx),

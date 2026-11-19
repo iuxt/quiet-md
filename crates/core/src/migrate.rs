@@ -204,7 +204,7 @@ pub(super) fn restore(root: &Path) -> Result<RestoreReport> {
         if to.is_dir() { let _ = std::fs::remove_dir_all(&to); } else if to.exists() { let _ = std::fs::remove_file(&to); }
         std::fs::rename(&from, &to)?;
     }
-    if root.join(ASSETS).is_dir() && !root.join("assets").exists() { std::fs::rename(root.join(ASSETS), root.join("assets"))?; }
+    if root.join(LEGACY_ASSETS).is_dir() && !root.join("assets").exists() { std::fs::rename(root.join(LEGACY_ASSETS), root.join("assets"))?; }
     let _ = std::fs::remove_dir(&backup);
     let _ = std::fs::remove_file(internal.join(BACKUP_INFO));
     write_atomic(&internal.join(RESTORED), &serde_json::to_vec_pretty(&BackupInfo { created: now(), launches: 0, done_ms: now_ms() })?)?;
@@ -279,7 +279,7 @@ fn undo(root: &Path, plan: &Plan) {
         let p = internal.join(name);
         let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
     }
-    if plan.assets && !root.join("assets").exists() && root.join(ASSETS).is_dir() { let _ = std::fs::rename(root.join(ASSETS), root.join("assets")); }
+    if plan.assets && !root.join("assets").exists() && root.join(LEGACY_ASSETS).is_dir() { let _ = std::fs::rename(root.join(LEGACY_ASSETS), root.join("assets")); }
 }
 
 /// Set the old layout aside, whole, in `.quiet/before-folders-4/`.
@@ -375,8 +375,8 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
         (created.unwrap_or(0), id.clone())
     });
     let assets = root.join("assets");
-    let hide = !(assets.exists() && root.join(ASSETS).exists());
-    if !hide { warnings.push(format!("文档库里已有 {ASSETS} 文件夹，图片仍保留在 assets 中")); }
+    let hide = !(assets.exists() && root.join(LEGACY_ASSETS).exists());
+    if !hide { warnings.push(format!("文档库里已有 {LEGACY_ASSETS} 文件夹，图片仍保留在 assets 中")); }
     // Folders, outermost first, each named after its title in its parent.
     let mut names = Names(HashMap::new());
     let mut rels: HashMap<String, String> = HashMap::new();
@@ -482,7 +482,7 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     if let Some(s) = reread::<Settings>(&root.join("settings.json")) { local.window_size = s.window_size; local.quick_note_size = s.quick_note_size; }
     std::fs::create_dir_all(local_path.parent().unwrap())?;
     write_atomic(&local_path, &serde_json::to_vec_pretty(&local)?)?;
-    if plan.assets { std::fs::rename(&assets, root.join(ASSETS))?; }
+    if plan.assets { std::fs::rename(&assets, root.join(LEGACY_ASSETS))?; }
     write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: 5 })?)?;
     Ok((written.len(), folders.len()))
 }

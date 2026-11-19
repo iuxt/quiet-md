@@ -86,7 +86,7 @@ impl Workspace {
     }
 
     pub(crate) fn capture_file_history(&mut self, redo: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.rename.is_some() || self.search_open || self.move_dlg.is_some()
+        if self.drawing_open(cx) || self.rename.is_some() || self.search_open || self.move_dlg.is_some()
             || (!self.file_history.prefer_files && self.view == View::Doc) { return; }
         cx.stop_propagation();
         self.file_history.requests.push_back(redo);

@@ -90,3 +90,4 @@
 <sheet token="shtabc"/>
 <bookmark href="https://example.com" title="书签"/>
 <p>结尾</p>
+<drawing path=".assets/example.excalidraw" preview=".assets/example.png" width="400" height="250"/>

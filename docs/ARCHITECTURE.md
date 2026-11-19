@@ -9,7 +9,7 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
 
-文档库采用 FORMAT 7：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
+文档库采用 FORMAT 8：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。新图片和附件存入库根的 `assets/`，旧 `.assets/` 引用继续有效。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
 
 Git 是可选功能。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。旧 FORMAT 5 的路径索引 Git 历史仍可读取。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行），仓库与网络操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
 
@@ -99,6 +99,12 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 - 根级普通文本、列表和任务项中，连续输入或删除字母数字只更新该条目的 key；只有 generation 连续且布局、链接和其他行状态都未变时才走此路径。结构性操作仍重建条目、目录及公式编号。
 - 百行以上表格先测量完整行高，之后只构造可见行及少量预取行；固定表头、跨行单元格和待显示的光标目标仍参与布局。编辑、列宽、图片和主题变化会使测量失效。
 - 长代码只绘制可见硬行及行号。GPUI 对带显式行顶坐标的文本使用实际行界限裁剪，避免屏幕外行创建覆盖整段的绘制层。
+
+## 画板
+
+`src/editor/drawing.rs` 在文档窗口内用 GPUI 绘制画布。打开画板时读取 `.excalidraw` 场景，拖动、绘制和画板内撤销都留在草稿里。保存时在后台渲染 PNG，检查原块或插入位置仍有效，再写入图源和预览。`Core::insert_drawing` / `replace_drawing` 把这对路径作为一次文档修改提交。正文、历史和导出只需展示 PNG。 `drawing_ui.rs` 把 Excalidraw 的工具顺序、底部控制区和上下文属性面板接到同一份草稿。画板可在原地保存，随后继续修改已经插入的块。
+
+`drawing_scene.rs` 在 Excalidraw 的相对点坐标和 Rust 渲染器的画布坐标间转换。导入时保留原始场景字段，导出时把修改合进去。手绘渲染和几何复用 `vendor/gpui-excalidraw` 的 Rust 代码。
 
 ## 内存与缓存
 
