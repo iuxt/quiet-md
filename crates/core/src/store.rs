@@ -327,12 +327,20 @@ struct Batch { lock: Option<WriteLock>, depth: u32, index: std::cell::Cell<bool>
 /// with shared metadata for Git. 6: virtual folders, one quiet.json,
 /// fixed notes/<UUID> body paths regardless of Git. 7: trash changes only
 /// metadata; deleted bodies keep their notes/ paths. 8: visible assets/.
-pub const FORMAT: u32 = 8;
+/// 9: separate Image/, Files/ and Drawing/ directories.
+pub const FORMAT: u32 = 9;
 pub(crate) fn virtual_format(format: u32) -> bool { format == FORMAT }
 /// The hidden folder holding the library's own data.
 pub const INTERNAL: &str = ".quiet";
-/// The folder holding pasted and inserted images and attachments.
-pub const ASSETS: &str = "assets";
+pub const IMAGE: &str = "Image";
+pub const FILES: &str = "Files";
+pub const DRAWING: &str = "Drawing";
+pub(crate) const RESOURCE_DIRS: [&str; 3] = [IMAGE, FILES, DRAWING];
+const LEGACY_ASSETS: &str = "assets";
+
+fn reserved_resource_dir(name: &str) -> bool {
+    RESOURCE_DIRS.into_iter().chain([LEGACY_ASSETS]).any(|dir| name.eq_ignore_ascii_case(dir))
+}
 
 #[path = "folders.rs"]
 mod folders;
@@ -500,15 +508,14 @@ fn reread<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
-/// Atomically replace a JSON index, keeping the version it replaces as
-/// `<name>.bak` for `load_json`. Unchanged contents are not rewritten (a
-/// synced library would upload every rewrite).
+/// Atomically replace a JSON index if its contents changed. Old local indexes
+/// keep their previous version for `load_json`.
 fn save_json<T: Serialize>(path: &std::path::Path, v: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(v)?;
     match std::fs::read(path) {
         Ok(old) if old == bytes => return Ok(()),
-        Ok(old) => backup_atomic(path, &with_suffix(path, ".bak"), &old)?,
-        Err(_) => {}
+        Ok(old) if path.file_name().is_some_and(|name| name != crate::manifest::FILE) => backup_atomic(path, &with_suffix(path, ".bak"), &old)?,
+        _ => {}
     }
     write_atomic(path, &bytes)
 }
@@ -530,11 +537,12 @@ fn moved_asset(root: &Path, p: &Path) -> Option<PathBuf> {
     use std::path::Component;
     if p.exists() { return None; }
     let parts: Vec<Component> = p.components().collect();
-    // The last folder so named that leads to a file; a file may be named `assets` itself.
-    (0..parts.len()).rev().filter(|&i| parts[i].as_os_str() == ASSETS).find_map(|i| {
+    // Use the last resource directory whose suffix still resolves in this library.
+    (0..parts.len()).rev().find_map(|i| {
+        let dir = parts[i].as_os_str().to_str()?;
         let rest = &parts[i + 1..];
-        if rest.is_empty() || !rest.iter().all(|c| matches!(c, Component::Normal(_))) { return None; }
-        let path = root.join(ASSETS).join(rest.iter().collect::<PathBuf>());
+        if !RESOURCE_DIRS.contains(&dir) || rest.is_empty() || !rest.iter().all(|c| matches!(c, Component::Normal(_))) { return None; }
+        let path = root.join(dir).join(rest.iter().collect::<PathBuf>());
         path.exists().then_some(path)
     })
 }
@@ -642,9 +650,6 @@ impl Store {
         reread::<FormatMarker>(&root.join(INTERNAL).join("format.json")).map(|m| m.format)
     }
 
-    /// Where new images and attachments go.
-    pub fn assets_in(root: &Path) -> PathBuf { root.join(ASSETS) }
-
     /// What the library's files are, without reading them: changes when a
     /// document or folder is added, removed or renamed (by hand, or a model
     /// writing a note), not when one is saved. Cheap enough to poll.
@@ -684,21 +689,13 @@ impl Store {
         Ok(())
     }
 
-    /// Where pasted / inserted images are copied to.
-    pub fn assets_dir() -> PathBuf {
-        let d = Self::assets_in(&Self::root_dir());
-        let _ = std::fs::create_dir_all(&d);
-        d
-    }
-
     /// A drawing save writes a new source asset for undo and history.
     pub fn save_drawing(root: &Path, source: &[u8], width: u32, height: u32) -> Result<crate::model::Drawing> {
-        let dir = Self::assets_in(root);
+        let dir = root.join(DRAWING);
         let id = uuid::Uuid::new_v4();
-        let base = dir.file_name().context("missing asset directory name")?.to_string_lossy();
         std::fs::create_dir_all(&dir)?;
         write_atomic(&dir.join(format!("{id}.excalidraw")), source)?;
-        Ok(crate::model::Drawing { source: format!("{base}/{id}.excalidraw"), preview: String::new(), width, height })
+        Ok(crate::model::Drawing { source: format!("{DRAWING}/{id}.excalidraw"), preview: String::new(), width, height })
     }
 
     /// The library at `root_dir`, moved to the new layout first when that
@@ -744,6 +741,7 @@ impl Store {
         match Self::format_at(&root) {
             Some(6) => anyhow::bail!("请先手动处理旧版回收站并更新文档库格式标记"),
             Some(7) => anyhow::bail!("文档库格式 7 已不受支持"),
+            Some(8) => anyhow::bail!("文档库格式 8 已不受支持"),
             _ => {}
         }
         virtual_migrate::recover(&root)?;
@@ -1037,6 +1035,7 @@ impl Store {
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(self.internal().join("format.json"))?)?;
         anyhow::ensure!(marker.format != 6, "请先手动处理旧版回收站并更新文档库格式标记");
         anyhow::ensure!(marker.format != 7, "文档库格式 7 已不受支持");
+        anyhow::ensure!(marker.format != 8, "文档库格式 8 已不受支持");
         anyhow::ensure!(marker.format <= FORMAT, "这个文档库由更新版本的 Quiet.md 创建，请升级后再打开");
         // An unreadable index is not judged here (that is `open`'s job): the
         // version in memory is written back unchanged.
@@ -1126,7 +1125,7 @@ impl Store {
             let name = match ext { Some(e) => format!("{stem}.{e}"), None => stem };
             let rel = join_rel(dir, &name);
             let low = rel.to_lowercase();
-            if low == ASSETS { continue; }
+            if reserved_resource_dir(&rel) { continue; }
             if own_rel.as_deref() == Some(low.as_str()) { return name; }
             let path = self.abs(&rel);
             let on_disk = path.symlink_metadata().is_ok() || layout::placeholder(&path).is_some_and(|p| p.exists());
@@ -2535,9 +2534,9 @@ mod tests {
         let file = dir.join("Plan.md");
         std::fs::write(&file, "text\n").unwrap();
         let mut s = lib.open();
-        std::fs::create_dir_all(lib.0.join(ASSETS)).unwrap();
-        let pasted = lib.0.join("assets/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
-        let picked = lib.0.join("assets/1a2b3c4d-截图说明.png");
+        std::fs::create_dir_all(lib.0.join(IMAGE)).unwrap();
+        let pasted = lib.0.join("Image/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
+        let picked = lib.0.join("Image/1a2b3c4d-截图说明.png");
         std::fs::write(&pasted, b"p").unwrap();
         std::fs::write(&picked, b"q").unwrap();
         // Something already there keeps its name.
@@ -2637,20 +2636,20 @@ mod tests {
     fn exports_stay_in_library_and_reads_are_bounded() {
         let lib = Lib::new("export");
         let outside = Lib::new("outside");
-        std::fs::create_dir_all(lib.0.join("assets")).unwrap();
+        std::fs::create_dir_all(lib.0.join(FILES)).unwrap();
         std::fs::create_dir_all(&outside.0).unwrap();
-        std::fs::write(lib.0.join("assets/good"), b"1234").unwrap();
+        std::fs::write(lib.0.join("Files/good"), b"1234").unwrap();
         std::fs::write(outside.0.join("secret"), b"secret").unwrap();
-        assert!(export_path_in(&lib.0, "assets/good").is_some());
+        assert!(export_path_in(&lib.0, "Files/good").is_some());
         assert!(export_path_in(&lib.0, &outside.0.join("secret").to_string_lossy()).is_none());
         let traversal = format!("../{}/secret", outside.0.file_name().unwrap().to_string_lossy());
         assert!(export_path_in(&lib.0, &traversal).is_none());
         #[cfg(unix)] {
-            std::os::unix::fs::symlink(&outside.0, lib.0.join("assets/link")).unwrap();
-            assert!(export_path_in(&lib.0, "assets/link/secret").is_none());
+            std::os::unix::fs::symlink(&outside.0, lib.0.join("Files/link")).unwrap();
+            assert!(export_path_in(&lib.0, "Files/link/secret").is_none());
         }
-        assert!(read_bounded(&lib.0.join("assets/good"), 3).is_err());
-        assert_eq!(read_bounded(&lib.0.join("assets/good"), 4).unwrap(), b"1234");
+        assert!(read_bounded(&lib.0.join("Files/good"), 3).is_err());
+        assert_eq!(read_bounded(&lib.0.join("Files/good"), 4).unwrap(), b"1234");
     }
 
     #[test]
@@ -2675,7 +2674,7 @@ mod tests {
     fn json_backup_is_independent_of_in_place_external_edits() {
         let lib = Lib::new("backup-independent");
         std::fs::create_dir_all(&lib.0).unwrap();
-        let path = lib.0.join("quiet.json");
+        let path = lib.0.join("index.json");
         save_json(&path, &["old"]).unwrap();
         let previous = std::fs::read(&path).unwrap();
         save_json(&path, &["new"]).unwrap();
@@ -3407,26 +3406,27 @@ mod tests {
         let mut old = Old::new(&lib, 3);
         let abs = |rel: &str| lib.0.join(rel).to_string_lossy().into_owned();
         let image = |src: String| Block::new(BlockKind::Image { src_kind: "src".into(), src, width: None, height: None, caption: None, crop: None }, RichText::default());
-        let moved = std::env::temp_dir().join("elsewhere/Quiet.md/assets/p.png").to_string_lossy().into_owned();
+        let moved = std::env::temp_dir().join("elsewhere/Quiet.md/Image/p.png").to_string_lossy().into_owned();
         let d = Document { title: RichText::plain("图"), blocks: vec![
-            image(abs("assets/p.png")),
-            Block::new(BlockKind::File(FileBlock { src_kind: "path".into(), src: abs("assets/files/1234/报告.pdf"), name: "报告.pdf".into(), view: FileView::Card }), RichText::default()),
+            image(abs("Image/p.png")),
+            Block::new(BlockKind::File(FileBlock { src_kind: "path".into(), src: abs("Files/1234/报告.pdf"), name: "报告.pdf".into(), view: FileView::Card }), RichText::default()),
             image(moved.clone()),
-            image(abs("assets/gone.png")),
+            image(abs("Image/gone.png")),
             // The fallback must not follow a path outside the asset directory.
-            image(std::env::temp_dir().join("elsewhere/Quiet.md/assets/x/../../secret.png").to_string_lossy().into_owned()),
+            image(std::env::temp_dir().join("elsewhere/Quiet.md/Image/x/../../secret.png").to_string_lossy().into_owned()),
         ], ..Default::default() };
         let id = old.put(&d, Meta::default());
         old.write();
-        std::fs::create_dir_all(lib.0.join("assets/files/1234")).unwrap();
-        std::fs::write(lib.0.join("assets/p.png"), b"png").unwrap();
-        std::fs::write(lib.0.join("assets/files/1234/报告.pdf"), b"pdf").unwrap();
+        std::fs::create_dir_all(lib.0.join(IMAGE)).unwrap();
+        std::fs::create_dir_all(lib.0.join("Files/1234")).unwrap();
+        std::fs::write(lib.0.join("Image/p.png"), b"png").unwrap();
+        std::fs::write(lib.0.join("Files/1234/报告.pdf"), b"pdf").unwrap();
         std::fs::write(lib.0.join("secret.png"), b"s").unwrap();
         let s = lib.migrated();
-        std::fs::create_dir_all(lib.0.join("assets/x")).unwrap();
+        std::fs::create_dir_all(lib.0.join("Image/x")).unwrap();
         let srcs = s.load(&id).unwrap().asset_sources();
         let found: Vec<Option<PathBuf>> = srcs.iter().map(|src| image_path_in(&lib.0, src).filter(|p| p.is_file())).collect();
-        assert_eq!(found, [Some(lib.0.join("assets/p.png")), Some(lib.0.join("assets/files/1234/报告.pdf")), Some(lib.0.join("assets/p.png")), None, None]);
+        assert_eq!(found, [Some(lib.0.join("Image/p.png")), Some(lib.0.join("Files/1234/报告.pdf")), Some(lib.0.join("Image/p.png")), None, None]);
         assert!(export_path_in(&lib.0, &srcs[0]).is_some() && export_path_in(&lib.0, &srcs[1]).is_some());
         assert!(export_path_in(&lib.0, &srcs[3]).is_none() && export_path_in(&lib.0, &srcs[4]).is_none());
         // A path that still exists is used as it is.

@@ -52,20 +52,22 @@ XML 文章默认保留标题、列表、引用、表格和行内样式进行正�
 
 ## 文件与元数据
 
-当前文档库采用 FORMAT 8。根目录 `quiet.json` 保存虚拟文件夹及文章元数据，正文固定在 `notes/<UUID>.xml|md`。无需启用 Git。文件夹仅由 `parentId`、文章归属仅由 `folderId` 表示，移动、重命名与移入回收站只更新 JSON，不改变正文路径或内容。完整清单示例见 [FORMAT.md](FORMAT.md)。
+当前文档库采用 FORMAT 9。根目录 `quiet.json` 保存虚拟文件夹及文章元数据，正文固定在 `notes/<UUID>.xml|md`。无需启用 Git。文件夹仅由 `parentId`、文章归属仅由 `folderId` 表示，移动、重命名与移入回收站只更新 JSON，不改变正文路径或内容。完整清单示例见 [FORMAT.md](FORMAT.md)。
 
-启用 Git 只初始化仓库并加入 `.gitattributes` / `.gitignore`。提交包含 `quiet.json`、格式标记、活动与回收站正文、`assets/` 资源。空文件夹也通过清单保存，克隆 / 拉取后无需建立对应目录。
+启用 Git 只初始化仓库并加入 `.gitattributes` / `.gitignore`。提交包含 `quiet.json`、格式标记、活动与回收站正文、`Image/`、`Files/` 和 `Drawing/` 中的资源。空文件夹也通过清单保存，克隆 / 拉取后无需建立对应目录。
 
 ```text
 Quiet.md/
 ├── quiet.json                 version: 2，folders / notes / trash
 ├── notes/<uuid>.xml|md        固定正文路径
-├── assets/                    工作目录中的原图与附件
-├── .gitattributes             /assets/** filter=lfs diff=lfs merge=lfs -text
+├── Image/                     图片和封面
+├── Files/                     文件附件
+├── Drawing/                   画板源文件
+├── .gitattributes             上述三个目录的 Git LFS 规则
 ├── .gitignore
 ├── .git/lfs/objects/          SHA-256 对象缓存
 └── .quiet/
-    ├── format.json            {"format": 8}
+    ├── format.json            {"format": 9}
     ├── before-virtual-6-*/    旧布局迁移备份，仅本地
     ├── history/               自动快照，仅本地
     └── git-preview/           不可变历史资源预览，仅本地
@@ -82,14 +84,14 @@ Quiet.md/
 ## 转换与恢复
 
 - 旧库转换独立于 Git 是否启用；先备份，转换中断可重开恢复。迁移与删除恢复规则见 [FORMAT.md](FORMAT.md)。原 Git 分支和提交保留，旧文章历史仍按 UUID 读取。
-- FORMAT 7 的提交已停止支持克隆和拉取。FORMAT 6 库需用户手动处理后再使用，不提供旧版回收站兼容分支。Markdown 链接、图片与引用定义随集中存储转换，代码中的同形文本保留。
+- FORMAT 7 和 FORMAT 8 的提交已停止支持克隆和拉取。FORMAT 6 库需用户手动处理后再使用，不提供旧版回收站兼容分支。Markdown 链接、图片与引用定义随集中存储转换，代码中的同形文本保留。
 - 手工放入 `notes/` 的文章在扫描时采用 UUID 文件名；目录不作为虚拟层级导入。遇到 UUID 冲突拒绝覆盖，不给固定文件名追加数字。
 - 拉取先验证远端路径、元数据、正文格式和 LFS 的大小 / SHA-256，再修改工作目录；写入出错时恢复文章与 Git 索引，HEAD 最后更新。未跟踪同名文件不覆盖。符号链接、可执行文件和文档库以外路径不接受。
 - 拉取到一半进程被强制终止时，可能留下 `.git/quiet-apply-*` 的备份；这不是多文件原子事务，需保留该目录以人工恢复。正常错误路径会自动回滚。转换备份同样应在核对完成前保留。
 
 文章「… → 版本历史」同时列出原有自动快照与 Git 提交。Git 提交不能在抽屉里删除或重命名；查看、另存副本和恢复沿用现有入口。历史图片按提交中的 LFS 指针加载为独立缓存；恢复或另存时写入新的资源路径，不覆盖当前图片。恢复文章只形成工作区改动，之后手动提交，不回退分支 HEAD。
 
-Git 版本化 `assets/` 中的图片 / 附件；外链、任意外部文件以及旧版本在启用 Git 之前的资源字节不在此保证内。旧自动快照继续保留，未自动转换成 Git 提交。已有笔记以往的图片变化无法从当前文件反向重建。
+Git 版本化 `Image/`、`Files/` 和 `Drawing/` 中的资源；外链、任意外部文件以及旧版本在启用 Git 之前的资源字节不在此保证内。旧自动快照继续保留，未自动转换成 Git 提交。已有笔记以往的图片变化无法从当前文件反向重建。
 
 ## 实现与验证
 

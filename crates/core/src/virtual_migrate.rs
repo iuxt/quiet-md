@@ -138,7 +138,7 @@ mod tests {
             let state = Migration { backup: ".quiet/before-virtual-6-test".into(), originals: vec!["Old/note.xml".into()],
                 destinations: vec![to.clone()], folders: vec!["Old".into()], marker: b"{\"format\":5}".to_vec(), manifest: None };
             save_json(&root.join(JOURNAL), &state).unwrap();
-            std::fs::write(root.join(".quiet/format.json"), if committed { b"{\"format\":8}" } else { b"{\"format\":5}" }).unwrap();
+            std::fs::write(root.join(".quiet/format.json"), if committed { b"{\"format\":9}" } else { b"{\"format\":5}" }).unwrap();
             recover(&root).unwrap(); assert!(!root.join(JOURNAL).exists());
             if committed {
                 assert!(!root.join("Old").exists()); assert_eq!(std::fs::read_to_string(root.join(to)).unwrap(), body);

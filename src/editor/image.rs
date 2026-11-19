@@ -589,7 +589,7 @@ impl ImageUi {
             toast: None,
             toast_task: None,
             remote: RefCell::default(),
-            remote_dir: Store::assets_in(&Store::root_dir()).join("remote"),
+            remote_dir: Store::root_dir().join(crate::store::IMAGE).join("remote"),
             generation: 0,
             retried: HashMap::new(),
             file_drop: None,
@@ -2230,8 +2230,7 @@ fn decode_rotated(path: &Path, crop: [f32; 4], rot: u8) -> Option<Arc<RenderImag
     Some(Arc::new(RenderImage::new(vec![image::Frame::new(buf)])))
 }
 
-/// A new image block for pasted or picked bytes, stored in the assets
-/// folder (format, size and pixel checks on upload).
+/// A new image block for pasted or picked bytes, stored under Image/.
 pub(super) fn image_block_from(bytes: &[u8], ext: &str) -> Result<Block, &'static str> { image_block_named(bytes, ext, None) }
 
 /// macOS screenshots may only offer TIFF. Store those as lossless PNG;
@@ -2267,7 +2266,7 @@ fn image_block_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Bloc
     Ok(b)
 }
 
-/// Checks picked or pasted image bytes and copies them into the assets folder.
+/// Checks picked or pasted image bytes and copies them into Image/.
 pub(super) fn store_image(bytes: &[u8], ext: &str) -> Result<PathBuf, &'static str> { store_image_named(bytes, ext, None) }
 
 /// `store_image`; an image with a `name` (a picked or dropped file) is kept
@@ -2290,7 +2289,9 @@ fn store_image_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Path
     let name: Option<String> = name.map(|n| n.chars().map(|c| if matches!(c, '/' | '\\' | ':') || c.is_control() { '_' } else { c }).take(80).collect::<String>())
         .map(|n| n.trim().trim_start_matches('.').to_string()).filter(|n| !n.is_empty());
     let file = match name { Some(n) => format!("{}-{n}.{ext}", &id[..8]), None => format!("{id}.{ext}") };
-    let path = Store::assets_dir().join(file);
+    let dir = Store::root_dir().join(crate::store::IMAGE);
+    std::fs::create_dir_all(&dir).map_err(|_| BAD_DIMS)?;
+    let path = dir.join(file);
     std::fs::write(&path, bytes).map_err(|_| BAD_DIMS)?;
     Ok(path)
 }
@@ -2307,7 +2308,7 @@ fn image_block_from_file(p: &Path) -> Result<Block, &'static str> {
     image_block_named(&bytes, &ext, p.file_stem().and_then(|s| s.to_str()))
 }
 
-/// File name of a remote image's download in `assets/remote`.
+/// File name of a remote image's download in `Image/remote`.
 fn remote_name(url: &str) -> String {
     let mut h = rustc_hash::FxHasher::default();
     url.hash(&mut h);
@@ -2316,7 +2317,7 @@ fn remote_name(url: &str) -> String {
 
 /// The downloaded copy of a remote image, if it has been fetched.
 pub fn cached_remote(root: &Path, url: &str) -> Option<PathBuf> {
-    let path = Store::assets_in(root).join("remote").join(remote_name(url));
+    let path = root.join(crate::store::IMAGE).join("remote").join(remote_name(url));
     path.is_file().then_some(path)
 }
 

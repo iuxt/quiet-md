@@ -9,7 +9,7 @@ const PAPER: [&str; 5] = ["#ffffff", "#f8f9fa", "#f5faff", "#fffce8", "#fdf8f6"]
 const EXTRA: [&str; 10] = ["#ffffff", "#868e96", "#c2255c", "#7048e8", "#3b5bdb", "#0c8599", "#099268", "#66a80f", "#e67700", "#d9480f"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Colors { Stroke, Fill, Paper }
+pub(super) enum Colors { Stroke, Fill, Paper, Text }
 
 impl DrawingEditor {
     pub(super) fn header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
@@ -123,6 +123,7 @@ impl DrawingEditor {
         if self.busy { return; }
         self.panel = (self.panel != Some(panel)).then_some(panel);
         self.colors = None;
+        self.more_fonts = false;
         cx.notify();
     }
 
@@ -167,8 +168,16 @@ impl DrawingEditor {
             Element::StickyNote(_) => Tool::Sticky, Element::Frame(_) | Element::MagicFrame(_) => Tool::Frame, _ => Tool::Rect,
         });
         let opts = &self.style;
+        let text = element.and_then(|e| {
+            let label = self.bound_text_index(e).map(|i| &self.doc.scene.elements[i]);
+            match label.unwrap_or(e) { Element::Text(t) => Some(t), _ => None }
+        });
         let mut body = ui::popover().id("drawing-props-panel").occlude().w(px(214.)).max_h(px(max_h)).overflow_y_scroll().p(px(11.)).flex().flex_col().gap(px(9.));
-        if tool != Tool::Image {
+        if tool == Tool::Text || text.is_some() {
+            let ink = text.map_or(self.text_color.as_str(), |t| &t.base.stroke_color);
+            body = body.child(self.swatches(tr("文字颜色", "Text color"), Colors::Text, ink, &STROKES, cx));
+        }
+        if !matches!(tool, Tool::Image | Tool::Text) {
             body = body.child(self.swatches(tr("描边", "Stroke"), Colors::Stroke, b.map_or(&opts.stroke_color, |b| &b.stroke_color), &STROKES, cx));
         }
         if matches!(tool, Tool::Select | Tool::Rect | Tool::Diamond | Tool::Ellipse | Tool::Sticky) {
@@ -222,16 +231,29 @@ impl DrawingEditor {
                 ("●", tr("圆点", "Dot"), arrowhead == Some(Arrowhead::Dot), StyleChoice::ArrowHead(Some(Arrowhead::Dot))),
             ], false, cx));
         }
-        if tool == Tool::Text {
-            let (font_size, align) = match element { Some(Element::Text(t)) => (t.font_size, t.text_align), _ => (self.text_size, self.text_align) };
-            body = body.child(options("text-size", tr("字号", "Font size"), [("S", 16.), ("M", 20.), ("L", 28.), ("XL", 36.)].map(|(label, v)| {
+        if tool == Tool::Text || text.is_some() {
+            let family = text.map_or(self.text_font, |t| t.font_family);
+            let font_size = text.map_or(self.text_size, |t| t.font_size);
+            let align = text.map_or(self.text_align, |t| t.text_align);
+            body = body.child(self.font_picker(family, cx));
+            body = body.child(options("text-size", tr("字体大小", "Font size"), [("XS", 12.), ("S", 16.), ("M", 20.), ("L", 28.), ("XL", 36.)].map(|(label, v)| {
                 (label, label, font_size == v, StyleChoice::TextSize(v))
             }), false, cx));
-            body = body.child(options("text-align", tr("对齐", "Text alignment"), [
+            let mut alignment = div().flex().flex_col().gap(px(4.)).child(option_buttons("text-align", [
                 ("align-left", tr("左对齐", "Left"), align == DrawingAlign::Left, StyleChoice::TextAlign(DrawingAlign::Left)),
                 ("align-center", tr("居中", "Center"), align == DrawingAlign::Center, StyleChoice::TextAlign(DrawingAlign::Center)),
                 ("align-right", tr("右对齐", "Right"), align == DrawingAlign::Right, StyleChoice::TextAlign(DrawingAlign::Right)),
             ], true, cx));
+            if let Some(t) = text && let Some(container) = t.container_id.as_deref().and_then(|id| self.doc.scene.get(id))
+                && !matches!(container, Element::Arrow(_) | Element::Line(_)) {
+                let align = t.vertical_align;
+                alignment = alignment.child(option_buttons("text-vertical", [
+                    ("valign-top", tr("顶部对齐", "Align top"), align == VerticalAlign::Top, StyleChoice::TextVertical(VerticalAlign::Top)),
+                    ("valign-middle", tr("垂直居中", "Align middle"), align == VerticalAlign::Middle, StyleChoice::TextVertical(VerticalAlign::Middle)),
+                    ("valign-bottom", tr("底部对齐", "Align bottom"), align == VerticalAlign::Bottom, StyleChoice::TextVertical(VerticalAlign::Bottom)),
+                ], true, cx));
+            }
+            body = body.child(section(tr("文本对齐", "Text alignment"), alignment));
         }
         body = body.child(self.opacity_slider(b.map_or(opts.opacity, |b| b.opacity), cx));
         if element.is_some() {
@@ -250,19 +272,47 @@ impl DrawingEditor {
         body
     }
 
+    fn font_picker(&self, current: FontFamily, cx: &mut Context<Self>) -> Div {
+        let mut row = div().flex().items_center().gap(px(4.));
+        let picks = [
+            (FontFamily::Excalifont, "pen-line", tr("手写", "Hand-drawn")), (FontFamily::Nunito, "type", tr("标准", "Normal")),
+            (FontFamily::ComicShanns, "code", tr("等宽", "Code")), (FontFamily::Lilita, "bold", tr("醒目", "Display")),
+        ];
+        for (family, glyph, label) in picks {
+            row = row.child(property_button(("text-font", family.code() as usize), label, current == family, cx, StyleChoice::TextFont(family))
+                .child(icon(glyph, 16., Theme::text())));
+        }
+        row = row.child(div().w(px(1.)).h(px(18.)).bg(Theme::line_divider()))
+            .child(icon_button("drawing-more-fonts", "chevron-down", tr("更多字体", "More fonts"), None, self.more_fonts || !picks.iter().any(|(family, ..)| *family == current), true)
+                .on_click(cx.listener(|d, _, _, cx| { d.more_fonts = !d.more_fonts; d.colors = None; cx.notify(); })));
+        section(tr("字体", "Font family"), div().flex().flex_col().gap(px(4.)).child(row).when(self.more_fonts, |d| {
+            let list = quiet_excalidraw::fonts::BUNDLED.iter().map(|&(family, _)| {
+                ui::menu_row(("drawing-font", family.code() as usize), "drawing-fonts".into())
+                    .font_family(family.name()).child(div().flex_1().child(family.label()))
+                    .when(current == family, checked)
+                    .on_click(cx.listener(move |d, _, w, cx| {
+                        d.more_fonts = false;
+                        d.apply_style(StyleChoice::TextFont(family), true, w, cx);
+                    }))
+            });
+            d.child(div().flex().flex_col().py(px(3.)).rounded(px(8.)).bg(Theme::bg_overlay()).children(list))
+        }))
+    }
+
     fn swatches(&self, label: &'static str, target: Colors, current: &str, colors: &[&'static str], cx: &mut Context<Self>) -> Div {
         let s = target as usize;
         let chooser = div().id(("drawing-color-more", s)).size(px(25.)).flex().items_center().justify_center().rounded(px(5.)).ml(px(4.)).border_1()
             .border_color(if self.colors == Some(target) { Theme::drawing_accent() } else { Theme::line_border() }).cursor_pointer().child(swatch_fill(current, 20.))
             .tip(tr("更多颜色", "More colors"), None)
-            .on_click(cx.listener(move |d, _, _, cx| { d.colors = (d.colors != Some(target)).then_some(target); cx.notify(); }));
+            .on_click(cx.listener(move |d, _, _, cx| { d.colors = (d.colors != Some(target)).then_some(target); d.more_fonts = false; cx.notify(); }));
         let buttons = |prefix, palette: &[&'static str]| palette.iter().copied().enumerate().map(|(i, color)| {
             div().id((prefix, s * 100 + i)).size(px(25.)).flex().items_center().justify_center().rounded(px(5.)).border_1().cursor_pointer()
                 .border_color(if current.eq_ignore_ascii_case(color) { Theme::drawing_accent() } else { gpui::transparent_black() }).child(swatch_fill(color, 21.)).tip(color, None)
-                .on_click(cx.listener(move |d, _, _, cx| match target {
-                    Colors::Stroke => d.apply_style(StyleChoice::Stroke(color), true, cx),
-                    Colors::Fill => d.apply_style(StyleChoice::Fill(color), true, cx),
+                .on_click(cx.listener(move |d, _, w, cx| match target {
+                    Colors::Stroke => d.apply_style(StyleChoice::Stroke(color), true, w, cx),
+                    Colors::Fill => d.apply_style(StyleChoice::Fill(color), true, w, cx),
                     Colors::Paper => d.change_paper(color, cx),
+                    Colors::Text => d.apply_style(StyleChoice::TextColor(color), true, w, cx),
                 }))
         }).collect::<Vec<_>>();
         section(label, div().flex().flex_col().gap(px(4.))
@@ -274,11 +324,11 @@ impl DrawingEditor {
         let bounds = self.opacity_bounds.clone();
         section(tr("透明度", "Opacity"), div().flex().flex_col().gap(px(3.))
             .child(div().id("drawing-opacity").relative().w_full().h(px(19.)).flex().items_center().cursor_pointer()
-                .on_mouse_down(MouseButton::Left, cx.listener(|d, ev: &MouseDownEvent, _, cx| {
-                    d.opacity_dragging = Some(false); d.set_opacity(ev.position.x, cx); cx.stop_propagation();
+                .on_mouse_down(MouseButton::Left, cx.listener(|d, ev: &MouseDownEvent, w, cx| {
+                    d.opacity_dragging = Some(false); d.set_opacity(ev.position.x, w, cx); cx.stop_propagation();
                 }))
-                .on_mouse_move(cx.listener(|d, ev: &MouseMoveEvent, _, cx| {
-                    if ev.pressed_button == Some(MouseButton::Left) { d.set_opacity(ev.position.x, cx); }
+                .on_mouse_move(cx.listener(|d, ev: &MouseMoveEvent, w, cx| {
+                    if ev.pressed_button == Some(MouseButton::Left) { d.set_opacity(ev.position.x, w, cx); }
                 }))
                 .on_mouse_up(MouseButton::Left, cx.listener(|d, _, _, _| d.opacity_dragging = None))
                 .on_mouse_up_out(MouseButton::Left, cx.listener(|d, _, _, _| d.opacity_dragging = None))
@@ -292,14 +342,14 @@ impl DrawingEditor {
             .child(div().flex().justify_between().text_size(px(10.)).text_color(Theme::text_caption()).child("0").child("100")))
     }
 
-    fn set_opacity(&mut self, x: Pixels, cx: &mut Context<Self>) {
+    fn set_opacity(&mut self, x: Pixels, window: &Window, cx: &mut Context<Self>) {
         let Some(has_checkpoint) = self.opacity_dragging else { return };
         let track = self.opacity_bounds.get();
         if track.size.width <= px(14.) { return; }
         let value = (100. * f32::from(x - track.left() - px(7.)) / f32::from(track.size.width - px(14.))).round().clamp(0., 100.) as f64;
         let current = self.selected.map_or(self.style.opacity, |i| self.doc.scene.elements[i].base().opacity);
         if current != value {
-            self.apply_style(StyleChoice::Opacity(value), !has_checkpoint, cx);
+            self.apply_style(StyleChoice::Opacity(value), !has_checkpoint, window, cx);
             self.opacity_dragging = Some(true);
         }
     }
@@ -351,18 +401,22 @@ fn section(label: &'static str, content: Div) -> Div {
 }
 
 fn options<const N: usize>(id: &'static str, label: &'static str, items: [(&'static str, &'static str, bool, StyleChoice); N], icons: bool, cx: &mut Context<DrawingEditor>) -> Div {
+    section(label, option_buttons(id, items, icons, cx))
+}
+
+fn option_buttons<const N: usize>(id: &'static str, items: [(&'static str, &'static str, bool, StyleChoice); N], icons: bool, cx: &mut Context<DrawingEditor>) -> Div {
     let buttons = items.into_iter().enumerate().map(|(i, (glyph, tip, selected, choice))| {
         property_button((id, i), tip, selected, cx, choice)
             .when(icons, |d| d.child(icon(glyph, 16., Theme::text())))
             .when(!icons, |d| d.child(glyph))
     });
-    section(label, div().flex().gap(px(4.)).children(buttons))
+    div().flex().gap(px(4.)).children(buttons)
 }
 
 fn property_button(id: impl Into<ElementId>, tip: &str, selected: bool, cx: &mut Context<DrawingEditor>, choice: StyleChoice) -> Stateful<Div> {
     div().id(id).size(px(32.)).flex_none().flex().items_center().justify_center().rounded(px(8.)).cursor_pointer().text_size(px(13.))
         .bg(if selected { Theme::drawing_selection() } else { Theme::bg_overlay() }).hover(|s| s.bg(Theme::fill_hover())).tip(tip, None)
-        .on_click(cx.listener(move |d, _, _, cx| d.apply_style(choice, true, cx)))
+        .on_click(cx.listener(move |d, _, w, cx| d.apply_style(choice, true, w, cx)))
 }
 
 fn swatch_fill(value: &str, extent: f32) -> AnyElement {

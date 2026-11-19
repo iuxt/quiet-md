@@ -25,6 +25,7 @@ fn default_library_uses_virtual_folders_and_fixed_body_files_without_git() {
     s.set_parent(&a, Some(&b)).unwrap_err();
     s.set_parent(&b, None).unwrap(); s.set_parent(&id, Some(&a)).unwrap();
     s.rename(&a, "Renamed folder").unwrap(); s.rename(&id, "New title").unwrap(); s.rename(&md, "New Markdown title").unwrap();
+    assert!(!lib.0.join("quiet.json.bak").exists());
     assert_eq!(std::fs::read(&path).unwrap(), bytes); assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
     assert_eq!(std::fs::read(&md_path).unwrap(), md_bytes); assert_eq!(s.file_path(&id).unwrap(), path);
     assert!(!lib.0.join("Projects").exists()); assert!(!lib.0.join("Renamed folder").exists());
@@ -47,6 +48,7 @@ fn virtual_tree_delete_restore_and_undo_preserve_structure_and_bytes() {
     s.apply_file_history(&changes, false).unwrap(); assert_eq!(std::fs::read(&path).unwrap(), bytes);
     assert_eq!(s.index[&id].parent.as_deref(), Some(child.as_str())); assert_eq!(s.index[&child].parent.as_deref(), Some(root.as_str()));
     s.apply_file_history(&changes, true).unwrap(); s.restore(&root).unwrap(); assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert!(!lib.0.join("quiet.json.bak").exists());
     s.delete(&root, None).unwrap(); assert_eq!(lib.manifest().trash.len(), 3);
     assert!(s.list().is_empty()); assert!(path.is_file());
     assert_eq!(std::fs::read(s.trash_path(&id)).unwrap(), bytes);
@@ -58,7 +60,7 @@ fn trash_folders_open_documents_and_history_without_restoring_or_writing_bodies(
     let folder = s.create_folder("Deleted folder", None).unwrap(); let nested = s.create_folder("Nested", Some(&folder)).unwrap();
     let xml = s.create_from_in(&doc("Stored title"), Some(&nested)).unwrap();
     s.rename(&xml, "Manifest title").unwrap();
-    let md = s.create_markdown_in(&doc("Markdown title"), "# Heading\n\n![Image](../assets/picture.png)\n", Some(&nested)).unwrap();
+    let md = s.create_markdown_in(&doc("Markdown title"), "# Heading\n\n![Image](../Image/picture.png)\n", Some(&nested)).unwrap();
     let ids = [&xml, &md];
     let bodies: Vec<_> = ids.iter().map(|id| (s.file_path(id).unwrap(), std::fs::read(s.file_path(id).unwrap()).unwrap())).collect();
     for id in ids { assert!(s.save_version_now(id).unwrap()); }
@@ -72,7 +74,7 @@ fn trash_folders_open_documents_and_history_without_restoring_or_writing_bodies(
     assert_eq!(reopened.load_trash(&xml).unwrap().title.text, "Manifest title");
     let markdown = reopened.load_trash(&md).unwrap();
     assert_eq!(markdown.title.text, "Markdown title"); assert!(markdown.plain_text().contains("Heading"));
-    assert!(Path::new(&markdown.asset_sources()[0]).ends_with("assets/picture.png"));
+    assert!(Path::new(&markdown.asset_sources()[0]).ends_with("Image/picture.png"));
     for id in [&xml, &md] {
         let versions = reopened.versions(id); assert_eq!(versions.len(), 1);
         let name = &versions[0].name;
@@ -111,14 +113,23 @@ fn invalid_manifests_are_rejected_and_unknown_fields_survive_writes() {
     let id = s.create_from_in(&doc("Note"), Some(&folder)).unwrap();
     let mut manifest = lib.manifest(); manifest.extra.insert("custom".into(), serde_json::json!({"keep": true}));
     manifest.notes[0].extra.insert("sourcePath".into(), "old/path.md".into());
-    save_json(&lib.0.join("quiet.json"), &manifest).unwrap(); s.rename(&id, "Edited").unwrap();
+    let path = lib.0.join("quiet.json");
+    let backup = lib.0.join("quiet.json.bak");
+    save_json(&path, &manifest).unwrap();
+    let previous = std::fs::read(&path).unwrap(); std::fs::write(&backup, &previous).unwrap();
+    s.rename(&id, "Edited").unwrap();
+    assert_eq!(std::fs::read(&backup).unwrap(), previous);
     let valid = lib.manifest(); assert_eq!(valid.extra["custom"]["keep"], true); assert_eq!(valid.notes[0].extra["sourcePath"], "old/path.md");
     let mut bad = valid.clone(); bad.notes[0].filename = "../outside.xml".into(); assert!(bad.validate().is_err());
     let mut bad = valid.clone(); bad.notes[0].folder = Some(id.clone()); assert!(bad.validate().is_err());
     let mut bad = valid.clone(); bad.folders[0].parent = Some(folder); assert!(bad.validate().is_err());
     let mut bad = valid; bad.notes.push(bad.notes[0].clone()); assert!(bad.validate().is_err());
-    std::fs::write(lib.0.join("quiet.json"), b"broken JSON").unwrap();
-    let mut recovered = lib.open(); assert!(!recovered.take_warnings().is_empty()); assert!(recovered.load(&id).is_ok());
+    let body_path = s.path(&id); let body = std::fs::read(&body_path).unwrap();
+    std::fs::write(&path, b"broken JSON").unwrap();
+    assert!(s.delete(&id, None).is_err()); assert!(Store::open_at(lib.0.clone()).is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), b"broken JSON");
+    assert_eq!(std::fs::read(&backup).unwrap(), previous);
+    assert_eq!(std::fs::read(&body_path).unwrap(), body);
 }
 
 #[test]
@@ -127,19 +138,23 @@ fn legacy_physical_library_migrates_titles_links_images_with_backup() {
     std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
     let mut s = lib.open(); let root = s.create_folder("Physical", None).unwrap(); let nested = s.create_folder("Child", Some(&root)).unwrap();
     let id = s.create_from_in(&doc("XML"), Some(&nested)).unwrap();
-    std::fs::create_dir_all(lib.0.join("assets")).unwrap(); std::fs::write(lib.0.join("assets/image.png"), b"image bytes").unwrap();
+    std::fs::create_dir_all(lib.0.join("Image")).unwrap(); std::fs::write(lib.0.join("Image/image.png"), b"image bytes").unwrap();
     let md = s.create_markdown_in(&doc("Markdown"), "", Some(&root)).unwrap();
-    let source = format!("---\nkeep: true\n---\n[XML](Child/{id}.xml#part)\n\n![image](assets/image.png)\n\n`[code](Child/{id}.xml)`\n\n[ref][n]\n\n[n]: Child/{id}.xml\n");
+    let source = format!("---\nkeep: true\n---\n[XML](Child/{id}.xml#part)\n\n![image](Image/image.png)\n\n`[code](Child/{id}.xml)`\n\n[ref][n]\n\n[n]: Child/{id}.xml\n");
     std::fs::write(s.file_path(&md).unwrap(), &source).unwrap();
     let original_path = s.file_path(&id).unwrap(); let original = std::fs::read(&original_path).unwrap();
+    let old_index = std::fs::read(s.index_file()).unwrap();
+    std::fs::write(lib.0.join("quiet.json"), &old_index).unwrap();
     s.use_virtual_folders().unwrap(); assert!(s.virtual_folders()); assert!(!original_path.exists());
+    assert!(!lib.0.join("quiet.json.bak").exists());
     assert_eq!(std::fs::read(s.file_path(&id).unwrap()).unwrap(), original); assert_eq!(s.index[&id].parent.as_deref(), Some(nested.as_str()));
     let text = std::fs::read_to_string(s.file_path(&md).unwrap()).unwrap();
-    assert!(text.contains(&format!("[XML]({id}.xml#part)"))); assert!(text.contains("![image](../assets/image.png)"));
+    assert!(text.contains(&format!("[XML]({id}.xml#part)"))); assert!(text.contains("![image](../Image/image.png)"));
     assert!(text.contains(&format!("`[code](Child/{id}.xml)`"))); assert!(text.contains(&format!("[n]: {id}.xml")));
     assert!(text.starts_with("---\nkeep: true\n---\n")); assert_eq!(s.load(&md).unwrap().title.text, "Markdown");
     let backup = std::fs::read_dir(lib.0.join(".quiet")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("before-virtual-6-")).unwrap().path();
     assert_eq!(std::fs::read(backup.join(original_path.strip_prefix(&lib.0).unwrap())).unwrap(), original);
+    assert_eq!(std::fs::read(backup.join("quiet.json")).unwrap(), old_index);
     assert!(!lib.0.join("Physical").exists()); assert!(lib.manifest().trash.is_empty()); assert!(!s.git_enabled());
     s.use_virtual_folders().unwrap(); assert_eq!(lib.manifest().notes.len(), 2);
 }
@@ -149,13 +164,14 @@ fn virtual_markdown_assets_stay_relative_and_git_moves_only_change_manifest() {
     use crate::{model::{Block, BlockKind, RichText}, git::{LibraryRepo, Config}};
     let lib = Library::new(); let mut s = lib.open();
     let shape = Store::shape_at(&lib.0);
-    std::fs::create_dir_all(lib.0.join("assets")).unwrap(); std::fs::write(lib.0.join("assets/test.png"), b"picture").unwrap();
-    std::fs::write(lib.0.join("assets/attachment.md"), b"attachment").unwrap();
+    std::fs::create_dir_all(lib.0.join("Image")).unwrap(); std::fs::write(lib.0.join("Image/test.png"), b"picture").unwrap();
+    std::fs::create_dir_all(lib.0.join("Files")).unwrap();
+    std::fs::write(lib.0.join("Files/attachment.md"), b"attachment").unwrap();
     assert_eq!(Store::shape_at(&lib.0), shape);
-    let mut document = doc("Images"); document.blocks = vec![Block::new(BlockKind::Image { src_kind: "path".into(), src: "assets/test.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default())];
+    let mut document = doc("Images"); document.blocks = vec![Block::new(BlockKind::Image { src_kind: "path".into(), src: "Image/test.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default())];
     let id = s.create_markdown(&document, "").unwrap(); let path = s.file_path(&id).unwrap();
-    assert!(std::fs::read_to_string(&path).unwrap().contains("../assets/test.png"));
-    assert_eq!(s.load(&id).unwrap().asset_sources(), vec![lib.0.join("assets/test.png").to_string_lossy().into_owned()]);
+    assert!(std::fs::read_to_string(&path).unwrap().contains("../Image/test.png"));
+    assert_eq!(s.load(&id).unwrap().asset_sources(), vec![lib.0.join("Image/test.png").to_string_lossy().into_owned()]);
     let loaded = s.load_for_edit(&id, false).unwrap(); s.save(&id, &loaded).unwrap();
     assert!(!std::fs::read_to_string(&path).unwrap().contains(lib.0.to_str().unwrap()));
     let folder = s.create_folder("Virtual", None).unwrap(); s.enable_git().unwrap();

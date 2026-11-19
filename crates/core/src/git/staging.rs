@@ -103,7 +103,8 @@ impl LibraryRepo {
             if format >= FORMAT && before.as_ref().map(|t| self.tree_format(t)).transpose()?.unwrap_or_default() < FORMAT {
                 let attr = tree.get_path(Path::new(".gitattributes")).context("请同时暂存 Git LFS 规则")?;
                 let attr = self.repo.find_blob(attr.id())?;
-                ensure!(std::str::from_utf8(attr.content())?.lines().any(|line| line == ASSET_ATTRIBUTE), "请同时暂存 Git LFS 规则");
+                let rules = std::str::from_utf8(attr.content())?;
+                ensure!(asset_attributes().all(|rule| rules.lines().any(|line| line == rule)), "请同时暂存 Git LFS 规则");
             }
             for pointer in self.pointers(None, &tree)? { lfs::Lfs::new(self.repo.path()).read(&pointer)?; }
         }

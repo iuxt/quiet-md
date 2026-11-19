@@ -244,7 +244,7 @@ fn thumb_dir(p: &Path) -> PathBuf {
         m.len().hash(&mut h);
         m.modified().ok().hash(&mut h);
     }
-    Store::assets_dir().join("thumbs").join(format!("{:016x}", h.finish()))
+    Store::root_dir().join(crate::store::INTERNAL).join("thumbs").join(format!("{:016x}", h.finish()))
 }
 
 fn first_png(dir: &Path) -> Option<PathBuf> {
@@ -278,11 +278,11 @@ pub fn quick_look(p: &Path) {
     });
 }
 
-/// A new attachment for `p`, copied into `assets/files/<uuid>/<name>`.
+/// A new attachment for `p`, copied into `Files/<uuid>/<name>`.
 fn file_block_from_path(p: &Path) -> Option<Block> {
     let name = p.file_name()?.to_string_lossy().to_string();
     let size = std::fs::metadata(p).ok().filter(|m| m.is_file())?.len();
-    let dir = Store::assets_dir().join("files").join(uuid::Uuid::new_v4().to_string());
+    let dir = Store::root_dir().join(crate::store::FILES).join(uuid::Uuid::new_v4().to_string());
     std::fs::create_dir_all(&dir).ok()?;
     let dest = dir.join(&name);
     std::fs::copy(p, &dest).ok()?;

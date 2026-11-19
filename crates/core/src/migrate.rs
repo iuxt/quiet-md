@@ -166,22 +166,24 @@ pub(super) fn restore(root: &Path) -> Result<RestoreReport> {
     std::fs::create_dir_all(&kept)?;
     // What the new layout holds now: changed since the move?
     let mut changed = 0;
-    fn count(dir: &Path, assets: &Path, since: u128, n: &mut usize) {
+    fn count(root: &Path, dir: &Path, since: u128, n: &mut usize) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             let p = e.path();
-            if p == assets || e.file_name().to_string_lossy().starts_with('.') { continue; }
-            if p.is_dir() { count(&p, assets, since, n); continue; }
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || (dir == root && reserved_resource_dir(&name)) { continue; }
+            if p.is_dir() { count(root, &p, since, n); continue; }
             let ext = p.extension().and_then(|x| x.to_str());
             let t = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
             if matches!(ext, Some("xml" | "md")) && t > since { *n += 1; }
         }
     }
-    count(root, &Store::assets_in(root), since, &mut changed);
+    count(root, root, since, &mut changed);
     // Set aside: the notes and folders, then the new layout's own files.
     for e in std::fs::read_dir(root)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
-        if n.starts_with('.') || n == ASSETS { continue; }
+        if n.starts_with('.') || reserved_resource_dir(&n) { continue; }
         std::fs::rename(e.path(), kept.join(&n))?;
     }
     let inner = kept.join(INTERNAL);
@@ -340,7 +342,7 @@ impl Names {
         for n in 1.. {
             let stem = if n == 1 { base.to_string() } else { format!("{base} {n}") };
             let name = match ext { Some(e) => format!("{stem}.{e}"), None => stem };
-            if dir.is_empty() && name.eq_ignore_ascii_case(ASSETS) { continue; }
+            if dir.is_empty() && reserved_resource_dir(&name) { continue; }
             if used.insert(name.to_lowercase()) { return name; }
         }
         unreachable!()

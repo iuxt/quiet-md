@@ -202,27 +202,14 @@ fn svg_options() -> &'static usvg::Options<'static> {
         // quiet.md: images in drawings are embedded; never resolve external paths.
         options.image_href_resolver.resolve_string = Box::new(|_, _| None);
         {
-            // quiet.md: use the platform fonts; only the renderer is vendored.
             let db = options.fontdb_mut();
             db.load_system_fonts();
+            for &(_, data) in crate::fonts::BUNDLED {
+                db.load_font_data(data.to_vec());
+            }
         }
         options
     })
-}
-
-fn font_family_name(family: FontFamily) -> &'static str {
-    match family {
-        FontFamily::Virgil => "Virgil, sans-serif",
-        FontFamily::Helvetica => "Helvetica, sans-serif",
-        FontFamily::Cascadia => "Cascadia, monospace",
-        FontFamily::Assistant => "Assistant, sans-serif",
-        FontFamily::Excalifont => "Excalifont, sans-serif",
-        FontFamily::ComicShanns => "ComicShanns, cursive",
-        FontFamily::Liberation => "Liberation Sans, sans-serif",
-        FontFamily::Nunito => "Nunito, sans-serif",
-        FontFamily::Lilita => "Lilita One, sans-serif",
-        FontFamily::Xiaolai => "Xiaolai, sans-serif",
-    }
 }
 
 impl SvgExporter {
@@ -332,7 +319,10 @@ fn write_drawable(svg: &mut String, d: &Drawable, files: &BinaryFiles, dark_mode
             crate::core::types::TextAlign::Center => ("middle", t.x + t.width / 2.0),
             crate::core::types::TextAlign::Right => ("end", t.x + t.width),
         };
-        let font_family = font_family_name(t.font_family);
+        let fallback = match t.font_family {
+            FontFamily::Cascadia | FontFamily::ComicShanns => "monospace",
+            _ => "sans-serif",
+        };
 
         let lines: Vec<&str> = t.text.split('\n').collect();
         let line_h = t.font_size * t.line_height;
@@ -344,11 +334,12 @@ fn write_drawable(svg: &mut String, d: &Drawable, files: &BinaryFiles, dark_mode
         };
         let _ = write!(
             svg,
-            "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" font-family=\"{}\" fill=\"{}\" text-anchor=\"{}\" dominant-baseline=\"middle\">",
+            "<text x=\"{:.2}\" y=\"{:.2}\" font-size=\"{:.2}\" font-family=\"{}, {}\" fill=\"{}\" text-anchor=\"{}\" dominant-baseline=\"middle\">",
             anchor_x,
             block_top + line_h / 2.0,
             t.font_size,
-            font_family,
+            t.font_family.name(),
+            fallback,
             color,
             anchor
         );

@@ -14,7 +14,7 @@ here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-document-safety-"))
 source = work / "source"
 (source / ".quiet").mkdir(parents=True)
-(source / ".quiet/format.json").write_text('{"format":8}')
+(source / ".quiet/format.json").write_text('{"format":9}')
 (source / "quiet.json").write_text('{"version":2,"folders":[],"notes":[],"trash":[]}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False, "onboarding_done": True,

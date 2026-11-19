@@ -79,6 +79,7 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 
 `vendor/gpui-excalidraw` 取自 [LittleGuest/gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw/tree/2641e1b9c00b51e5e8329094a7d88cd1223ed630)。只保留场景、几何、手绘路径和 SVG/PNG 渲染所需的 Rust 模块。用本地 `quiet_excalidraw` crate 暴露这部分代码，界面、字体与图标由 Quiet.md 提供。
 
-- 栅格化使用系统字体，只解析内嵌图片，长边上限为 2048 像素。画板预览可直接取内存像素，保存画板可以只算预览尺寸，PNG 导出复用同一套栅格化逻辑。
+- 栅格化使用内置画板字体和系统字体，只解析内嵌图片，长边上限为 2048 像素。画板预览可直接取内存像素，保存画板可以只算预览尺寸，PNG 导出复用同一套栅格化逻辑。
 - SVG 输出处理旋转、透明度和填充线条颜色，补充 PNG 渲染所需的内嵌图片命名空间和图片透明度。
+- 形状内文字重新布局时保留水平和垂直对齐，并使用原始文字重新折行。
 - 路径生成对大尺寸图形采样，并限制虚线细分。非 ASCII 颜色值不会触发字节边界错误。

@@ -9,9 +9,9 @@ Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{reminder-day:YYYY-MM-DD}}       whole-day reminder, notified 09:00 that day
   {{countdown:YYYY-MM-DD HH:MM}}    countdown block to that moment (blue)
   {{button:Action|url|text|color}}  inline button (OpenLink / DuplicatePage)
-Assets under guides/assets are copied to <out>/assets/guides.
+Assets under guides/assets are copied to the library's resource directories.
 
-The output is a FORMAT 8 library: virtual folder identities in quiet.json,
+The output is a FORMAT 9 library: virtual folder identities in quiet.json,
 fixed notes/<UUID>.xml bodies and relative document links.
 """
 import datetime as dt, json, re, shutil, sys, time, uuid
@@ -98,12 +98,11 @@ def fill(x):
     x = re.sub(r"\{\{countdown:([0-9-]+ [0-9:]+)\}\}", countdown, x)
     x = re.sub(r"\{\{button:([^}]+)\}\}", button, x)
     assert "{{" not in x, re.search(r"\{\{[^}]*\}\}", x).group(0)
-    # A cover is a file in the library (the app copies a gallery pick into
-    # assets): bring the app's gallery image along.
+    # A cover is a file in the library: bring the app's gallery image along.
     def cover(m):
         name = m.group(1)
         covers.add(name)
-        return f'cover="assets/guides/covers/{name}"'
+        return f'cover="Image/guides/covers/{name}"'
     return re.sub(r'cover="covers/([^"]+)"', cover, x)
 
 covers = set()
@@ -150,9 +149,22 @@ for k, parent, _ in order:
                   "createdAt": stamp(meta["created"]), "updatedAt": stamp(meta["modified"]), "options": options})
 manifest = {"version": 2, "folders": sorted(folders, key=lambda f: f["id"]), "notes": sorted(notes, key=lambda n: n["id"]), "trash": []}
 (out / "quiet.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-(out / ".quiet" / "format.json").write_text('{\n  "format": 8\n}')
-shutil.copytree(here / "assets", out / "assets" / "guides")
-(out / "assets" / "guides" / "covers").mkdir()
+(out / ".quiet" / "format.json").write_text('{\n  "format": 9\n}')
+for asset in sorted((here / "assets").rglob("*")):
+    if not asset.is_file() or asset.name.startswith("."):
+        continue
+    ext = asset.suffix.lower()
+    if ext in {".jpeg", ".jpg", ".png", ".gif", ".webp", ".bmp"}:
+        folder = "Image"
+    elif ext == ".excalidraw":
+        folder = "Drawing"
+    else:
+        folder = "Files"
+    dest = out / folder / "guides" / asset.relative_to(here / "assets")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(asset, dest)
+cover_dir = out / "Image" / "guides" / "covers"
+cover_dir.mkdir(parents=True, exist_ok=True)
 for name in sorted(covers):
-    shutil.copy2(here.parent.parent / "assets" / "covers" / name, out / "assets" / "guides" / "covers" / name)
+    shutil.copy2(here.parent.parent / "assets" / "covers" / name, cover_dir / name)
 print(out)

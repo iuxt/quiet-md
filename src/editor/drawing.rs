@@ -5,9 +5,14 @@ mod chrome;
 use super::{drawing_scene::{self, DrawingScene, MAX_COORD, MAX_ELEMENTS, MAX_POINTS, MAX_SOURCE}, render::Env, view::{Editor, EditorEvent}};
 use crate::{input::{TextField, TextFieldEvent}, model::{BlockId, BlockKind, Drawing}, settings::tr, store::{self, Store}, theme::{self, Theme}, ui};
 use gpui::{prelude::FluentBuilder, *};
-use quiet_excalidraw::core::{self as scene, arrowhead::Arrowhead, bounds::element_bounds, element::Element, factory::{self, ElementOptions}, geometry::Point as World, scene::Scene, types::{FillStyle, Roundness, RoundnessType, StrokeStyle, TextAlign as DrawingAlign, VerticalAlign}};
+use quiet_excalidraw::core::{self as scene, arrowhead::Arrowhead, bounds::element_bounds, element::{Element, TextElement}, factory::{self, ElementOptions}, geometry::Point as World, scene::Scene, types::{FillStyle, FontFamily, Roundness, RoundnessType, StrokeStyle, TextAlign as DrawingAlign, VerticalAlign}};
 use quiet_excalidraw::render::shape::{Drawable, Op, Rgba as Ink, render_element, render_element_with_lookup};
 actions!(drawing, [SaveDrawing, UndoDrawing, RedoDrawing]);
+
+pub(crate) fn load_fonts(cx: &App) {
+    let fonts = quiet_excalidraw::fonts::BUNDLED.iter().map(|(_, data)| std::borrow::Cow::Borrowed(*data)).collect();
+    if let Err(e) = cx.text_system().add_fonts(fonts) { log::warn!("load drawing fonts: {e:#}"); }
+}
 
 pub(crate) fn bind_keys(cx: &mut App) {
     let context = Some("DrawingEditor");
@@ -114,7 +119,7 @@ struct DrawingState { scene: Scene, background: String }
 #[derive(Clone, Copy)]
 enum StyleChoice {
     Stroke(&'static str), Fill(&'static str), Width(f64), StrokeStyle(StrokeStyle), FillStyle(FillStyle), Roughness(f64), Round(bool), Opacity(f64),
-    TextSize(f64), TextAlign(DrawingAlign), ArrowHead(Option<Arrowhead>),
+    TextColor(&'static str), TextFont(FontFamily), TextSize(f64), TextAlign(DrawingAlign), TextVertical(VerticalAlign), ArrowHead(Option<Arrowhead>),
 }
 
 #[derive(Clone, Copy)]
@@ -146,13 +151,16 @@ pub(crate) struct DrawingEditor {
     panel: Option<Panel>,
     grid: bool,
     colors: Option<chrome::Colors>,
+    more_fonts: bool,
     zen: bool,
     dark_canvas: bool,
     reset_confirmation: bool,
     style: ElementOptions,
     rounded: bool,
+    text_font: FontFamily,
     text_size: f64,
     text_align: DrawingAlign,
+    text_color: String,
     arrowhead: Option<Arrowhead>,
     opacity_dragging: Option<bool>,
     opacity_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -191,8 +199,9 @@ impl DrawingEditor {
         });
         let saved = DrawingState { scene: doc.scene.clone(), background: doc.background.clone() };
         let mut this = Self { parent, target, doc, focus: cx.focus_handle(), field, _field_sub: field_sub, text_at: None, text_container: None,
-            edit_link: None, tool_locked: false, panel: None, colors: None, grid: false, zen: false, dark_canvas: false, reset_confirmation: false,
-            style: ElementOptions::default(), rounded: true, text_size: 20., text_align: DrawingAlign::Left, arrowhead: Some(Arrowhead::Arrow),
+            edit_link: None, tool_locked: false, panel: None, colors: None, more_fonts: false, grid: false, zen: false, dark_canvas: false, reset_confirmation: false,
+            text_color: ElementOptions::default().stroke_color, style: ElementOptions::default(), rounded: true,
+            text_font: FontFamily::Excalifont, text_size: 20., text_align: DrawingAlign::Left, arrowhead: Some(Arrowhead::Arrow),
             opacity_dragging: None, opacity_bounds: Rc::default(), pending_image: None,
             tool: Tool::Select, selected: None, gesture: None, viewport: Rc::new(Cell::new(Bounds::default())), offset: point(px(0.), px(0.)), zoom: 1., fit: true,
             undo: VecDeque::new(), redo: Vec::new(), saved, imported: false, artwork: Rc::default(), images: Rc::default(), busy: false, close_after_save: false, saving: false, discard: false, error: None };
@@ -368,7 +377,7 @@ impl DrawingEditor {
             let result = cx.background_executor().spawn(async move {
                 let bytes = match kind {
                     ExportKind::Source => doc.json()?, ExportKind::Png => doc.png()?,
-                    ExportKind::Svg => doc.svg().into_bytes(),
+                    ExportKind::Svg => doc.standalone_svg().into_bytes(),
                 };
                 Ok::<_, anyhow::Error>(std::fs::write(path, bytes)?)
             }).await;
@@ -405,6 +414,11 @@ impl DrawingEditor {
         hit_at(&self.doc.scene, p, self.zoom, &[])
     }
 
+    fn bound_text_index(&self, shape: &Element) -> Option<usize> {
+        self.doc.scene.elements.iter().position(|e| matches!(e, Element::Text(t)
+            if !t.base.is_deleted && t.container_id.as_deref() == Some(shape.id())))
+    }
+
     fn down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.discard || self.reset_confirmation { return; }
         self.finish_field(window, cx);
@@ -431,6 +445,11 @@ impl DrawingEditor {
                 }
             }
             self.selected = self.select_at(p);
+            if let Some(i) = self.selected && let Element::Text(t) = &self.doc.scene.elements[i]
+                && let Some(id) = t.container_id.as_deref()
+                && let Some(container) = self.doc.scene.elements.iter().position(|e| e.id() == id && !e.is_deleted() && !e.base().locked) {
+                self.selected = Some(container);
+            }
             if let Some(i) = self.selected {
                 if self.panel.is_none() { self.panel = Some(Panel::Properties); }
                 if event.click_count == 2 { self.edit_selection_text(window, cx); }
@@ -580,31 +599,38 @@ impl DrawingEditor {
         let value = self.field.read(cx).text.trim().to_string();
         if !value.is_empty() {
             if let Some(i) = index {
-                if matches!(&self.doc.scene.elements[i], Element::Text(t) if t.text != value) {
+                if matches!(&self.doc.scene.elements[i], Element::Text(t) if text_to_edit(t) != value) {
                     self.checkpoint();
                     if let Element::Text(t) = &mut self.doc.scene.elements[i] {
-                        t.base.width = scene::text::text_width(&value, t.font_size);
                         t.text = value.clone(); t.original_text = value;
+                        resize_text(t, window);
                     }
+                    self.sync_text(i);
                     touch(&mut self.doc.scene.elements[i]);
                 }
             } else {
                 self.checkpoint();
                 let mut el = factory::new_text(at.x, at.y, &value, self.text_size, &self.style);
-                el.base_mut().width = scene::text::text_width(&value, self.text_size);
-                if let Element::Text(t) = &mut el { t.text_align = self.text_align; }
                 let index = self.doc.scene.elements.len();
-                if let Some(c) = container && let Element::Text(t) = &mut el {
-                    let shape = &mut self.doc.scene.elements[c];
-                    t.container_id = Some(shape.id().to_string());
-                    shape.base_mut().bound_elements.get_or_insert_with(Vec::new)
-                        .push(scene::element::BoundElement { id: t.base.id.clone(), kind: scene::element::BoundElementType::Text });
-                    touch(shape);
+                if let Element::Text(t) = &mut el {
+                    t.font_family = self.text_font;
+                    t.base.stroke_color.clone_from(&self.text_color);
+                    t.text_align = self.text_align;
+                    if let Some(c) = container {
+                        let shape = &mut self.doc.scene.elements[c];
+                        t.container_id = Some(shape.id().to_string());
+                        t.text_align = DrawingAlign::Center;
+                        t.vertical_align = VerticalAlign::Middle;
+                        shape.base_mut().bound_elements.get_or_insert_with(Vec::new)
+                            .push(scene::element::BoundElement { id: t.base.id.clone(), kind: scene::element::BoundElementType::Text });
+                        touch(shape);
+                    }
+                    resize_text(t, window);
                 }
                 self.doc.scene.elements.push(el);
                 if let Some(c) = container {
                     self.selected = Some(c);
-                    scene::binding::sync_container_text(&mut self.doc.scene);
+                    self.sync_text(index);
                 } else { self.after_drawing(index); }
             }
             self.rebuild();
@@ -724,7 +750,13 @@ impl DrawingEditor {
         cx.notify();
     }
 
-    fn apply_style(&mut self, choice: StyleChoice, checkpoint: bool, cx: &mut Context<Self>) {
+    fn sync_text(&mut self, index: usize) {
+        if let Element::Text(t) = &self.doc.scene.elements[index] && t.container_id.is_some() {
+            scene::binding::sync_container_text(&mut self.doc.scene);
+        }
+    }
+
+    fn apply_style(&mut self, choice: StyleChoice, checkpoint: bool, window: &Window, cx: &mut Context<Self>) {
         if self.busy { return; }
         match choice {
             StyleChoice::Stroke(c) => self.style.stroke_color = c.into(),
@@ -735,11 +767,19 @@ impl DrawingEditor {
             StyleChoice::Roughness(v) => self.style.roughness = v,
             StyleChoice::Opacity(v) => self.style.opacity = v,
             StyleChoice::Round(v) => self.rounded = v,
+            StyleChoice::TextColor(c) => self.text_color = c.into(),
+            StyleChoice::TextFont(v) => self.text_font = v,
             StyleChoice::TextSize(v) => self.text_size = v,
             StyleChoice::TextAlign(v) => self.text_align = v,
+            StyleChoice::TextVertical(_) => {}
             StyleChoice::ArrowHead(v) => self.arrowhead = v,
         }
-        if let Some(i) = self.selected {
+        let target = self.selected.and_then(|i| {
+            let e = &self.doc.scene.elements[i];
+            if matches!(choice, StyleChoice::TextColor(_) | StyleChoice::TextFont(_) | StyleChoice::TextSize(_) | StyleChoice::TextAlign(_) | StyleChoice::TextVertical(_))
+                && !matches!(e, Element::Text(_)) { self.bound_text_index(e) } else { Some(i) }
+        });
+        if let Some(i) = target {
             let mut e = self.doc.scene.elements[i].clone();
             let base = e.base_mut();
             match choice {
@@ -754,18 +794,23 @@ impl DrawingEditor {
                     let tool = match e { Element::Line(_) | Element::Arrow(_) => Tool::Line, Element::Diamond { .. } => Tool::Diamond, _ => Tool::Rect };
                     e.base_mut().roundness = v.then(|| roundness(tool));
                 }
-                StyleChoice::TextSize(font) => if let Element::Text(t) = &mut e {
-                    t.font_size = font;
-                    t.base.width = scene::text::text_width(&t.text, font);
-                    t.base.height = scene::text::text_height(&t.text, font, t.line_height);
-                },
-                StyleChoice::TextAlign(v) => if let Element::Text(t) = &mut e { t.text_align = v; },
                 StyleChoice::ArrowHead(v) => if let Element::Arrow(a) = &mut e { a.linear.end_arrowhead = v; },
+                _ => if let Element::Text(t) = &mut e {
+                    match choice {
+                        StyleChoice::TextColor(c) => t.base.stroke_color = c.into(),
+                        StyleChoice::TextFont(v) if v != t.font_family => { t.font_family = v; resize_text(t, window); }
+                        StyleChoice::TextSize(v) if v != t.font_size => { t.font_size = v; resize_text(t, window); }
+                        StyleChoice::TextAlign(v) => t.text_align = v,
+                        StyleChoice::TextVertical(v) => t.vertical_align = v,
+                        _ => {}
+                    }
+                },
             }
             if e != self.doc.scene.elements[i] {
                 if checkpoint { self.checkpoint(); }
                 touch(&mut e);
                 self.doc.scene.elements[i] = e;
+                if matches!(choice, StyleChoice::TextFont(_) | StyleChoice::TextSize(_) | StyleChoice::TextVertical(_)) { self.sync_text(i); }
                 self.rebuild();
             }
         }
@@ -804,11 +849,9 @@ impl DrawingEditor {
         let Some(i) = self.selected else { return };
         let e = &self.doc.scene.elements[i];
         if let Element::Text(t) = e {
-            self.start_text(element_center(e), Some(i), t.text.clone(), window, cx);
-        } else if let Some((idx, text)) = self.doc.scene.elements.iter().enumerate().find_map(|(idx, item)| {
-            if let Element::Text(t) = item && !item.is_deleted() && t.container_id.as_deref() == Some(e.id()) { Some((idx, t.text.clone())) } else { None }
-        }) {
-            self.start_text(element_center(e), Some(idx), text, window, cx);
+            self.start_text(element_center(e), Some(i), text_to_edit(t).to_owned(), window, cx);
+        } else if let Some(idx) = self.bound_text_index(e) && let Element::Text(t) = &self.doc.scene.elements[idx] {
+            self.start_text(element_center(e), Some(idx), text_to_edit(t).to_owned(), window, cx);
         } else if matches!(e, Element::StickyNote(_) | Element::Rectangle { .. } | Element::Ellipse { .. } | Element::Diamond { .. })
             && self.doc.scene.elements.len() < MAX_ELEMENTS {
             self.start_text(element_center(e), None, String::new(), window, cx);
@@ -877,7 +920,8 @@ impl DrawingEditor {
 
     fn tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_field(window, cx);
-        self.panel = (self.panel == Some(Panel::Properties)).then_some(Panel::Properties);
+        self.panel = (tool == Tool::Text || self.panel == Some(Panel::Properties)).then_some(Panel::Properties);
+        self.more_fonts = false;
         self.colors = None;
         self.tool = tool;
         if tool != Tool::Image { self.pending_image = None; } else { self.pick_image(window, cx); }
@@ -1129,6 +1173,26 @@ impl Render for DrawingEditor {
 
 fn hsla_from_ink(c: Ink, opacity: f64) -> Hsla { gpui::Rgba { r: c.r as f32, g: c.g as f32, b: c.b as f32, a: (c.a * opacity).clamp(0., 1.) as f32 }.into() }
 
+fn drawing_line(text: &str, family: FontFamily, size: Pixels, color: Hsla, window: &Window) -> ShapedLine {
+    let runs = [TextRun { len: text.len(), font: font(family.name()), color, background_color: None, underline: None, strikethrough: None }];
+    window.text_system().shape_line(text.to_string().into(), size, &runs, None)
+}
+
+fn resize_text(t: &mut TextElement, window: &Window) {
+    if t.container_id.is_some() { return; }
+    if t.auto_resize {
+        t.base.width = t.text.lines().filter(|s| !s.is_empty()).map(|s| {
+            let line = drawing_line(s, t.font_family, px(t.font_size as f32), transparent_black(), window);
+            f64::from(f32::from(line.width))
+        }).fold(1., f64::max);
+    }
+    t.base.height = scene::text::text_height(&t.text, t.font_size, t.line_height);
+}
+
+fn text_to_edit(t: &TextElement) -> &str {
+    if t.original_text.is_empty() { &t.text } else { &t.original_text }
+}
+
 fn paint(d: &Drawable, map: impl Fn(World) -> Point<Pixels>, zoom: f64, dark: bool, images: &HashMap<String, Arc<RenderImage>>, window: &mut Window, cx: &mut App) {
     let p = |x, y| map(World::new(x, y));
     let alpha = d.options.opacity / 100.;
@@ -1136,13 +1200,12 @@ fn paint(d: &Drawable, map: impl Fn(World) -> Point<Pixels>, zoom: f64, dark: bo
     if let Some(t) = &d.text {
         let font_size = px((t.font_size * zoom) as f32);
         let line_height = t.font_size * t.line_height;
-        let h = line_height * t.text.lines().count() as f64;
+        let h = line_height * t.text.split('\n').count() as f64;
         let top = match t.vertical_align { VerticalAlign::Top => t.y, VerticalAlign::Middle => t.y + (t.height - h) / 2., VerticalAlign::Bottom => t.y + t.height - h };
         let color = drawable_ink(t.color, alpha, dark);
         for (i, text) in t.text.lines().enumerate() {
             if text.is_empty() { continue; }
-            let runs = [TextRun { len: text.len(), font: font(theme::UI_FONT), color, background_color: None, underline: None, strikethrough: None }];
-            let line = window.text_system().shape_line(text.to_string().into(), font_size, &runs, None);
+            let line = drawing_line(text, t.font_family, font_size, color, window);
             let mut at = p(t.x, top + i as f64 * line_height);
             let width = px((t.width * zoom) as f32);
             at.x += match t.text_align { DrawingAlign::Left => px(0.), DrawingAlign::Center => (width - line.width) / 2., DrawingAlign::Right => width - line.width };

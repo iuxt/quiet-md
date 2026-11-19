@@ -3,7 +3,7 @@
 //! A Markdown file can carry its pictures inline, as
 //! `![alt](data:image/png;base64,…)`. Everything else in the editor reads
 //! images from disk, so opening such a file writes each payload into the
-//! library's `assets/` folder and points the block there. The Markdown file
+//! library's `Image/` folder and points the block there. The Markdown file
 //! keeps its base64 until the document is saved; from then on the image is an
 //! ordinary asset, exported like a pasted one.
 //!
@@ -15,12 +15,13 @@ use std::path::Path;
 use base64::Engine;
 
 use crate::model::{Block, BlockKind};
+use crate::store::IMAGE;
 
 /// Longest payload that is written out; one image pasted by hand is capped at
 /// the same 20 MB (`src/editor/image.rs`).
 const MAX_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Writes every inline image under `root/assets` and rewrites its `src` to the
+/// Writes every inline image under `root/Image` and rewrites its `src` to the
 /// library-relative path. Returns how many were written. A payload that is too
 /// big, isn't an image this app can show, or doesn't decode is left alone — the
 /// block then shows `图片不可用` and the file keeps its own bytes.
@@ -36,12 +37,12 @@ pub fn absorb(blocks: &mut [Block], root: &Path) -> usize {
         let BlockKind::Image { src_kind, src, .. } = &mut b.kind else { continue };
         let Some((bytes, ext)) = inline_image(src) else { continue };
         let name = format!("b64-{:016x}.{ext}", hash(&bytes));
-        let dir = crate::store::Store::assets_in(root);
+        let dir = root.join(IMAGE);
         let path = dir.join(&name);
         if !path.is_file() && (std::fs::create_dir_all(&dir).is_err() || std::fs::write(&path, &bytes).is_err()) {
             continue;
         }
-        *src = format!("{}/{name}", dir.file_name().unwrap_or_default().to_string_lossy());
+        *src = format!("{IMAGE}/{name}");
         *src_kind = "src".into();
         n += 1;
     }
@@ -131,28 +132,28 @@ mod tests {
 
         assert_eq!(absorb(&mut blocks, &root), 1);
         let src = src_of(&blocks[0]).to_string();
-        assert!(src.starts_with("assets/b64-") && src.ends_with(".png"), "{src}");
+        assert!(src.starts_with("Image/b64-") && src.ends_with(".png"), "{src}");
         assert_eq!(std::fs::read(root.join(&src)).unwrap(), bytes);
 
         // Opening the file again reuses the same asset instead of a new copy.
         let mut again = vec![image_block(&png(bytes))];
         assert_eq!(absorb(&mut again, &root), 1);
         assert_eq!(src_of(&again[0]), src);
-        assert_eq!(std::fs::read_dir(root.join("assets")).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(root.join(IMAGE)).unwrap().count(), 1);
         std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn what_is_not_a_picture_stays_inline() {
         let root = std::env::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::create_dir_all(root.join(IMAGE)).unwrap();
         let cases = [
             "data:image/svg+xml;base64,PHN2Zz4=".to_string(),
             "data:image/png;base64,<not base64>".to_string(),
             "data:image/png;base64,aGVsbG8=".to_string(),
             "data:image/png,notbase64".to_string(),
             "https://example.com/a.png".to_string(),
-            "assets/pasted.png".to_string(),
+            "Image/pasted.png".to_string(),
         ];
         let mut blocks: Vec<Block> = cases.iter().map(|c| image_block(c)).collect();
         assert_eq!(absorb(&mut blocks, &root), 0);
@@ -165,7 +166,7 @@ mod tests {
     #[test]
     fn images_inside_a_table_are_absorbed() {
         let root = std::env::temp_dir().join(format!("quiet-b64-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::create_dir_all(root.join(IMAGE)).unwrap();
         let mut cell = crate::model::TableCell::empty();
         cell.blocks = vec![image_block(&png(b"\x89PNG\r\n\x1a\nin a cell"))];
         let table = crate::model::Table { col_widths: vec![100.], header_rows: 0, header_col: false, rows: vec![vec![cell]] };

@@ -142,7 +142,8 @@ mod tests {
             assert_eq!(name, e.id, "guide body must use its fixed UUID: {}", e.title);
         }
         assert!(!root.join("docs").exists() && !root.join("index.json").exists());
-        assert!(root.join(crate::store::ASSETS).join("guides/home.jpg").is_file());
+        assert!(root.join(crate::store::IMAGE).join("guides/home.jpg").is_file());
+        assert!(root.join(crate::store::FILES).join("guides/quiet-md-cheatsheet.pdf").is_file());
         std::fs::remove_dir_all(&root).unwrap();
     }
 

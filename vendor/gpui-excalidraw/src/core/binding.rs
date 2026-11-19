@@ -186,7 +186,7 @@ pub fn sync_container_text(scene: &mut Scene) {
                     cid.clone(),
                     t.font_size,
                     t.line_height,
-                    t.text.clone(),
+                    if t.original_text.is_empty() { t.text.clone() } else { t.original_text.clone() },
                 ))
             } else {
                 None
@@ -223,8 +223,7 @@ pub fn sync_container_text(scene: &mut Scene) {
                 t.base.y = mid.y - height / 2.0;
                 t.base.width = width;
                 t.base.height = height;
-                t.text_align = crate::types::TextAlign::Center;
-                t.vertical_align = crate::types::VerticalAlign::Middle;
+                t.text = text;
             }
             continue;
         }
@@ -233,20 +232,22 @@ pub fn sync_container_text(scene: &mut Scene) {
             continue;
         };
         let inner_w = (bounds.width() - pad * 2.0).max(font_size);
-        let lines = crate::text::wrap_text(&text, inner_w, font_size)
-            .split('\n')
-            .count()
-            .max(1);
-        let text_h = lines as f64 * font_size * line_height;
+        let wrapped = crate::text::wrap_text(&text, inner_w, font_size);
+        let text_h = crate::text::text_height(&wrapped, font_size, line_height);
         let x = bounds.min_x + pad;
-        let y = bounds.min_y + ((bounds.height() - text_h) / 2.0).max(pad * 0.5);
+        let spare = (bounds.height() - text_h).max(0.0);
+        let inset = pad.min(spare / 2.0);
         if let Some(Element::Text(t)) = scene.get_mut(&id) {
+            let y = bounds.min_y + match t.vertical_align {
+                crate::types::VerticalAlign::Top => inset,
+                crate::types::VerticalAlign::Middle => spare / 2.0,
+                crate::types::VerticalAlign::Bottom => spare - inset,
+            };
             t.base.x = x;
             t.base.y = y;
             t.base.width = inner_w;
             t.base.height = text_h;
-            t.text_align = crate::types::TextAlign::Center;
-            t.vertical_align = crate::types::VerticalAlign::Middle;
+            t.text = wrapped;
         }
     }
 }

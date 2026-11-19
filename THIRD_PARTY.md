@@ -797,6 +797,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | 素材 | 许可 |
 |---|---|
 | `assets/fonts/katex/`（20 个 KaTeX 字体） | KaTeX 字体，SIL Open Font License / MIT，见同目录 `LICENSE`。9 个粗体、斜体字重改过 OS/2 `fsSelection` 和 `head.macStyle` 的样式位（原文件都标成 Regular，Windows 和 Linux 会把斜体当正体选中），字形未改 |
+| `vendor/gpui-excalidraw/fonts/`（6 个画板字体） | Excalifont、Nunito、Lilita One、Assistant、Virgil 使用 [SIL Open Font License 1.1](vendor/gpui-excalidraw/fonts/OFL.txt)，Comic Shanns 使用 [MIT](vendor/gpui-excalidraw/fonts/MIT-ComicShanns.txt)。Excalifont 取自[官方字体页](https://plus.excalidraw.com/excalifont)，Assistant、Virgil 和 Comic Shanns 取自 [Excalidraw](https://github.com/excalidraw/excalidraw/tree/d732d4f3d50e6ac092ec6e86a4e04a40546a9395/packages/excalidraw/fonts)，以 TTF 重新封装，其中 Comic Shanns 合并了原有子集。Nunito 和 Lilita One 取自 [Google Fonts](https://github.com/google/fonts/tree/main/ofl)，Nunito 固定为 400 字重。 |
 
 ## 画板渲染
 

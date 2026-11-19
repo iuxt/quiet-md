@@ -726,11 +726,11 @@ impl Workspace {
         use crate::model::*;
         let root = crate::store::Store::root_dir();
         assert!(std::env::var_os("FDL_SCRIPT").is_some() && std::env::var_os("QUIET_MD_HOME").is_some());
-        std::fs::create_dir_all(root.join("assets")).unwrap();
-        std::fs::write(root.join("assets/report.pdf"), b"attachment-content").unwrap();
+        std::fs::create_dir_all(root.join("Files")).unwrap();
+        std::fs::write(root.join("Files/report.pdf"), b"attachment-content").unwrap();
         let outside = root.parent().unwrap().join("outside-private.txt");
         std::fs::write(&outside, b"PRIVATE-MUST-NOT-EXPORT").unwrap();
-        let file = FileBlock { src_kind: "path".into(), src: "assets/report.pdf".into(), name: "Report".into(), view: FileView::Card };
+        let file = FileBlock { src_kind: "path".into(), src: "Files/report.pdf".into(), name: "Report".into(), view: FileView::Card };
         let mut text = RichText::plain("Attachment: ");
         text.push("\u{fffc}", Marks { inline: Some(crate::docxml::to_inline(InlineKind::File(file))), ..Default::default() });
         let mut doc = Document { title: RichText::plain("Export safety"), blocks: vec![Block::new(BlockKind::Text, text)], ..Default::default() };
@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(std::fs::read(tmp.join(format!("full.assets/{stem}.excalidraw"))).unwrap(), scene);
         let png = std::fs::read(tmp.join(format!("full.assets/{stem}.png"))).unwrap();
         assert_eq!(image::load_from_memory(&png).unwrap().into_rgba8().get_pixel(120, 120).0, [26, 43, 60, 255]);
-        assert_eq!(std::fs::read_dir(root.join("assets")).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(root.join("Drawing")).unwrap().count(), 1);
         std::fs::remove_dir_all(tmp).unwrap();
     }
 

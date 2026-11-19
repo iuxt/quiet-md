@@ -2,7 +2,7 @@
 """Synthetic UI/resource stress suite (macOS, release devtools, Pillow).
 
 python3 tools/perf/stress_suite.py /tmp/quiet-stress [--cases idle,million]
-Each case runs sequentially, with its own disposable FORMAT 8 library.
+Each case runs sequentially, with its own disposable FORMAT 9 library.
 No system clipboard, focus activation, network or real notes are used.
 """
 import argparse
@@ -24,7 +24,7 @@ OPEN_MIXED = OPEN_FIRST + "key down\nkey end\n"
 def library(root, docs):
     (root / ".quiet").mkdir(parents=True)
     (root / "notes").mkdir()
-    (root / ".quiet/format.json").write_text('{"format":8}')
+    (root / ".quiet/format.json").write_text('{"format":9}')
     (root / ".quiet/preferences.json").write_text(json.dumps({
         "english": True, "appearance": "light", "theme": "craft", "quick_hotkey": False,
     }))

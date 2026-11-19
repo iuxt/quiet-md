@@ -105,7 +105,7 @@ pub(super) fn scan(root: &Path) -> Scan {
                 if real.ends_with(".md") || real.ends_with(".xml") { out.pending.push(join_rel(rel, real)); }
                 continue;
             }
-            if name.starts_with('.') || (rel.is_empty() && name == super::ASSETS) { continue; }
+            if name.starts_with('.') || (rel.is_empty() && super::reserved_resource_dir(&name)) { continue; }
             let Ok(kind) = e.file_type() else { continue };
             // Symbolic links are not followed: a link to a parent would never end.
             let dir = kind.is_dir();

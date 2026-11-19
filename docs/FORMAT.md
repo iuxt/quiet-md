@@ -1,21 +1,22 @@
 # 存储格式
 
-当前布局为 FORMAT 8，清单版本为 2。文件夹和标题由根目录 `quiet.json` 管理；所有正文集中在 `notes/<UUID>.xml` 或 `notes/<UUID>.md`。Git 是可选功能，不改变目录布局。详见 [GIT.md](GIT.md)。
+当前布局为 FORMAT 9，清单版本为 2。文件夹和标题由根目录 `quiet.json` 管理；所有正文集中在 `notes/<UUID>.xml` 或 `notes/<UUID>.md`。Git 是可选功能，不改变目录布局。详见 [GIT.md](GIT.md)。
 
-## 文档库目录（FORMAT 8）
+## 文档库目录（FORMAT 9）
 
 默认位置：`~/Documents/Quiet.md`。首次启动可以另选位置，本机应用数据目录的 `quiet-md/library.json` 记住所选路径。测试一律用临时目录和 `QUIET_MD_HOME`，不操作真实文档库。
 
 ```text
 Quiet.md/
 ├── quiet.json                标题、虚拟文件夹层级、日期、排序等共享元数据
-├── quiet.json.bak            上一次有效清单
 ├── notes/
 │   ├── <uuid-1>.xml          DocxXML 正文
 │   └── <uuid-2>.md           Markdown 正文
-├── assets/                   图片、附件（Git 中使用 LFS）
+├── Image/                    图片和封面
+├── Files/                    文件附件
+├── Drawing/                  画板源文件（.excalidraw）
 └── .quiet/
-    ├── format.json           {"format": 8}：布局版本（store::FORMAT）
+    ├── format.json           {"format": 9}：布局版本（store::FORMAT）
     ├── .lock                 跨进程写锁
     ├── history/<id>/         本地自动快照
     ├── history-trash/<id>/   随文档进入回收站的快照
@@ -60,18 +61,18 @@ Quiet.md/
 ### 链接与图片
 
 - 文档链接使用相对于正文文件的路径：XML 的 `<cite type="doc" href="<uuid>.xml">`，以及 Markdown 标准链接。读入转换成运行期 ID，写出再转为路径；虚拟层级改变不影响链接。兼容旧 `doc-id`。
-- XML 图片 / 附件的路径相对于文档库根目录（`assets/…`）；Markdown 图片相对于正文文件（`../assets/…`）。
+- XML 的图片、附件和画板可以用相对于文档库根目录的路径（`Image/…`、`Files/…`、`Drawing/…`）；Markdown 图片相对于正文文件（`../Image/…`）。附件缩略图缓存在 `.quiet/thumbs/`。
 - 最近打开时间、窗口状态、本机文件路径和缓存属于本机应用数据，不进共享清单。
 
 ### 迁移与可靠性
 
-- `Store::open` 将 FORMAT 4/5 的物理文件夹库转换为 FORMAT 8；`Store::open_at` 仍能打开旧布局供兼容和迁移使用。FORMAT 3 及更早的布局沿用原有迁移判断和同步盘确认流程，再转换为 8。FORMAT 6 库不自动升级，需用户手动整理旧版回收站并更新格式标记；FORMAT 4/5 库如仍有回收站条目，也须先手动处理。
-- FORMAT 7 文档库已停止支持。
+- `Store::open` 将 FORMAT 4/5 的物理文件夹库转换为 FORMAT 9；`Store::open_at` 仍能打开旧布局供兼容和迁移使用。FORMAT 3 及更早的布局沿用原有迁移判断和同步盘确认流程，再转换为 9。FORMAT 6 库不自动升级，需用户手动整理旧版回收站并更新格式标记；FORMAT 4/5 库如仍有回收站条目，也须先手动处理。
+- FORMAT 7 和 FORMAT 8 文档库已停止支持。
 - 先把原正文和索引复制到 `.quiet/before-virtual-6-<uuid>/`，再发布集中正文、清单和格式标记。转换会重写 XML 文档链接，以及 Markdown 链接、图片和引用定义；代码文本与 front matter 保留。
 - `.quiet/virtual-migration.json` 记录未完成的转换。重开时在写锁下恢复：已发布虚拟文件夹清单和格式标记则完成清理，否则恢复原文件和标记。只删除已备份、已迁移的旧正文及空目录，不删除其他文件；备份不会自动清除。
 - 删除、恢复直接原子更新 `quiet.json`，正文不参与文件移动，无需文件移动事务或恢复日志。
-- 文件先写临时文件、同步，再原子替换；清单写前保留 `.bak`。清单损坏时保留损坏副本并尝试有效备份；两者都不可用就停止打开，避免用空清单覆盖层级。
-- 清单校验拒绝重复 / 非法 UUID、父级缺失、文件夹循环及任意正文路径。正文路径不接受符号链接。旧版应用遇到 FORMAT 8 会拒绝打开，避免 Git 同步遗漏新目录里的资源。
+- 文件先写临时文件、同步，再原子替换。FORMAT 9 的清单缺失、无法读取或校验失败时，打开文档库会报错，已有文件保留原样。旧版本留下的 `quiet.json.bak` 可作为手动恢复时的参考。
+- 清单校验拒绝重复 / 非法 UUID、父级缺失、文件夹循环及任意正文路径。正文路径不接受符号链接。旧版应用遇到 FORMAT 9 会拒绝打开，避免 Git 同步遗漏新目录里的资源。
 - 跨实例写操作在 `.quiet/.lock` 下重新读取清单；批量导入在完成时发布清单。保存冲突仍按正文打开时的基线检测。
 
 ## DocxXML
@@ -98,7 +99,7 @@ DocxXML 是飞书 / Lark 的文档 XML 格式。`crates/core/tests/fixtures/all-
 
 DocxXML 里没有、本应用自己加的写法。别的工具不认识这些写法，按上一节的规则它们只会被当作未知元素或属性：
 
-- `<drawing path="assets/….excalidraw" width="…" height="…"/>` 表示画板。宽高为预览像素尺寸，每次保存写入一份新图源，文档版本和撤销引用各自的图源。旧画板的可选 `preview="assets/….png"` 属性仍可读取。预览像素缓存于内存。导出含图片的 Markdown 时把 PNG 和图源写到导出位置，PDF 从内存嵌入 PNG。
+- `<drawing path="Drawing/….excalidraw" width="…" height="…"/>` 表示画板。宽高为预览像素尺寸，每次保存写入一份新图源，文档版本和撤销引用各自的图源。旧画板的可选 `preview="Image/….png"` 属性仍可读取。预览像素缓存于内存。导出含图片的 Markdown 时把 PNG 和图源写到导出位置，PDF 从内存嵌入 PNG。
 - `<countdown duration start-time notify color timing/>`：倒计时。云端的倒计时是小组件，不在 DocxXML 里。
 - `<time … is-whole-day="true">`：全天提醒。模型里有 `isWholeDay`，但 XML 里没有这个属性。没有此属性、且时间是本地 23:59 的提醒，也按全天处理。
 - 图片和附件的本地文件写成 `path="…"`（云端用 `token` / `href`）。`<figure><source path=… name=…/></figure>` 表示视频或文件。
@@ -122,8 +123,8 @@ DocxXML 里没有、本应用自己加的写法。别的工具不认识这些写
 - **每行的改动量**：抽屉里每份快照后面跟 `+N 行 −M 行`，由相邻两版的行级 LCS 算出（`diff`），最旧的一份没有前一份可比较，标「最早的一份」。
 - **失败不影响正文**：写快照失败只记一条警告，文档的保存照常成功。
 - **兼容性**：旧版本不读取 `.quiet/history/`，也不会因为多出这个目录而误读索引或正文，所以 `store::FORMAT` 不必加一。旧版本写入含历史的新库时，历史只是停止更新，不会损坏正文。
-- **对应关系**：快照按索引里的运行期 `id` 对应文档，所以重命名、移动文件夹后历史仍在；FORMAT 8 的 ID 与正文文件名固定对应；清单仍必须与正文一起保留，以保住标题和层级。
-- **附件**：`assets/` 目前没有清理机制，历史正文引用的图片与附件始终可用。将来若引入 GC，必须同时扫描所有历史快照、回收站文档与恢复副本。
+- **对应关系**：快照按索引里的运行期 `id` 对应文档，所以重命名、移动文件夹后历史仍在；FORMAT 9 的 ID 与正文文件名固定对应；清单仍必须与正文一起保留，以保住标题和层级。
+- **资源**：`Image/`、`Files/` 和 `Drawing/` 中的文件没有自动清理机制，历史正文仍可引用它们。将来若引入 GC，必须同时扫描所有历史快照、回收站文档与恢复副本。
 
 ## 保存失败与恢复
 

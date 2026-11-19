@@ -9,7 +9,7 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
 
-文档库采用 FORMAT 8：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。图片和附件存入库根的 `assets/`。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
+文档库采用 FORMAT 9：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。图片、文件附件和画板源文件分别存入库根的 `Image/`、`Files/` 和 `Drawing/`。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
 
 Git 是可选功能。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。旧 FORMAT 5 的路径索引 Git 历史仍可读取。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行），仓库与网络操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
 
@@ -48,7 +48,7 @@ main.rs ─ 窗口
 
 写入成功后 `Store::save_now` 还会用内存里的旧正文在 `history/<id>/` 存一份版本快照：5 分钟节流、每篇文档 1–30 份、全库 200 MiB 上限。快照写入失败只记警告，不影响正文保存。恢复某个版本时先强制给当前正文留一份快照，再走正常的 `save`。
 
-保存内容与磁盘正文相同时，不替换正文，也不更新修改时间、索引和历史。JSON 索引的原子备份优先使用文件系统复制（支持时为写时复制），备份拥有独立 inode；复制失败时退回原子写入旧字节。
+保存内容与磁盘正文相同时，不替换正文，也不更新修改时间、索引和历史。共享清单 `quiet.json` 只在内容变化时原子替换。清单缺失、无法读取或校验失败时，文档库报告错误并停止写入。
 
 版本历史的界面沿用 Google Docs / 飞书那一套：抽屉在右、正文就地变成所选快照的只读预览、改动是可关掉的高亮层。为此 `Workspace` 多一个 `preview: Option<Preview>`，它持有当前文档的完整 `Core`（文档、光标、选区、撤销栈），返回时整体放回去；兄弟窗口编辑时更新这份 Core，屏幕上的历史正文保持不变。预览期间 `flush`、`schedule_save`、`sync_document` 全部短路：编辑器里装的是历史正文，写盘或同步给兄弟窗口都会把它当成当前文档。
 

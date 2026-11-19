@@ -172,6 +172,26 @@ impl DrawingScene {
 
     pub(super) fn svg(&self) -> String { export::SvgExporter::export_with_files(&self.scene, &self.background, &self.files) }
 
+    pub(super) fn standalone_svg(&self) -> String {
+        use std::fmt::Write;
+        let fonts: HashSet<_> = self.scene.non_deleted().filter_map(|e| match e {
+            Element::Text(t) => Some(t.font_family),
+            _ => None,
+        }).collect();
+        let mut css = String::new();
+        for &(family, data) in quiet_excalidraw::fonts::BUNDLED {
+            if fonts.contains(&family) {
+                let _ = write!(css, "@font-face{{font-family:'{}';src:url(data:font/ttf;base64,{}) format('truetype')}}", family.name(),
+                    base64::engine::general_purpose::STANDARD.encode(data));
+            }
+        }
+        let mut svg = self.svg();
+        if !css.is_empty() && let Some(start) = svg.find('>') {
+            svg.insert_str(start + 1, &format!("<style>{css}</style>"));
+        }
+        svg
+    }
+
     pub(super) fn preview_dimensions(&self) -> Result<(u32, u32)> {
         export::raster_dimensions(&self.svg(), PREVIEW_SCALE).map_err(|s| anyhow!(s))
     }
@@ -239,6 +259,36 @@ pub(super) fn bounds(scene: &Scene) -> Option<Bounds> {
 mod tests {
     use super::*;
     use quiet_excalidraw::core::{arrowhead::Arrowhead, factory::{ElementOptions, new_arrow}, transform::translate_element};
+
+    #[test]
+    fn bound_text_style_survives_layout_and_export() {
+        use quiet_excalidraw::core::{binding::sync_container_text, factory::{new_rectangle, new_text}, types::{FontFamily, TextAlign, VerticalAlign}};
+        let mut doc = DrawingScene::new();
+        let style = ElementOptions::default();
+        let rect = new_rectangle(10., 20., 180., 130., &style);
+        let mut label = new_text(0., 0., "Quiet.md", 12., &style);
+        let Element::Text(t) = &mut label else { unreachable!() };
+        t.container_id = Some(rect.id().into());
+        t.font_family = FontFamily::ComicShanns;
+        t.text_align = TextAlign::Right;
+        t.vertical_align = VerticalAlign::Bottom;
+        doc.scene.elements = vec![rect, label];
+        sync_container_text(&mut doc.scene);
+        let mut doc = DrawingScene::load(&doc.json().unwrap()).unwrap();
+        sync_container_text(&mut doc.scene);
+        let png = doc.png().unwrap();
+        let svg = doc.standalone_svg();
+        assert!(svg.contains("@font-face{font-family:'Comic Shanns Regular'"));
+        assert!(svg.contains("text-anchor=\"end\""));
+        let Element::Text(t) = &mut doc.scene.elements[1] else { unreachable!() };
+        assert_eq!(t.font_size, 12.);
+        assert_eq!(t.font_family, FontFamily::ComicShanns);
+        assert_eq!(t.text_align, TextAlign::Right);
+        assert_eq!(t.vertical_align, VerticalAlign::Bottom);
+        assert_eq!(t.base.y + t.base.height, 142.);
+        t.font_family = FontFamily::Lilita;
+        assert_ne!(png, doc.png().unwrap());
+    }
 
     #[test]
     fn excalidraw_local_points_and_unknown_fields_survive_an_edit() {

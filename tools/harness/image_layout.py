@@ -16,7 +16,7 @@ colors = dict(a=(170, 55, 55), b=(50, 150, 75), c=(50, 90, 180), d=(180, 145, 40
 source = work / "source"
 (source / ".quiet").mkdir(parents=True)
 (source / "notes").mkdir()
-(source / "assets").mkdir()
+(source / "Image").mkdir()
 (source / ".quiet/format.json").write_text('{"format":6}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "theme": "craft", "appearance": "light", "english": True, "quick_hotkey": False,
@@ -26,9 +26,9 @@ source = work / "source"
     "options": {"opened": 1},
 }], "trash": []}))
 for name, color in colors.items():
-    Image.new("RGB", (240, 120), color).save(source / f"assets/{name}.png")
+    Image.new("RGB", (240, 120), color).save(source / f"Image/{name}.png")
 body = '<title>Image layout</title>\n<p>Arrange images</p>\n'
-body += ''.join(f'<img src="assets/{name}.png" width="240" height="120" align="left"/>\n' for name in colors)
+body += ''.join(f'<img src="Image/{name}.png" width="240" height="120" align="left"/>\n' for name in colors)
 body += '<p>End</p>\n'
 (source / f"notes/{note}.xml").write_text(body)
 
@@ -71,7 +71,7 @@ def layout(folder):
         return b.tag
 
     tree = [node(b) for b in doc if b.tag in ("img", "grid")]
-    assert sorted(b.attrib["src"] for b in doc.findall(".//img")) == [f"assets/{n}.png" for n in colors]
+    assert sorted(b.attrib["src"] for b in doc.findall(".//img")) == [f"Image/{n}.png" for n in colors]
     return tree
 
 

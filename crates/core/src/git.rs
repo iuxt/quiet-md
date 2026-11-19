@@ -3,7 +3,7 @@ use anyhow::{Context, Result, ensure};
 use git2::{Index, IndexEntry, IndexTime, Oid, Repository, Signature};
 use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}};
-use crate::store::{ASSETS, FORMAT, Store, virtual_format};
+use crate::store::{FORMAT, RESOURCE_DIRS, Store, virtual_format};
 
 mod lfs;
 mod transport;
@@ -16,15 +16,18 @@ pub(crate) use staging::CommitScope;
 
 pub const MANIFEST: &str = "quiet.json";
 const FORMAT_PATH: &str = ".quiet/format.json";
-const ASSET_ATTRIBUTE: &str = "/assets/** filter=lfs diff=lfs merge=lfs -text";
+fn asset_attributes() -> impl Iterator<Item = String> {
+    RESOURCE_DIRS.into_iter().map(|dir| format!("/{dir}/** filter=lfs diff=lfs merge=lfs -text"))
+}
 
 fn is_asset_path(path: &str) -> bool {
-    path.split_once('/').is_some_and(|(dir, _)| dir == ASSETS)
+    path.split_once('/').is_some_and(|(dir, _)| RESOURCE_DIRS.contains(&dir))
 }
 
 fn write_rules(root: &Path) -> Result<()> {
-    let ignores = ".DS_Store\n.quiet/*\n!.quiet/format.json\n!.quiet/trash/\n.quiet/trash/*.bak\n/assets/thumbs/\n*.tmp\nquiet.json.bak\n";
-    for (name, additions) in [(".gitattributes", ASSET_ATTRIBUTE), (".gitignore", ignores)] {
+    let attributes = asset_attributes().collect::<Vec<_>>().join("\n");
+    let ignores = ".DS_Store\n.quiet/*\n!.quiet/format.json\n!.quiet/trash/\n.quiet/trash/*.bak\n/Image/remote/*.part\n*.tmp\nquiet.json.bak\n";
+    for (name, additions) in [(".gitattributes", attributes.as_str()), (".gitignore", ignores)] {
         let path = safe_path(root, name)?;
         let mut text = if path.exists() { std::fs::read_to_string(&path)? } else { String::new() };
         let original_len = text.len();
@@ -160,7 +163,7 @@ impl LibraryRepo {
         let entries = manifest(&bytes)?;
         let mut files: BTreeSet<_> = [MANIFEST, ".quiet/format.json", ".gitattributes", ".gitignore"].into_iter().map(str::to_string).collect();
         files.extend(entries.keys().filter(|p| !p.ends_with('/')).cloned());
-        collect(&self.root, ASSETS, &mut files)?;
+        for dir in RESOURCE_DIRS { collect(&self.root, dir, &mut files)?; }
         if serde_json::from_slice::<serde_json::Value>(&bytes)?.get("version").is_none() { collect(&self.root, ".quiet/trash", &mut files)?; }
         Ok(files)
     }
@@ -388,7 +391,7 @@ impl LibraryRepo {
         let Some((path, pointer)) = self.revision_asset_pointer(commit, source)? else { return Ok(None) };
         let bytes = lfs::Lfs::new(self.repo.path()).read(&pointer)?;
         let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("bin");
-        let dir = if preview { ".quiet/git-preview" } else { ASSETS };
+        let dir = if preview { ".quiet/git-preview" } else { path.split_once('/').context("历史资源目录缺失")?.0 };
         let destination = format!("{dir}/{}.{}", pointer.oid, ext);
         let target = safe_path(&self.root, &destination)?;
         std::fs::create_dir_all(target.parent().unwrap())?;
@@ -563,7 +566,7 @@ fn collect(root: &Path, dir: &str, out: &mut BTreeSet<String>) -> Result<()> {
     for entry in std::fs::read_dir(dir_path)? {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| anyhow::anyhow!("资源文件名不是 UTF-8"))?;
-        if name.starts_with('.') || name.ends_with(".bak") || name.ends_with(".tmp") || (dir == ASSETS && name == "thumbs") { continue }
+        if name.starts_with('.') || name.ends_with(".bak") || name.ends_with(".tmp") || (dir == "Image/remote" && name.ends_with(".part")) { continue }
         let path = format!("{dir}/{name}");
         ensure!(!entry.file_type()?.is_symlink(), "资源不能使用符号链接：{path}");
         if entry.file_type()?.is_dir() { collect(root, &path, out)?; } else { out.insert(path); }

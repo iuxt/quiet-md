@@ -1,4 +1,4 @@
-//! FORMAT 8: virtual folders, one shared manifest, fixed notes/<UUID> files.
+//! Virtual folders, one shared manifest, fixed notes/<UUID> files.
 use super::*;
 use crate::manifest::{Deleted, Manifest, FILE, NOTES};
 
@@ -22,16 +22,8 @@ impl Store {
 
     pub(super) fn reload_virtual(&mut self) -> Result<()> {
         let path = crate::git::safe_path(&self.root, FILE)?;
-        let manifest = match std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Manifest::parse(&b)) {
-            Ok(m) => m,
-            Err(error) => {
-                let bytes = std::fs::read(path.with_extension("json.bak")).context("文档库清单及其备份不可用，未改动正文文件")?;
-                let backup = Manifest::parse(&bytes)?;
-                if path.exists() { std::fs::copy(&path, path.with_extension(format!("json.corrupt-{}", crate::time::now_ms())))?; }
-                write_atomic(&path, &bytes)?;
-                self.warnings.push(format!("文档库清单已从备份恢复：{error}")); backup
-            },
-        };
+        let manifest = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Manifest::parse(&b))
+            .with_context(|| format!("无法载入文档库清单 {}", path.display()))?;
         let local = self.read_local();
         self.index = manifest.index();
         for (id, m) in &mut self.index { m.opened = local.opened.get(id).copied().unwrap_or(0); }
@@ -174,13 +166,15 @@ mod tests {
             let mut store = Store::open_at(root.clone()).unwrap(); let id = store.create_from(&Document::default()).unwrap();
             let path = store.path(&id); let body = std::fs::read(&path).unwrap(); let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
             if restoring { store.delete(&id, None).unwrap(); }
-            let bytes = std::fs::read(root.join(FILE)).unwrap();
-            let backup = root.join("quiet.json.bak"); std::fs::remove_file(&backup).unwrap(); std::fs::create_dir(&backup).unwrap();
-            let result = if restoring { store.restore(&id).map(|_| ()) } else { store.delete(&id, None) };
+            let file = root.join(FILE); let saved = root.join("saved-manifest.json");
+            let bytes = std::fs::read(&file).unwrap();
+            // Block the replacement after the store has read the current manifest.
+            std::fs::rename(&file, &saved).unwrap(); std::fs::create_dir(&file).unwrap();
+            let result = if restoring { store.untrash_virtual(&id, None, None) } else { store.trash_virtual(&[(id.clone(), None)], false) };
             assert!(result.is_err()); assert_eq!(store.trash.contains_key(&id), restoring); assert_eq!(store.index.contains_key(&id), !restoring);
-            assert_eq!(std::fs::read(root.join(FILE)).unwrap(), bytes);
+            assert_eq!(std::fs::read(&saved).unwrap(), bytes); assert!(file.is_dir());
             assert_eq!(std::fs::read(&path).unwrap(), body); assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);
-            std::fs::remove_dir(&backup).unwrap();
+            std::fs::remove_dir(&file).unwrap(); std::fs::rename(&saved, &file).unwrap();
             let mut reopened = Store::open_at(root.clone()).unwrap();
             assert_eq!(reopened.list_trash().len(), usize::from(restoring)); assert_eq!(reopened.list().len(), usize::from(!restoring));
             std::fs::remove_dir_all(root).unwrap();
