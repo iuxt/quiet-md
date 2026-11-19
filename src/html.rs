@@ -4,11 +4,12 @@
 use crate::model::*;
 use crate::theme;
 use gpui::Hsla;
-use std::fmt::Write;
+use std::{fmt::Write, path::Path};
 
 pub struct Options<'a> {
     /// Titles of the document's child pages (what 子页面列表 shows).
     pub sub_pages: &'a [String],
+    pub library_root: &'a Path,
 }
 
 const CSS: &str = r#"
@@ -85,7 +86,7 @@ fn page(doc: &Document, opts: &Options) -> String {
     let mut out = String::new();
     let _ = write!(out, "<!DOCTYPE html>\n<html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><title>{}</title><style>{CSS}</style></head><body>", esc(&title));
     if let Some(c) = &doc.cover
-        && let Some(uri) = data_uri(&c.src)
+        && let Some(uri) = data_uri(opts.library_root, &c.src)
     {
         let _ = write!(out, "<div class=\"cover\" style=\"background-image:url('{uri}')\"></div>");
     }
@@ -200,7 +201,8 @@ impl Writer<'_> {
             BlockKind::Divider => out.push_str("<hr>"),
             BlockKind::Drawing(d) => {
                 let _ = write!(out, "<div class=\"img\"{align}>");
-                if let Some(uri) = data_uri(&d.preview) {
+                if let Ok(png) = crate::editor::drawing_scene::preview_png(self.opts.library_root, d) {
+                    let uri = encode_image("image/png", &png);
                     let width = d.width.min(640) as f32;
                     out.push_str(&image(&uri, Some(width), Some(width * d.height as f32 / d.width as f32), None));
                 } else { out.push_str("Excalidraw"); }
@@ -208,7 +210,7 @@ impl Writer<'_> {
             }
             BlockKind::Image { src, width, height, caption, crop, .. } => {
                 let _ = write!(out, "<div class=\"img\"{align}>");
-                match data_uri(src) {
+                match data_uri(self.opts.library_root, src) {
                     Some(uri) => out.push_str(&image(&uri, *width, *height, *crop)),
                     None => {
                         let _ = write!(out, "<div class=\"raw\">{}</div>", esc(crate::settings::tr("图片不可用", "Image unavailable")));
@@ -339,7 +341,7 @@ fn image(uri: &str, width: Option<f32>, height: Option<f32>, crop: Option<[f32; 
 
 /// An image source as a data URI: local files, and remote images already
 /// downloaded for display. Other remote images stay links.
-fn data_uri(src: &str) -> Option<String> {
+fn data_uri(root: &Path, src: &str) -> Option<String> {
     use base64::Engine;
     if src.starts_with("data:") {
         let encoded = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/jpg;base64,", "data:image/gif;base64,", "data:image/webp;base64,", "data:image/bmp;base64,"]
@@ -348,7 +350,7 @@ fn data_uri(src: &str) -> Option<String> {
             .then(|| src.to_string());
     }
     let remote = src.starts_with("http://") || src.starts_with("https://");
-    let path = if remote { crate::editor::image::cached_remote(src) } else { crate::store::export_path(src) };
+    let path = if remote { crate::editor::image::cached_remote(root, src) } else { crate::store::export_path_in(root, src) };
     let Some(bytes) = path.and_then(|p| crate::store::read_bounded(&p, 20 * 1024 * 1024).ok()) else {
         return remote.then(|| src.replace('"', "%22"));
     };
@@ -357,7 +359,12 @@ fn data_uri(src: &str) -> Option<String> {
         Err(_) if bytes.starts_with(b"<svg") || bytes.starts_with(b"<?xml") => "image/svg+xml",
         Err(_) => "image/png",
     };
-    Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+    Some(encode_image(mime, &bytes))
+}
+
+fn encode_image(mime: &str, bytes: &[u8]) -> String {
+    use base64::Engine;
+    format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))
 }
 
 fn code(lang: &str, text: &str) -> String {
@@ -460,10 +467,11 @@ mod tests {
 
     #[test]
     fn exports_reject_active_data_and_unsafe_links() {
-        assert!(data_uri("data:text/html;base64,PHNjcmlwdD4=").is_none());
-        assert!(data_uri("data:image/svg+xml;base64,PHN2Zz4=").is_none());
-        assert!(data_uri("data:image/png;base64,\" onerror=\"alert(1)").is_none());
-        assert!(data_uri("data:image/png;base64,aGVsbG8=").is_some());
+        let root = Path::new("");
+        assert!(data_uri(root, "data:text/html;base64,PHNjcmlwdD4=").is_none());
+        assert!(data_uri(root, "data:image/svg+xml;base64,PHN2Zz4=").is_none());
+        assert!(data_uri(root, "data:image/png;base64,\" onerror=\"alert(1)").is_none());
+        assert!(data_uri(root, "data:image/png;base64,aGVsbG8=").is_some());
         let mut text = RichText::default();
         text.push("click", Marks { link: Some("javascript:alert(1)".into()), ..Default::default() });
         assert_eq!(inline(&text), "click");
@@ -485,7 +493,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let h = to_html(&doc, &Options { sub_pages: &["子页".into()] });
+        let h = to_html(&doc, &Options { sub_pages: &["子页".into()], library_root: Path::new("") });
         assert!(h.contains("a <b><span style=\"color:#cb0424;\">b</span></b>"));
         assert!(h.contains(">2.</span>"));
         assert!(h.contains("📄 子页"));

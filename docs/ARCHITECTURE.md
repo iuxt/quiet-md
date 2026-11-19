@@ -102,7 +102,7 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 
 ## 画板
 
-`src/editor/drawing.rs` 在文档窗口内用 GPUI 绘制画布。打开画板时读取 `.excalidraw` 场景，拖动、绘制和画板内撤销都留在草稿里。保存时在后台渲染 PNG，检查原块或插入位置仍有效，再写入图源和预览。`Core::insert_drawing` / `replace_drawing` 把这对路径作为一次文档修改提交。正文、历史和导出只需展示 PNG。 `drawing_ui.rs` 把 Excalidraw 的工具顺序、底部控制区和上下文属性面板接到同一份草稿。画板可在原地保存，随后继续修改已经插入的块。
+`src/editor/drawing.rs` 在文档窗口内用 GPUI 绘制画布。打开画板时读取 `.excalidraw` 场景，拖动、绘制和画板内撤销都留在草稿里。保存时在后台生成图源和计算预览尺寸，检查原块或插入位置仍有效，再写入图源。 `Core::insert_drawing` / `replace_drawing` 把图源写入文档的画板块。正文、首页和历史可见时在后台将图源渲染成内存像素，共用文档图片缓存。已有 PNG 预览可以继续读取，Git 历史直接读 LFS 对象。 `drawing_ui.rs` 把 Excalidraw 的工具顺序、底部控制区和上下文属性面板接到同一份草稿。画板可在原地保存，随后继续修改已经插入的块。
 
 `drawing_scene.rs` 在 Excalidraw 的相对点坐标和 Rust 渲染器的画布坐标间转换。导入时保留原始场景字段，导出时把修改合进去。手绘渲染和几何复用 `vendor/gpui-excalidraw` 的 Rust 代码。
 

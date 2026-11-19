@@ -366,8 +366,7 @@ impl LibraryRepo {
         parse_format(self.repo.find_blob(entry.id())?.content())
     }
 
-    /// A distinct immutable path prevents old images from replacing current ones.
-    pub(super) fn revision_asset(&self, commit: &str, source: &str, preview: bool) -> Result<Option<String>> {
+    fn revision_asset_pointer(&self, commit: &str, source: &str) -> Result<Option<(String, Pointer)>> {
         let tree = self.repo.find_commit(Oid::from_str(commit)?)?.tree()?;
         let format = self.tree_format(&tree)?;
         let source = source.strip_prefix("file://").unwrap_or(source).replace('\\', "/");
@@ -383,8 +382,23 @@ impl LibraryRepo {
         ensure!(entry.filemode() == 0o100644, "历史资源不是普通文件");
         let blob = self.repo.find_blob(entry.id())?;
         let pointer = Pointer::parse(blob.content())?.context("历史资源未使用 LFS")?;
+        Ok(Some((path.to_string(), pointer)))
+    }
+
+    pub(super) fn revision_drawing_asset(&self, commit: &str, source: &str) -> Result<Option<String>> {
+        Ok(self.revision_asset_pointer(commit, source)?.map(|(_, p)| format!("git-lfs:{}:{}", p.oid, p.size)))
+    }
+
+    pub(super) fn read_drawing_asset(&self, oid: &str, size: &str, limit: u64) -> Result<Vec<u8>> {
+        let pointer = Pointer::from_parts(oid, size.parse().context("无效的 LFS 文件大小")?)?;
+        lfs::Lfs::new(self.repo.path()).read_bounded(&pointer, limit)
+    }
+
+    /// A distinct immutable path prevents old images from replacing current ones.
+    pub(super) fn revision_asset(&self, commit: &str, source: &str, preview: bool) -> Result<Option<String>> {
+        let Some((path, pointer)) = self.revision_asset_pointer(commit, source)? else { return Ok(None) };
         let bytes = lfs::Lfs::new(self.repo.path()).read(&pointer)?;
-        let ext = Path::new(path).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+        let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("bin");
         let assets = Store::assets_in(&self.root);
         let dir = if preview { ".quiet/git-preview" } else { assets.file_name().and_then(|n| n.to_str()).unwrap_or(ASSETS) };
         let destination = format!("{dir}/{}.{}", pointer.oid, ext);

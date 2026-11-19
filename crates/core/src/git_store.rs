@@ -83,13 +83,22 @@ impl Store {
             });
         }
         if let Some(title) = repo.revision_title(commit, id)? && doc.title.text != title { doc.title = crate::model::RichText::plain(title); }
-        let mut sources = doc.asset_sources();
+        let mut sources = doc.asset_sources_including_drawings(!preview);
         if let Some(cover) = &doc.cover { sources.push(cover.src.clone()); }
         let mut paths = HashMap::new();
         for source in sources {
             if let Some(path) = repo.revision_asset(commit, &source, preview)? { paths.insert(source, path); }
         }
-        rewrite_asset_sources(&mut doc.blocks, &paths);
+        let drawing_paths = preview.then(|| {
+            let mut drawings = HashMap::new();
+            doc.for_each_block(|b| if let crate::model::BlockKind::Drawing(d) = &b.kind {
+                for source in [&d.source, &d.preview].into_iter().filter(|s| !s.is_empty()) {
+                    drawings.entry(source.clone()).or_insert_with(|| repo.revision_drawing_asset(commit, source).ok().flatten().unwrap_or_default());
+                }
+            });
+            drawings
+        });
+        rewrite_asset_sources(&mut doc.blocks, &paths, drawing_paths.as_ref().unwrap_or(&paths));
         if let Some(cover) = &mut doc.cover && let Some(path) = paths.get(&cover.src) { cover.src = path.clone(); }
         Ok(doc)
     }
@@ -118,16 +127,16 @@ impl Store {
     }
 }
 
-pub(super) fn rewrite_asset_sources(blocks: &mut [crate::model::Block], paths: &HashMap<String, String>) {
+pub(super) fn rewrite_asset_sources(blocks: &mut [crate::model::Block], paths: &HashMap<String, String>, drawings: &HashMap<String, String>) {
     use crate::model::{BlockKind, InlineKind};
     for block in blocks {
         match &mut block.kind {
             BlockKind::Image { src, .. } => if let Some(path) = paths.get(src) { *src = path.clone(); },
             BlockKind::Drawing(d) => for src in [&mut d.source, &mut d.preview] {
-                if let Some(path) = paths.get(src) { *src = path.clone(); }
+                if let Some(path) = drawings.get(src) { *src = path.clone(); }
             },
             BlockKind::File(file) => if let Some(path) = paths.get(&file.src) { file.src = path.clone(); },
-            BlockKind::Table(table) => for cell in table.rows.iter_mut().flatten() { rewrite_asset_sources(&mut cell.blocks, paths); },
+            BlockKind::Table(table) => for cell in table.rows.iter_mut().flatten() { rewrite_asset_sources(&mut cell.blocks, paths, drawings); },
             _ => {},
         }
         for run in &mut block.text.runs {
@@ -136,7 +145,7 @@ pub(super) fn rewrite_asset_sources(blocks: &mut [crate::model::Block], paths: &
                 let mut file = file.clone(); file.src = path.clone(); *inline = crate::docxml::to_inline(InlineKind::File(file));
             }
         }
-        rewrite_asset_sources(&mut block.children, paths);
+        rewrite_asset_sources(&mut block.children, paths, drawings);
     }
 }
 

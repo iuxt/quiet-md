@@ -15,16 +15,20 @@ pub struct Pointer { pub oid: String, pub size: u64 }
 impl Pointer {
     pub fn of(bytes: &[u8]) -> Self { Self { oid: format!("{:x}", Sha256::digest(bytes)), size: bytes.len() as u64 } }
     pub fn text(&self) -> String { format!("{VERSION}oid sha256:{}\nsize {}\n", self.oid, self.size) }
+    pub(super) fn from_parts(oid: &str, size: u64) -> Result<Self> {
+        ensure!(oid.len() == 64 && oid.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "无效的 LFS 对象标识");
+        ensure!(size <= LIMIT, "LFS 指针格式无效或文件超过 256 MiB");
+        Ok(Self { oid: oid.to_string(), size })
+    }
     pub fn parse(bytes: &[u8]) -> Result<Option<Self>> {
         if !bytes.starts_with(VERSION.as_bytes()) { return Ok(None) }
         let text = std::str::from_utf8(bytes)?;
         let mut lines = text.lines();
         lines.next();
         let oid = lines.next().and_then(|s| s.strip_prefix("oid sha256:")).unwrap_or("");
-        ensure!(oid.len() == 64 && oid.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()), "无效的 LFS 对象标识");
         let size: u64 = lines.next().and_then(|s| s.strip_prefix("size ")).context("无效的 LFS 文件大小")?.parse()?;
-        ensure!(size <= LIMIT && lines.next().is_none(), "LFS 指针格式无效或文件超过 256 MiB");
-        Ok(Some(Self { oid: oid.to_string(), size }))
+        ensure!(lines.next().is_none(), "LFS 指针格式无效或文件超过 256 MiB");
+        Ok(Some(Self::from_parts(oid, size)?))
     }
     fn verify(&self, bytes: &[u8]) -> Result<()> { ensure!(*self == Self::of(bytes), "LFS 文件大小或 SHA-256 校验失败"); Ok(()) }
 }
@@ -45,7 +49,11 @@ impl Lfs {
         Ok(pointer)
     }
     pub fn read(&self, pointer: &Pointer) -> Result<Vec<u8>> {
-        let bytes = crate::store::read_bounded(&self.path(pointer), LIMIT)?;
+        self.read_bounded(pointer, LIMIT)
+    }
+    pub fn read_bounded(&self, pointer: &Pointer, limit: u64) -> Result<Vec<u8>> {
+        ensure!(pointer.size <= limit, "文件超过导出大小限制");
+        let bytes = crate::store::read_bounded(&self.path(pointer), limit.min(LIMIT))?;
         pointer.verify(&bytes)?;
         Ok(bytes)
     }

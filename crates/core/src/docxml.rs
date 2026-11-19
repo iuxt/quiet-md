@@ -905,7 +905,9 @@ fn write_block(b: &Block, s: &mut String, depth: usize) {
             s.push_str(&format!("<figure view-type=\"{view}\"{al}>{}</figure>\n", source_xml(f)));
         }
         BlockKind::Drawing(d) => {
-            s.push_str(&format!("<drawing path=\"{}\" preview=\"{}\" width=\"{}\" height=\"{}\"{al}/>\n", esc_attr(&d.source), esc_attr(&d.preview), d.width, d.height));
+            s.push_str(&format!("<drawing path=\"{}\"", esc_attr(&d.source)));
+            if !d.preview.is_empty() { s.push_str(&format!(" preview=\"{}\"", esc_attr(&d.preview))); }
+            s.push_str(&format!(" width=\"{}\" height=\"{}\"{al}/>\n", d.width, d.height));
         }
         BlockKind::Image { src_kind, src, width, height, caption, crop } => {
             s.push_str(&format!("<img {}=\"{}\"", src_kind, esc_attr(src)));

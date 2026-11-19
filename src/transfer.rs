@@ -118,6 +118,33 @@ fn save_path(name: &str, cx: &mut App) -> impl std::future::Future<Output = Opti
     }
 }
 
+fn write_markdown_export(root: &Path, doc: &Document, subs: &[String], path: &Path, all: bool) -> std::io::Result<usize> {
+    use crate::{editor::drawing_scene, store};
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc");
+    let assets = format!("{stem}.assets");
+    let out = crate::markdown::export(doc, &crate::markdown::Options { library_root: Some(root), sub_pages: subs, assets: all.then_some(assets.as_str()), ..Default::default() });
+    let dir = path.parent().unwrap_or(Path::new(""));
+    std::fs::write(path, &out.text)?;
+    let mut missing = out.missing;
+    let write_asset = |rel: &str, bytes: anyhow::Result<Vec<u8>>| -> std::io::Result<usize> {
+        let to = dir.join(rel);
+        if let Some(p) = to.parent() { std::fs::create_dir_all(p)?; }
+        Ok(usize::from(bytes.and_then(|b| Ok(std::fs::write(to, b)?)).is_err()))
+    };
+    for (src, rel) in out.files {
+        let bytes = store::export_path_in(root, &src.to_string_lossy()).ok_or_else(|| anyhow::anyhow!("Asset outside library"))
+            .and_then(|p| store::read_bounded(&p, store::EXPORT_FILE_LIMIT));
+        missing += write_asset(&rel, bytes)?;
+    }
+    for plan in out.drawings {
+        missing += write_asset(&plan.png, drawing_scene::preview_png(root, &plan.drawing))?;
+        if let Some(rel) = plan.source {
+            missing += write_asset(&rel, drawing_scene::source_bytes(root, &plan.drawing.source))?;
+        }
+    }
+    Ok(missing)
+}
+
 /// Markdown and DocxXML files to import: the system open panel, or a
 /// scripted answer.
 fn open_paths(cx: &mut App) -> impl std::future::Future<Output = Option<Vec<PathBuf>>> + use<> {
@@ -259,33 +286,17 @@ impl Workspace {
         cx.notify();
         let Some(doc) = self.doc_of(&id, cx) else { return };
         let subs = self.sub_page_titles(&id);
+        let root = crate::store::Store::root_dir();
         let path = save_path(&format!("{}.md", file_name(&doc)), cx);
         cx.spawn_in(window, async move |this, cx| {
             let Some(path) = path.await else { return };
-            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("doc").to_string();
-            let assets = format!("{stem}.assets");
-            let out = crate::markdown::export(&doc, &crate::markdown::Options { sub_pages: &subs, assets: all.then_some(assets.as_str()), ..Default::default() });
-            let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-            let mut missing = out.missing;
-            let written = std::fs::write(&path, &out.text).and_then(|_| {
-                for (src, rel) in &out.files {
-                    let to = dir.join(rel);
-                    if let Some(p) = to.parent() {
-                        std::fs::create_dir_all(p)?;
-                    }
-                    // A missing image only loses itself, but is reported.
-                    if crate::store::export_path(&src.to_string_lossy()).ok_or_else(|| anyhow::anyhow!("Asset outside library"))
-                        .and_then(|p| crate::store::read_bounded(&p, crate::store::EXPORT_FILE_LIMIT))
-                        .and_then(|bytes| Ok(std::fs::write(&to, bytes)?)).is_err() {
-                        missing += 1;
-                    }
+            let written = cx.background_executor().spawn(async move { write_markdown_export(&root, &doc, &subs, &path, all) }).await;
+            match written {
+                Err(_) => { let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx)); }
+                Ok(missing) if missing > 0 => {
+                    let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Error, &crate::localized_format!("已导出，但有 {missing} 个图片或附件未能复制", "Exported, but {missing} images or attachments could not be copied"), cx));
                 }
-                Ok(())
-            });
-            if written.is_err() {
-                let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Error, crate::settings::text("导出失败，请重试"), cx));
-            } else if missing > 0 {
-                let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Error, &crate::localized_format!("已导出，但有 {missing} 个图片或附件未能复制", "Exported, but {missing} images or attachments could not be copied"), cx));
+                Ok(_) => {}
             }
         })
         .detach();
@@ -301,6 +312,7 @@ impl Workspace {
         cx.notify();
         let Some(doc) = self.doc_of(id, cx) else { return };
         let subs = self.sub_page_titles(id);
+        let root = crate::store::Store::root_dir();
         let name = file_name(&doc);
         let path = save_path(&format!("{name}.pdf"), cx);
         let view = printing::parent_of(window);
@@ -319,7 +331,9 @@ impl Workspace {
                 }
             }
             let _ = this.update(cx, |w, cx| w.show_toast_kind(ToastKind::Info, crate::settings::text("正在导出文档"), cx));
-            let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &subs });
+            let html = cx.background_executor().spawn(async move {
+                crate::html::to_html(&doc, &crate::html::Options { sub_pages: &subs, library_root: &root })
+            }).await;
             let _ = std::fs::remove_file(&path);
             let res = printing::run(html, name, Job::Pdf(path.clone()), view, cx).await;
             let ok = matches!(res, Ok(true)) && path.is_file();
@@ -344,11 +358,14 @@ impl Workspace {
         }
         let Some(doc) = self.doc_of(id, cx) else { return };
         let subs = self.sub_page_titles(id);
+        let root = crate::store::Store::root_dir();
         let name = file_name(&doc);
-        let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &subs });
         let view = printing::parent_of(window);
         self.show_toast_kind(ToastKind::Info, crate::settings::text("文档打印中"), cx);
         cx.spawn_in(window, async move |this, cx| {
+            let html = cx.background_executor().spawn(async move {
+                crate::html::to_html(&doc, &crate::html::Options { sub_pages: &subs, library_root: &root })
+            }).await;
             let res = printing::run(html, name, Job::Print, view, cx).await;
             let _ = this.update(cx, |w, cx| match res {
                 Ok(_) => {
@@ -720,7 +737,7 @@ impl Workspace {
         let image = crate::docxml::parse(&format!("<img href=\"{}\"/>", outside.display())).unwrap();
         assert!(image.blocks.iter().any(|b| matches!(b.kind, BlockKind::Image { .. })));
         doc.blocks.extend(image.blocks);
-        let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &[] });
+        let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &[], library_root: &root });
         assert!(!html.contains("PRIVATE-MUST-NOT-EXPORT"));
         assert!(!html.contains("UFJJVkFURS1NVVNULU5PVC1FWFBPUlQ="));
         assert!(!html.contains(&*outside.to_string_lossy()));
@@ -737,6 +754,34 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::{BlockKind, markdown_document, percent_decode};
+
+    #[test]
+    fn drawing_exports_render_from_source_and_write_png_only_as_markdown_output() {
+        use super::{Block, Document, RichText, write_markdown_export};
+        let tmp = std::env::temp_dir().join(format!("quiet-drawing-export-{}", uuid::Uuid::new_v4()));
+        let root = tmp.join("library");
+        let scene = br##"{"type":"excalidraw","version":2,"elements":[],"appState":{"viewBackgroundColor":"#1a2b3c"}}"##;
+        let drawing = crate::store::Store::save_drawing(&root, scene, 240, 240).unwrap();
+        let stem = std::path::Path::new(&drawing.source).file_stem().unwrap().to_str().unwrap();
+        let mut doc = Document { title: RichText::plain("Drawing"), ..Default::default() };
+        doc.blocks = vec![Block::new(BlockKind::Drawing(drawing.clone()), RichText::default())];
+        let html = crate::html::to_html(&doc, &crate::html::Options { sub_pages: &[], library_root: &root });
+        assert!(html.contains("src=\"data:image/png;base64,iVBOR"));
+        let plain = tmp.join("plain.md");
+        assert_eq!(write_markdown_export(&root, &doc, &[], &plain, false).unwrap(), 0);
+        assert!(!tmp.join("plain.assets").exists());
+
+        let full = tmp.join("full.md");
+        assert_eq!(write_markdown_export(&root, &doc, &[], &full, true).unwrap(), 0);
+        let md = std::fs::read_to_string(full).unwrap();
+        assert!(md.contains(&format!("![Excalidraw](full.assets/{stem}.png)")));
+        assert!(md.contains(&format!("[Excalidraw](full.assets/{stem}.excalidraw)")));
+        assert_eq!(std::fs::read(tmp.join(format!("full.assets/{stem}.excalidraw"))).unwrap(), scene);
+        let png = std::fs::read(tmp.join(format!("full.assets/{stem}.png"))).unwrap();
+        assert_eq!(image::load_from_memory(&png).unwrap().into_rgba8().get_pixel(120, 120).0, [26, 43, 60, 255]);
+        assert_eq!(std::fs::read_dir(root.join("assets")).unwrap().count(), 1);
+        std::fs::remove_dir_all(tmp).unwrap();
+    }
 
     #[test]
     fn imports_markdown_file() {

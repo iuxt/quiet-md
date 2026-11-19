@@ -820,11 +820,12 @@ pub struct Countdown {
     pub time: String,
 }
 
-/// A revision of an Excalidraw scene and its rendered preview. Both paths
-/// are immutable assets so older document snapshots keep the original drawing.
+/// A revision of an Excalidraw scene. Each save creates an immutable source
+/// asset so older document snapshots keep the original drawing.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Drawing {
     pub source: String,
+    /// Older drawings can already have a saved PNG.
     pub preview: String,
     pub width: u32,
     pub height: u32,
@@ -1082,11 +1083,15 @@ impl Document {
 
     /// Sources of the images and attachments (blocks and inline files).
     pub fn asset_sources(&self) -> Vec<String> {
+        self.asset_sources_including_drawings(true)
+    }
+
+    pub(crate) fn asset_sources_including_drawings(&self, include_drawings: bool) -> Vec<String> {
         let mut out = vec![];
         self.for_each_block(|b| {
             match &b.kind {
                 BlockKind::Image { src, .. } => out.push(src.clone()),
-                BlockKind::Drawing(d) => out.extend([d.source.clone(), d.preview.clone()]),
+                BlockKind::Drawing(d) if include_drawings => out.extend([&d.source, &d.preview].into_iter().filter(|s| !s.is_empty()).cloned()),
                 BlockKind::File(f) if f.src_kind == "path" => out.push(f.src.clone()),
                 _ => {}
             }

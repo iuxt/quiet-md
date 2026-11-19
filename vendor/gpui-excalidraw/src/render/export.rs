@@ -127,17 +127,29 @@ fn crc32(data: &[u8]) -> u32 {
 
 pub struct SvgExporter;
 
-pub fn rasterize_png(svg: &str, scale: f32) -> Result<Vec<u8>, String> {
-    let tree = usvg::Tree::from_str(svg, svg_options()).map_err(|e| e.to_string())?;
+fn raster_size(size: usvg::Size, scale: f32, max_edge: u32) -> (f32, u32, u32) {
     let scale = if scale.is_finite() && scale > 0.0 {
         scale
     } else {
         1.0
     };
-    // quiet.md: cap both dimensions, including tall or extremely wide scenes.
-    let scale = scale.min(2048.0 / tree.size().width().max(tree.size().height()));
-    let width = (tree.size().width() * scale).ceil().max(1.0) as u32;
-    let height = (tree.size().height() * scale).ceil().max(1.0) as u32;
+    let scale = scale.min(max_edge.clamp(1, 2048) as f32 / size.width().max(size.height()));
+    let width = (size.width() * scale).ceil().max(1.0) as u32;
+    let height = (size.height() * scale).ceil().max(1.0) as u32;
+    (scale, width, height)
+}
+
+// quiet.md: save the layout dimensions without allocating or encoding pixels.
+pub fn raster_dimensions(svg: &str, scale: f32) -> Result<(u32, u32), String> {
+    let tree = usvg::Tree::from_str(svg, svg_options()).map_err(|e| e.to_string())?;
+    let (_, width, height) = raster_size(tree.size(), scale, 2048);
+    Ok((width, height))
+}
+
+// quiet.md: display the raster directly in memory.
+pub fn rasterize_pixels(svg: &str, scale: f32, max_edge: u32) -> Result<tiny_skia::Pixmap, String> {
+    let tree = usvg::Tree::from_str(svg, svg_options()).map_err(|e| e.to_string())?;
+    let (scale, width, height) = raster_size(tree.size(), scale, max_edge);
     let mut pixmap = tiny_skia::Pixmap::new(width, height)
         .ok_or_else(|| format!("invalid pixmap size {width}x{height}"))?;
     resvg::render(
@@ -145,7 +157,11 @@ pub fn rasterize_png(svg: &str, scale: f32) -> Result<Vec<u8>, String> {
         tiny_skia::Transform::from_scale(scale, scale),
         &mut pixmap.as_mut(),
     );
-    pixmap.encode_png().map_err(|e| e.to_string())
+    Ok(pixmap)
+}
+
+pub fn rasterize_png(svg: &str, scale: f32) -> Result<Vec<u8>, String> {
+    rasterize_pixels(svg, scale, 2048)?.encode_png().map_err(|e| e.to_string())
 }
 
 pub fn rasterize_svg(svg: &[u8], scale: f32) -> Result<Vec<u8>, String> {

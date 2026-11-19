@@ -356,6 +356,45 @@ fn historical_images_and_markdown_titles_are_independent_of_current_files() {
 }
 
 #[test]
+fn drawing_history_reads_assets_without_materializing_previews() {
+    use crate::model::{Block, BlockKind};
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let mut drawing = Store::save_drawing(&lib.0, b"first drawing", 400, 200).unwrap();
+    assert!(drawing.preview.is_empty());
+    assert_eq!(std::fs::read_dir(lib.0.join("assets")).unwrap().count(), 1);
+    // Older notes can carry an existing PNG. A read-only history view uses
+    // the committed copy in memory even if the working file has changed.
+    drawing.preview = "assets/old.png".into();
+    std::fs::write(lib.0.join(&drawing.preview), b"first preview").unwrap();
+    let mut document = doc("Drawing history");
+    document.blocks = vec![Block::new(BlockKind::Drawing(drawing.clone()), RichText::default())];
+    let id = store.create_from(&document).unwrap();
+    let repo = lib.git(); configure(&repo, &Library::new().0);
+    let old = repo.commit("legacy drawing").unwrap().unwrap();
+
+    let next = Store::save_drawing(&lib.0, b"second drawing", 200, 400).unwrap();
+    document.blocks[0].kind = BlockKind::Drawing(next.clone());
+    store.save(&id, &document).unwrap();
+    let head = repo.commit("drawing with source only").unwrap().unwrap();
+    let xml = repo.revision(&head, &id).unwrap();
+    assert!(!xml.contains("preview="));
+    assert_eq!(crate::docxml::serialize(&crate::docxml::parse(&xml).unwrap()), xml);
+    std::fs::write(lib.0.join(&drawing.preview), b"working preview").unwrap();
+
+    let historical = store.version_document(&id, &format!("git:0-{old}")).unwrap();
+    let BlockKind::Drawing(old_draw) = &historical.blocks[0].kind else { panic!("expected a drawing") };
+    assert_eq!(crate::store::read_drawing_asset(&lib.0, &old_draw.source, 1024).unwrap(), b"first drawing");
+    assert_eq!(crate::store::read_drawing_asset(&lib.0, &old_draw.preview, 1024).unwrap(), b"first preview");
+    assert!(crate::store::read_drawing_asset(&lib.0, &old_draw.preview, 3).is_err());
+    let historical = store.version_document(&id, &format!("git:0-{head}")).unwrap();
+    let BlockKind::Drawing(new_draw) = &historical.blocks[0].kind else { panic!("expected a drawing") };
+    assert!(new_draw.preview.is_empty());
+    assert_eq!(crate::store::read_drawing_asset(&lib.0, &new_draw.source, 1024).unwrap(), b"second drawing");
+    assert!(!lib.0.join(".quiet/git-preview").exists());
+    assert_eq!(std::fs::read_dir(lib.0.join("assets")).unwrap().count(), 3);
+}
+
+#[test]
 fn historical_images_with_windows_paths_use_committed_assets() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     std::fs::create_dir_all(lib.0.join(".assets/nested")).unwrap();

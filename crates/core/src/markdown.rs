@@ -38,6 +38,14 @@ pub struct Export {
     pub text: String,
     /// Local image files to copy: (source, path relative to the .md file).
     pub files: Vec<(PathBuf, String)>,
+    pub drawings: Vec<DrawingExport>,
+}
+
+/// A drawing's output paths, relative to the exported Markdown file.
+pub struct DrawingExport {
+    pub drawing: Drawing,
+    pub png: String,
+    pub source: Option<String>,
 }
 
 #[cfg(test)]
@@ -46,7 +54,7 @@ pub fn to_markdown(doc: &Document) -> String {
 }
 
 pub fn export(doc: &Document, opts: &Options) -> Export {
-    let mut w = Writer { opts, files: vec![], missing: 0 };
+    let mut w = Writer::new(opts);
     let mut out = String::new();
     let title = doc.title.text.trim();
     if !title.is_empty() && !opts.in_place {
@@ -56,7 +64,7 @@ pub fn export(doc: &Document, opts: &Options) -> Export {
     let trimmed = out.trim_end().len();
     out.truncate(trimmed);
     out.push('\n');
-    Export { text: out, files: w.files, missing: w.missing }
+    Export { text: out, files: w.files, drawings: w.drawings, missing: w.missing }
 }
 
 /// 复制为 Markdown (#60): `blocks` (and the title, for a whole document) as
@@ -64,7 +72,7 @@ pub fn export(doc: &Document, opts: &Options) -> Export {
 /// linked by their absolute paths, nothing is copied.
 pub fn clipboard(title: Option<&str>, blocks: &[Block], library_root: &Path) -> String {
     let opts = Options { in_place: true, absolute: true, library_root: Some(library_root), ..Default::default() };
-    let mut w = Writer { opts: &opts, files: vec![], missing: 0 };
+    let mut w = Writer::new(&opts);
     let mut out = title.map(str::trim).filter(|t| !t.is_empty()).map(|t| format!("# {}\n\n", escape(t))).unwrap_or_default();
     out.push_str(&w.blocks(blocks));
     let trimmed = out.trim_end().len();
@@ -83,9 +91,12 @@ struct Writer<'a> {
     missing: usize,
     opts: &'a Options<'a>,
     files: Vec<(PathBuf, String)>,
+    drawings: Vec<DrawingExport>,
 }
 
-impl Writer<'_> {
+impl<'a> Writer<'a> {
+    fn new(opts: &'a Options<'a>) -> Self { Self { opts, files: vec![], drawings: vec![], missing: 0 } }
+
     /// Blocks separated by blank lines; consecutive list items stay tight.
     fn blocks(&mut self, bs: &[Block]) -> String {
         self.pieces(bs).into_iter().flat_map(|p| [p.sep.to_string(), p.text]).collect()
@@ -144,12 +155,7 @@ impl Writer<'_> {
                 indent(&format!("{emoji} {body}"), "> ")
             }
             BlockKind::Divider => "---".into(),
-            BlockKind::Drawing(d) => {
-                let preview = self.file_link(&FileBlock { src_kind: "path".into(), src: d.preview.clone(), name: String::new(), view: FileView::Card });
-                let source = self.file_link(&FileBlock { src_kind: "path".into(), src: d.source.clone(), name: String::new(), view: FileView::Card });
-                let image = preview.map_or_else(String::new, |url| format!("![Excalidraw]({url})"));
-                match source { Some(url) => format!("{image} [Excalidraw]({url})").trim_start().to_string(), None => image }
-            }
+            BlockKind::Drawing(d) => self.drawing(d),
             BlockKind::Image { src, caption, .. } if self.opts.in_place => {
                 format!("![{}]({})", escape(caption.as_deref().unwrap_or_default()), link_target(&self.keep(src, true)))
             }
@@ -182,6 +188,29 @@ impl Writer<'_> {
         let dir = self.opts.assets.filter(|_| file.src_kind == "path")?;
         let link = self.image(&file.src, dir);
         (!link.is_empty()).then(|| link.replace(' ', "%20").replace(')', "%29").replace('(', "%28"))
+    }
+
+    fn drawing(&mut self, d: &Drawing) -> String {
+        let (preview, source) = if self.opts.in_place {
+            let preview = (!d.preview.is_empty()).then(|| self.keep(&d.preview, true));
+            let source = (!d.source.is_empty()).then(|| self.keep(&d.source, false));
+            (preview, source)
+        } else if let Some(dir) = self.opts.assets && (!d.source.is_empty() || !d.preview.is_empty()) {
+            let plan = if let Some(n) = self.drawings.iter().position(|p| p.drawing.source == d.source && p.drawing.preview == d.preview) {
+                &self.drawings[n]
+            } else {
+                let src = if d.source.is_empty() { &d.preview } else { &d.source };
+                let name = src.strip_prefix("git-lfs:").and_then(|s| s.split_once(':')).map_or(src.as_str(), |(oid, _)| oid);
+                let stem = Path::new(name).file_stem().and_then(|s| s.to_str()).unwrap_or("drawing");
+                let png = self.asset_name(dir, stem, ".png");
+                let source = (!d.source.is_empty()).then(|| self.asset_name(dir, stem, ".excalidraw"));
+                self.drawings.push(DrawingExport { drawing: d.clone(), png, source });
+                self.drawings.last().unwrap()
+            };
+            (Some(plan.png.clone()), plan.source.clone())
+        } else { return String::new() };
+        let image = preview.map_or_else(String::new, |url| format!("![Excalidraw]({})", link_target(&url)));
+        match source { Some(url) => format!("{image} [Excalidraw]({})", link_target(&url)).trim_start().to_string(), None => image }
     }
 
     /// A source as the file being written should say it: relative to the
@@ -259,14 +288,18 @@ impl Writer<'_> {
         }
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("image").to_string();
         let ext = path.extension().and_then(|s| s.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
-        let mut rel = format!("{dir}/{stem}{ext}");
-        let mut n = 1;
-        while self.files.iter().any(|(_, r)| *r == rel) {
-            n += 1;
-            rel = format!("{dir}/{stem}-{n}{ext}");
-        }
+        let rel = self.asset_name(dir, &stem, &ext);
         self.files.push((path, rel.clone()));
         rel
+    }
+
+    fn asset_name(&self, dir: &str, stem: &str, ext: &str) -> String {
+        for n in 1.. {
+            let rel = if n == 1 { format!("{dir}/{stem}{ext}") } else { format!("{dir}/{stem}-{n}{ext}") };
+            if !self.files.iter().any(|(_, r)| *r == rel)
+                && !self.drawings.iter().any(|d| d.png == rel || d.source.as_ref() == Some(&rel)) { return rel }
+        }
+        unreachable!()
     }
 }
 
@@ -441,7 +474,7 @@ pub fn write_file(doc: &Document, front: &str, base: Option<&Path>) -> String {
 /// relative to the file's folder).
 pub fn write_file_with(doc: &Document, front: &str, opts: &Options) -> Export {
     let opts = Options { in_place: true, library_root: opts.library_root, base: opts.base, relative_from: opts.relative_from, name: opts.name, copied: opts.copied, original: opts.original, ..Default::default() };
-    let mut w = Writer { opts: &opts, files: vec![], missing: 0 };
+    let mut w = Writer::new(&opts);
     let pieces = w.pieces(&doc.blocks);
     let canonical = joined(&pieces);
     // Kept lines must still read back as the document; if a kept spacing
@@ -456,7 +489,7 @@ pub fn write_file_with(doc: &Document, front: &str, opts: &Options) -> Export {
     let misread = front.is_empty() && !front_matter(&body).0.is_empty();
     let body = match body.strip_prefix("---\n").filter(|_| misread) { Some(rest) => format!("***\n{rest}"), None => body };
     let text = if body.trim().is_empty() { front.to_string() } else { format!("{front}{body}") };
-    Export { text, files: w.files, missing: 0 }
+    Export { text, files: w.files, drawings: w.drawings, missing: 0 }
 }
 
 /// The body of `original` (a whole file) rewritten to `pieces`: a piece
@@ -473,7 +506,7 @@ fn preserve(original: &str, pieces: &[Piece], opts: &Options, strict: bool) -> S
     // The file's blocks as written now, each with the lines it came from.
     let mut old: Vec<(String, (usize, usize))> = vec![];
     {
-        let mut w = Writer { opts, files: vec![], missing: 0 };
+        let mut w = Writer::new(opts);
         let mut prev_list = false;
         let mut seq = 0u32;
         // `pieces` drops empty blocks; walk the same way to keep each span.
@@ -558,7 +591,7 @@ fn joined(pieces: &[Piece]) -> String {
 fn reads_as(body: &str, canonical: &str, opts: &Options) -> bool {
     let mut blocks = crate::paste::markdown_to_blocks(body, crate::paste::Off { file: true, alt: true, ..Default::default() });
     if let Some(dir) = opts.base { resolve_images(&mut blocks, dir); }
-    let mut w = Writer { opts, files: vec![], missing: 0 };
+    let mut w = Writer::new(opts);
     joined(&w.pieces(&blocks)) == canonical
 }
 

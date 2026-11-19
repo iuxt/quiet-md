@@ -47,12 +47,9 @@ impl Editor {
         if self.read_only || self.markdown { return; }
         let Some(BlockKind::Drawing(d)) = self.core.block(id).map(|b| &b.kind) else { return };
         let target = Target::Edit(id, d.clone());
-        let path = store::export_path(&d.source);
+        let (root, source) = (Store::root_dir(), d.source.clone());
         cx.spawn_in(window, async move |this, cx| {
-            let loaded = cx.background_executor().spawn(async move {
-                let file = path.ok_or_else(|| anyhow::anyhow!("drawing source is missing"))?;
-                DrawingScene::load(&store::read_bounded(&file, MAX_SOURCE)?)
-            }).await;
+            let loaded = cx.background_executor().spawn(async move { DrawingScene::read(&root, &source) }).await;
             let _ = this.update_in(cx, |ed, window, cx| {
                 if ed.drawing.is_some() || !target.valid(ed) { return; }
                 match loaded {
@@ -76,12 +73,11 @@ impl Editor {
         let width = (d.width as f32 / 2.).clamp(32., 640.).min(if env.width > 0. { env.width } else { 640. });
         let ratio = (d.width as f32 / d.height as f32).clamp(0.05, 20.);
         let height = (width / ratio).clamp(42., 420.);
-        let preview = store::export_path(&d.preview).map(|p| super::image::picture(&p, width.max(height)).size_full().object_fit(ObjectFit::Contain));
+        let preview = super::image::drawing_picture(d, width.max(height));
         let editable = !self.read_only;
         div().id(("drawing-block", id.0)).flex().flex_col().items_start().max_w_full()
             .child(div().relative().w_full().max_w_full().w(px(width)).h(px(height)).flex().justify_center().items_center().overflow_hidden().rounded(px(6.))
-                .when(preview.is_none(), |d| d.bg(Theme::bg_overlay()).text_color(Theme::text_caption()).child("Excalidraw"))
-                .children(preview))
+                .child(preview))
             .when(editable, |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_click(cx.listener(move |ed, _, window, cx| ed.edit_drawing(id, window, cx)))
                 .child(div().flex().items_center().gap(px(5.)).pt(px(4.)).text_size(px(12.)).text_color(Theme::text_caption())
@@ -183,6 +179,7 @@ pub(crate) struct DrawingEditor {
 
 impl DrawingEditor {
     fn new(parent: WeakEntity<Editor>, target: Target, doc: DrawingScene, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.on_release_in(window, |d, window, _| d.drop_images(window)).detach();
         let field = cx.new(|cx| {
             let mut f = TextField::new(tr("输入画板文字", "Enter drawing text"), cx);
             f.max_len = Some(256); f
@@ -200,7 +197,7 @@ impl DrawingEditor {
             tool: Tool::Select, selected: None, gesture: None, viewport: Rc::new(Cell::new(Bounds::default())), offset: point(px(0.), px(0.)), zoom: 1., fit: true,
             undo: VecDeque::new(), redo: Vec::new(), saved, imported: false, artwork: Rc::default(), images: Rc::default(), busy: false, close_after_save: false, saving: false, discard: false, error: None };
         this.rebuild();
-        this.load_images();
+        this.load_images(window);
         this
     }
 
@@ -211,13 +208,23 @@ impl DrawingEditor {
         }).collect());
     }
 
-    fn load_images(&mut self) {
-        self.images = Rc::new(self.doc.files.iter().filter_map(|(id, f)| {
-            let (bytes, format) = drawing_scene::image_data(f).ok()?;
-            let mut data = image::ImageReader::with_format(std::io::Cursor::new(bytes), format).decode().ok()?.into_rgba8();
-            for p in data.pixels_mut() { p.0.swap(0, 2); }
-            Some((id.clone(), Arc::new(RenderImage::new(vec![image::Frame::new(data)]))))
-        }).collect());
+    fn decode_image(file: &scene::scene::BinaryFileData) -> Option<Arc<RenderImage>> {
+        let (bytes, format) = drawing_scene::image_data(file).ok()?;
+        let mut data = image::ImageReader::with_format(std::io::Cursor::new(bytes), format).decode().ok()?.into_rgba8();
+        for p in data.pixels_mut() { p.0.swap(0, 2); }
+        Some(Arc::new(RenderImage::new(vec![image::Frame::new(data)])))
+    }
+
+    fn drop_images(&self, window: &mut Window) {
+        if self.images.is_empty() { return; }
+        // The atlas owns a separate copy. Redraw before presenting a scene that used these tiles.
+        window.refresh();
+        for image in self.images.values() { let _ = window.drop_image(image.clone()); }
+    }
+
+    fn load_images(&mut self, window: &mut Window) {
+        self.drop_images(window);
+        self.images = Rc::new(self.doc.files.iter().filter_map(|(id, file)| Some((id.clone(), Self::decode_image(file)?))).collect());
     }
 
     fn dirty(&self) -> bool {
@@ -284,17 +291,18 @@ impl DrawingEditor {
         self.error = None;
         let doc = self.doc.clone();
         let saved = DrawingState { scene: doc.scene.clone(), background: doc.background.clone() };
+        let root = Store::root_dir();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let encoded = cx.background_executor().spawn(async move { Ok::<_, anyhow::Error>((doc.json()?, doc.preview()?)) }).await;
+            let encoded = cx.background_executor().spawn(async move { Ok::<_, anyhow::Error>((doc.json()?, doc.preview_dimensions()?)) }).await;
             let _ = this.update_in(cx, |d, window, cx| {
                 d.busy = false;
                 d.saving = false;
                 let exit = std::mem::take(&mut d.close_after_save);
-                let result = encoded.and_then(|(source, (png, w, h))| {
+                let result = encoded.and_then(|(source, (w, h))| {
                     d.parent.update(cx, |ed, _| -> anyhow::Result<_> {
                         anyhow::ensure!(d.target.valid(ed), "drawing target changed");
-                        Store::save_drawing_assets(&source, &png, w, h)
+                        Store::save_drawing(&root, &source, w, h)
                     })?
                 });
                 match result {
@@ -333,11 +341,11 @@ impl DrawingEditor {
             let doc = if let Some(path) = paths.and_then(|p| p.into_iter().next()) {
                 Some(cx.background_executor().spawn(async move { DrawingScene::load(&store::read_bounded(&path, MAX_SOURCE)?) }).await)
             } else { None };
-            let _ = this.update_in(cx, |d, _, cx| {
+            let _ = this.update_in(cx, |d, window, cx| {
                 d.busy = false;
                 if let Some(result) = doc {
                     match result {
-                        Ok(doc) => { d.pending_image = None; d.doc = doc; d.imported = true; d.undo.clear(); d.redo.clear(); d.selected = None; d.text_at = None; d.fit = true; d.load_images(); d.rebuild(); }
+                        Ok(doc) => { d.pending_image = None; d.doc = doc; d.imported = true; d.undo.clear(); d.redo.clear(); d.selected = None; d.text_at = None; d.fit = true; d.load_images(window); d.rebuild(); }
                         Err(e) => { log::warn!("import drawing: {e:#}"); d.error = Some(tr("无法导入此 Excalidraw 文件", "Could not import this Excalidraw file")); }
                     }
                 }
@@ -359,8 +367,8 @@ impl DrawingEditor {
             let Some(path) = picked else { return };
             let result = cx.background_executor().spawn(async move {
                 let bytes = match kind {
-                    ExportKind::Source => doc.json()?, ExportKind::Png => doc.preview()?.0,
-                    ExportKind::Svg => quiet_excalidraw::render::export::SvgExporter::export_with_files(&doc.scene, &doc.background, &doc.files).into_bytes(),
+                    ExportKind::Source => doc.json()?, ExportKind::Png => doc.png()?,
+                    ExportKind::Svg => doc.svg().into_bytes(),
                 };
                 Ok::<_, anyhow::Error>(std::fs::write(path, bytes)?)
             }).await;
@@ -854,14 +862,14 @@ impl DrawingEditor {
         let index = self.doc.scene.elements.len();
         let mut next = self.doc.clone();
         next.scene.elements.push(el);
-        next.files.insert(id, file);
+        next.files.insert(id.clone(), file);
         if next.json().is_err() {
             self.error = Some(tr("画板已达到图片容量上限", "Drawing image limit reached"));
             return cx.notify();
         }
         self.checkpoint();
         self.doc = next;
-        self.load_images();
+        if let Some(image) = Self::decode_image(&self.doc.files[&id]) { Rc::make_mut(&mut self.images).insert(id, image); }
         self.after_drawing(index);
         self.rebuild();
         cx.notify();

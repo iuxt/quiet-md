@@ -1,10 +1,11 @@
 //! Excalidraw files use local points. The vendored geometry uses world points.
 use anyhow::{Result, anyhow, ensure};
 use base64::Engine as _;
+use crate::{model::Drawing, store};
 use quiet_excalidraw::core::{bounds::{Bounds, element_bounds}, element::Element, geometry::Point, scene::{BinaryFileData, Scene}};
 use quiet_excalidraw::render::export;
 use serde_json::{Map, Value, json};
-use std::{collections::{HashMap, HashSet}, io::Cursor};
+use std::{collections::{HashMap, HashSet}, io::Cursor, path::Path};
 
 pub(super) const MAX_SOURCE: u64 = 8 * 1024 * 1024;
 pub(super) const MAX_ELEMENTS: usize = 600;
@@ -13,6 +14,9 @@ pub(super) const MAX_SCENE_POINTS: usize = 30_000;
 pub(super) const MAX_COORD: f64 = 100_000.;
 pub(super) const MAX_IMAGE_PIXELS: u64 = 16_000_000;
 pub(super) const MAX_IMAGES: usize = 32;
+const PREVIEW_SCALE: f32 = 2.;
+const MAX_PREVIEW_EDGE: u32 = 2048;
+const MAX_PNG: u64 = 20 * 1024 * 1024;
 
 #[derive(Clone)]
 pub(super) struct DrawingScene {
@@ -81,6 +85,10 @@ fn load_element(mut fields: Map<String, Value>) -> Result<Element> {
 fn coord(v: f64) -> bool { v.abs() <= MAX_COORD }
 
 impl DrawingScene {
+    pub(super) fn read(root: &Path, source: &str) -> Result<Self> {
+        Self::load(&source_bytes(root, source)?)
+    }
+
     pub(super) fn new() -> Self {
         Self { scene: Scene::new(), background: "#ffffff".into(), files: HashMap::new(), template: Map::new(), original: HashMap::new() }
     }
@@ -162,11 +170,55 @@ impl DrawingScene {
         Ok(bytes)
     }
 
-    pub(super) fn preview(&self) -> Result<(Vec<u8>, u32, u32)> {
-        let png = export::export_png_with_files(&self.scene, &self.background, 2., &self.files).map_err(|s| anyhow!(s))?;
-        let (w, h) = image::ImageReader::with_format(Cursor::new(&png), image::ImageFormat::Png).into_dimensions()?;
-        Ok((png, w, h))
+    pub(super) fn svg(&self) -> String { export::SvgExporter::export_with_files(&self.scene, &self.background, &self.files) }
+
+    pub(super) fn preview_dimensions(&self) -> Result<(u32, u32)> {
+        export::raster_dimensions(&self.svg(), PREVIEW_SCALE).map_err(|s| anyhow!(s))
     }
+
+    pub(super) fn png(&self) -> Result<Vec<u8>> {
+        export::rasterize_png(&self.svg(), PREVIEW_SCALE).map_err(|s| anyhow!(s))
+    }
+}
+
+pub(crate) fn source_bytes(root: &Path, source: &str) -> Result<Vec<u8>> {
+    store::read_drawing_asset(root, source, MAX_SOURCE)
+}
+
+fn legacy_png(root: &Path, preview: &str) -> Result<Vec<u8>> {
+    let bytes = store::read_drawing_asset(root, preview, MAX_PNG)?;
+    let (w, h) = image::ImageReader::with_format(Cursor::new(&bytes), image::ImageFormat::Png).into_dimensions()?;
+    ensure!(w.max(h) <= MAX_PREVIEW_EDGE + 1, "drawing preview exceeds the pixel limit");
+    Ok(bytes)
+}
+
+pub(crate) fn preview_png(root: &Path, d: &Drawing) -> Result<Vec<u8>> {
+    if !d.preview.is_empty() && let Ok(bytes) = legacy_png(root, &d.preview) { return Ok(bytes) }
+    DrawingScene::read(root, &d.source)?.png()
+}
+
+pub(super) fn preview_pixels(root: &Path, source: &str, preview: &str, edge: u32) -> Result<image::RgbaImage> {
+    let edge = if edge == 0 { MAX_PREVIEW_EDGE } else { edge.min(MAX_PREVIEW_EDGE) };
+    if !preview.is_empty() && let Ok(bytes) = legacy_png(root, preview)
+        && let Ok(mut im) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png) {
+        if im.width().max(im.height()) > edge { im = im.thumbnail(edge, edge); }
+        let mut pixels = im.into_rgba8();
+        for p in pixels.as_chunks_mut::<4>().0 { p.swap(0, 2); }
+        return Ok(pixels);
+    }
+    let doc = DrawingScene::read(root, source)?;
+    let raster = export::rasterize_pixels(&doc.svg(), PREVIEW_SCALE, edge).map_err(|s| anyhow!(s))?;
+    let (w, h) = (raster.width(), raster.height());
+    let mut bytes = raster.take();
+    // tiny-skia uses premultiplied RGBA, GPUI uses straight BGRA.
+    for p in bytes.as_chunks_mut::<4>().0 {
+        let alpha = u32::from(p[3]);
+        if alpha > 0 && alpha < 255 {
+            for c in &mut p[..3] { *c = ((u32::from(*c) * 255 + alpha / 2) / alpha) as u8; }
+        }
+        p.swap(0, 2);
+    }
+    Ok(image::RgbaImage::from_raw(w, h, bytes).expect("pixmap dimensions match its pixels"))
 }
 
 pub(super) fn image_data(file: &BinaryFileData) -> Result<(Vec<u8>, image::ImageFormat)> {
@@ -207,8 +259,10 @@ mod tests {
         assert_eq!(saved["elements"][0]["points"], raw["elements"][0]["points"]);
         assert_eq!(saved["elements"][0]["futureField"], raw["elements"][0]["futureField"]);
         assert_eq!(saved["appState"]["gridSize"], 20);
-        let (png, w, h) = reopened.preview().unwrap();
-        assert!(png.starts_with(b"\x89PNG") && w > h && h > 0);
+        let png = reopened.png().unwrap();
+        let (w, h) = reopened.preview_dimensions().unwrap();
+        assert_eq!(image::load_from_memory(&png).unwrap().into_rgba8().dimensions(), (w, h));
+        assert!(w > h && h > 0);
 
         reopened.background = "#fffce8".into();
         let file = BinaryFileData::new("image-1", "image/png", format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png)));

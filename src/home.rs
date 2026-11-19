@@ -171,10 +171,9 @@ fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote:
         BlockKind::Drawing(d) => {
             let w = (d.width as f32 / 2.).clamp(32., 640.);
             let h = (w * d.height as f32 / d.width as f32).clamp(42., 420.);
-            let preview = crate::store::export_path(&d.preview).map(|path| picture(&path, w.max(h) * s).size_full().object_fit(ObjectFit::Contain));
+            let preview = crate::editor::image::drawing_picture(d, w.max(h) * s);
             return node.child(div().w(px(w * s)).h(px(h * s)).max_w_full().rounded(px(bs::RADIUS * s)).overflow_hidden()
-                .when(preview.is_none(), |d| d.bg(Theme::bg_overlay()).text_color(Theme::text_caption()).child("Excalidraw"))
-                .children(preview)).into_any_element();
+                .child(preview)).into_any_element();
         }
         BlockKind::Image { src, width, height, caption, .. } => {
             let path = crate::store::image_path(src);

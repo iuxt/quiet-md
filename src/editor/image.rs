@@ -210,7 +210,11 @@ static FRAME_MS: std::sync::Mutex<Vec<(WindowId, u64)>> = std::sync::Mutex::new(
 static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 fn ms() -> u64 { START.elapsed().as_millis() as u64 }
 
-type Work = Result<(Arc<Path>, u32), std::pin::Pin<Box<dyn std::future::Future<Output = Decoded> + Send>>>;
+enum Work {
+    File(Arc<Path>, u32),
+    Drawing(PathBuf, String, String, u32),
+    Asset(std::pin::Pin<Box<dyn std::future::Future<Output = Decoded> + Send>>),
+}
 struct Job { seq: u64, work: Work, slot: std::sync::Weak<()>, wanted: Arc<AtomicU64>, window: WindowId, out: Arc<async_lock::OnceCell<Option<Decoded>>> }
 
 /// Runs the earliest waiting decode, or skips it (None) when its slot is gone
@@ -221,7 +225,12 @@ async fn run_next() {
     let Some(job) = job else { return };
     let frame = FRAME_MS.lock().unwrap().iter().find(|(w, _)| *w == job.window).map_or(0, |f| f.1);
     let skip = job.slot.strong_count() == 0 || job.wanted.load(Ordering::Relaxed) < frame;
-    let d = if skip { None } else { Some(match job.work { Ok((p, c)) => decode(&p, c), Err(fut) => fut.await }) };
+    let d = if skip { None } else { Some(match job.work {
+        Work::File(p, c) => decode(&p, c),
+        Work::Drawing(root, source, legacy, edge) => super::drawing_scene::preview_pixels(&root, &source, &legacy, edge)
+            .map(|data| Arc::new(RenderImage::new(vec![image::Frame::new(data)]))).map_err(Into::into),
+        Work::Asset(fut) => fut.await,
+    }) };
     if d.is_some() { DECODED.store(true, Ordering::Relaxed); }
     let _ = job.out.set(d).await;
 }
@@ -288,6 +297,21 @@ pub fn picture(path: &Path, long: f32) -> Img {
     let cap = cap(long * SCALE.with(|s| s.get()));
     let uri = SharedUri::from(format!("docpic:{cap}:{}", path.display()));
     KEYS.with(|k| { k.borrow_mut().entry(uri.clone()).or_insert_with(|| (Arc::from(path), cap)); });
+    doc_picture(uri)
+}
+
+/// A drawing revision is immutable, so its source and size identify the raster.
+pub(crate) fn drawing_picture(d: &Drawing, long: f32) -> Img {
+    let edge = cap(long * SCALE.with(|s| s.get()));
+    let root = Store::root_dir();
+    let source = serde_json::to_string(&(root.to_string_lossy(), &d.source, &d.preview)).expect("string tuple is serializable");
+    let uri = SharedUri::from(format!("drawing:{edge}:{source}"));
+    doc_picture(uri).size_full().object_fit(ObjectFit::Contain).with_fallback(|| {
+        div().size_full().flex().justify_center().items_center().bg(Theme::bg_overlay()).text_color(Theme::text_caption()).child("Excalidraw").into_any_element()
+    })
+}
+
+fn doc_picture(uri: SharedUri) -> Img {
     let im = img(uri);
     match PICTURES.with(|p| p.get().cloned()) { Some(e) => im.image_cache(&e).load_visible_only(), None => im }
 }
@@ -481,6 +505,13 @@ fn key_of(r: &Resource) -> Option<(Arc<Path>, u32)> {
     KEYS.with(|k| k.borrow().get(u).cloned())
 }
 
+fn drawing_work(r: &Resource) -> Option<Work> {
+    let Resource::Uri(u) = r else { return None };
+    let (edge, json) = u.strip_prefix("drawing:")?.split_once(':')?;
+    let (root, source, legacy) = serde_json::from_str(json).ok()?;
+    Some(Work::Drawing(root, source, legacy, edge.parse().ok()?))
+}
+
 impl ImageCache for DocImages {
     fn peek(&self, r: &Resource) -> Option<Decoded> {
         let mut map = self.0.borrow_mut();
@@ -508,9 +539,9 @@ impl ImageCache for DocImages {
             // Animated GIFs keep all their frames at full size (gpui's loader).
             let gif = key.as_ref().is_some_and(|(p, _)| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("gif")));
             let work: Work = match key {
-                Some((p, c)) if !gif => Ok((p, c)),
-                Some((p, _)) => Err(Box::pin(<ImgResourceLoader as Asset>::load(Resource::Path(p), cx))),
-                None => Err(Box::pin(<ImgResourceLoader as Asset>::load(r.clone(), cx))),
+                Some((p, c)) if !gif => Work::File(p, c),
+                Some((p, _)) => Work::Asset(Box::pin(<ImgResourceLoader as Asset>::load(Resource::Path(p), cx))),
+                None => drawing_work(r).unwrap_or_else(|| Work::Asset(Box::pin(<ImgResourceLoader as Asset>::load(r.clone(), cx)))),
             };
             let out = Arc::new(async_lock::OnceCell::new());
             QUEUE.lock().unwrap().push(Job { seq: SEQ.fetch_add(1, Ordering::Relaxed), work, slot: generation.clone(), wanted, window: id, out: out.clone() });
@@ -2285,9 +2316,8 @@ fn remote_name(url: &str) -> String {
 }
 
 /// The downloaded copy of a remote image, if it has been fetched.
-pub fn cached_remote(url: &str) -> Option<PathBuf> {
-    let root = Store::root_dir();
-    cached_remote_in(&Store::assets_in(&root).join("remote"), &remote_name(url))
+pub fn cached_remote(root: &Path, url: &str) -> Option<PathBuf> {
+    cached_remote_in(&Store::assets_in(root).join("remote"), &remote_name(url))
 }
 
 fn cached_remote_in(dir: &Path, name: &str) -> Option<PathBuf> {

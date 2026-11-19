@@ -98,7 +98,7 @@ DocxXML 是飞书 / Lark 的文档 XML 格式。`crates/core/tests/fixtures/all-
 
 DocxXML 里没有、本应用自己加的写法。别的工具不认识这些写法，按上一节的规则它们只会被当作未知元素或属性：
 
-- `<drawing path="assets/….excalidraw" preview="assets/….png" width="…" height="…"/>` 表示画板。宽高为 PNG 像素尺寸，图源和预览在每次保存时写入一对新资源，文档版本和撤销仍引用各自的旧资源。导出 Markdown 时会复制预览和图源，PDF 采用 PNG 预览。
+- `<drawing path="assets/….excalidraw" width="…" height="…"/>` 表示画板。宽高为预览像素尺寸，每次保存写入一份新图源，文档版本和撤销引用各自的图源。旧画板的可选 `preview="assets/….png"` 属性仍可读取。预览像素缓存于内存。导出含图片的 Markdown 时把 PNG 和图源写到导出位置，PDF 从内存嵌入 PNG。
 - `<countdown duration start-time notify color timing/>`：倒计时。云端的倒计时是小组件，不在 DocxXML 里。
 - `<time … is-whole-day="true">`：全天提醒。模型里有 `isWholeDay`，但 XML 里没有这个属性。没有此属性、且时间是本地 23:59 的提醒，也按全天处理。
 - 图片和附件的本地文件写成 `path="…"`（云端用 `token` / `href`）。`<figure><source path=… name=…/></figure>` 表示视频或文件。

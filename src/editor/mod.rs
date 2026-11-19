@@ -6,7 +6,7 @@ mod cover;
 pub use fdl_core::editor::core;
 mod drag;
 pub(crate) mod drawing;
-mod drawing_scene;
+pub(crate) mod drawing_scene;
 pub mod emoji;
 mod emoji_picker;
 mod file;

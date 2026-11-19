@@ -14,17 +14,23 @@ pub(super) enum Colors { Stroke, Fill, Paper }
 impl DrawingEditor {
     pub(super) fn header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let title = self.parent.upgrade().map(|ed| crate::model::display_title(&ed.read(cx).core.doc.title.text)).unwrap_or_default();
-        div().id("drawing-header").occlude().h(px(38.)).flex_none().flex().items_center().gap(px(6.)).px(px(9.))
+        let can_save = !self.busy && (self.dirty() || self.text_at.is_some() || self.edit_link.is_some());
+        let save = tr("保存", "Save");
+        div().id("drawing-header").occlude().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().gap(px(6.))
+            .pl(px(theme::TRAFFIC_LIGHTS_W)).pr(px(12.))
             .bg(Theme::window()).border_b_1().border_color(Theme::line_divider())
             .child(icon_button("drawing-back", "chevron-left", tr("返回笔记", "Back to note"), None, false, !self.busy)
                 .on_click(cx.listener(|d, _, w, cx| d.cancel(w, cx))))
             .child(div().flex_1().min_w_0().flex().gap(px(6.)).items_center().text_size(px(14.)).font_weight(FontWeight::MEDIUM)
-                .child(tr("画板", "Drawing"))
-                .when(!title.is_empty(), |d| d.child(div().text_color(Theme::text_caption()).child("/")).child(div().truncate().child(title))))
-            .children(self.error.map(|msg| div().text_size(px(12.)).text_color(Theme::text_caption()).child(msg)))
+                .child(div().flex_none().child(tr("画板", "Drawing")))
+                .when(!title.is_empty(), |d| d.child(div().flex_none().text_color(Theme::text_caption()).child("/")).child(div().min_w_0().truncate().child(ui::ui_text(title)))))
+            .children(self.error.map(|msg| div().min_w_0().truncate().text_size(px(12.)).text_color(Theme::text_caption()).child(ui::ui_text(msg))))
             .when(self.busy, |d| d.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(tr("正在处理", "Working…"))))
-            .child(icon_button("drawing-save", "drawing-save", tr("保存", "Save"), Some(crate::shortcuts::hint("editor::Save", "⌘S")), self.dirty(), !self.busy)
-                .on_click(cx.listener(|d, _, w, cx| d.save(w, cx))))
+            .child(div().id("drawing-save").flex_none().h(px(crate::app::HEADER_ACTIONS_H)).px(px(12.)).flex().items_center().rounded(px(8.))
+                .text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(if can_save { Theme::text() } else { Theme::text_disabled() })
+                .when(can_save, |d| d.bg(Theme::fill_hover()).cursor_pointer().hover(|s| s.bg(Theme::fill_hover_strong()))
+                    .active(|s| s.bg(Theme::fill_pressed())).on_click(cx.listener(|d, _, w, cx| d.save(w, cx))))
+                .child(save).tip(save, Some(crate::shortcuts::hint("editor::Save", "⌘S"))))
     }
 
     pub(super) fn canvas_chrome(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {

@@ -571,6 +571,14 @@ pub fn read_bounded(path: &std::path::Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// Read a drawing asset from the library or directly from a Git history revision.
+pub fn read_drawing_asset(root: &Path, source: &str, limit: u64) -> Result<Vec<u8>> {
+    if let Some((oid, size)) = source.strip_prefix("git-lfs:").and_then(|s| s.split_once(':')) {
+        return crate::git::LibraryRepo::open(root)?.read_drawing_asset(oid, size, limit);
+    }
+    read_bounded(&export_path_in(root, source).context("drawing asset is missing")?, limit)
+}
+
 /// A short stable name for a library folder, for data kept about it elsewhere.
 fn library_key(root: &Path) -> String {
     use std::hash::{Hash, Hasher};
@@ -692,20 +700,14 @@ impl Store {
         d
     }
 
-    /// A drawing save always writes a new pair of assets. Publish their paths
-    /// only after both writes succeed so undo and history never see half a save.
-    pub fn save_drawing_assets(source: &[u8], preview: &[u8], width: u32, height: u32) -> Result<crate::model::Drawing> {
-        let dir = Self::assets_dir();
+    /// A drawing save writes a new source asset for undo and history.
+    pub fn save_drawing(root: &Path, source: &[u8], width: u32, height: u32) -> Result<crate::model::Drawing> {
+        let dir = Self::assets_in(root);
         let id = uuid::Uuid::new_v4();
-        let original = dir.join(format!("{id}.excalidraw"));
-        let thumbnail = dir.join(format!("{id}.png"));
-        write_atomic(&original, source)?;
-        if let Err(err) = write_atomic(&thumbnail, preview) {
-            let _ = std::fs::remove_file(&original);
-            return Err(err);
-        }
         let base = dir.file_name().context("missing asset directory name")?.to_string_lossy();
-        Ok(crate::model::Drawing { source: format!("{base}/{id}.excalidraw"), preview: format!("{base}/{id}.png"), width, height })
+        std::fs::create_dir_all(&dir)?;
+        write_atomic(&dir.join(format!("{id}.excalidraw")), source)?;
+        Ok(crate::model::Drawing { source: format!("{base}/{id}.excalidraw"), preview: String::new(), width, height })
     }
 
     /// The library at `root_dir`, moved to the new layout first when that
@@ -991,7 +993,7 @@ impl Store {
                     paths.insert(src, self.root.join(rel).to_string_lossy().into_owned());
                 }
             }
-            git_store::rewrite_asset_sources(&mut doc.blocks, &paths);
+            git_store::rewrite_asset_sources(&mut doc.blocks, &paths, &paths);
         }
         // Images a Markdown file carries inline (#133) become assets, so the
         // page shows them and an export writes them like any other picture.
