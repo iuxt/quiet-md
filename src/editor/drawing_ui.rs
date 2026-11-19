@@ -14,7 +14,7 @@ pub(super) enum Colors { Stroke, Fill, Paper, Text }
 impl DrawingEditor {
     pub(super) fn header(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let title = self.parent.upgrade().map(|ed| crate::model::display_title(&ed.read(cx).core.doc.title.text)).unwrap_or_default();
-        let can_save = !self.busy && (self.dirty() || self.text_at.is_some() || self.edit_link.is_some());
+        let can_save = !self.busy && (self.dirty() || self.text_at.is_some() || self.edit_link.is_some() || self.edit_frame.is_some() || self.edit_property.is_some() || !self.polyline.is_empty());
         let save = tr("保存", "Save");
         div().id("drawing-header").occlude().h(px(crate::app::HEADER_H)).flex_none().flex().items_center().gap(px(6.))
             .pl(px(theme::TRAFFIC_LIGHTS_W)).pr(px(12.))
@@ -45,14 +45,22 @@ impl DrawingEditor {
                 Some(Panel::Properties) => Some(self.properties(max_h, cx)),
                 Some(Panel::Menu) => Some(self.menu(max_h, cx)),
                 Some(Panel::Export) => Some(self.export_menu(cx)),
+                Some(Panel::Help) => Some(self.help_menu(max_h)),
+                Some(Panel::Library) => Some(self.library_panel(max_h, cx)),
                 _ => None,
             };
-            if let Some(overlay) = overlay.filter(|_| !self.busy && self.edit_link.is_none() && self.text_at.is_none()) {
+            if let Some(overlay) = overlay.filter(|_| !self.busy && self.edit_link.is_none() && self.text_at.is_none() && self.edit_frame.is_none() && self.edit_property.is_none() && !self.searching) {
                 result.push(div().absolute().left(px(12.)).bottom(px(57.)).child(overlay).into_any_element());
             }
         }
+        if self.panel == Some(Panel::Context) {
+            let view = self.viewport.get();
+            let at = self.offset + point(px((self.pointer.x * self.zoom) as f32), px((self.pointer.y * self.zoom) as f32));
+            result.push(div().absolute().left(at.x.clamp(px(12.), (view.size.width - px(245.)).max(px(12.))))
+                .top(at.y.clamp(px(12.), (view.size.height - px(540.)).max(px(12.)))).child(self.context_menu(cx)).into_any_element());
+        }
         result.push(div().absolute().right(px(12.)).top(px(62.)).child(ui::popover().id("drawing-viewport-tools").occlude().p(px(3.)).flex().flex_col().gap(px(2.))
-            .when(!self.zen, |d| d.child(icon_button("drawing-fit-all", "fit-page", tr("缩放到全部内容", "Zoom to fit"), Some("0"), false, true)
+            .when(!self.zen, |d| d.child(icon_button("drawing-fit-all", "fit-page", tr("缩放到全部内容", "Zoom to fit"), Some("Shift+1"), false, true)
                 .on_click(cx.listener(|d, _, _, cx| { d.fit_view(); cx.notify(); }))))
             .child(icon_button("drawing-zen", "panel-left-close", tr("专注模式", "Zen mode"), None, self.zen, true)
                 .on_click(cx.listener(|d, _, _, cx| { d.zen = !d.zen; d.panel = None; cx.notify(); }))))
@@ -61,7 +69,7 @@ impl DrawingEditor {
             result.push(div().absolute().top(px(56.)).left_0().right_0().flex().justify_center().text_size(px(12.)).text_color(Theme::text_caption())
                 .child(tr("点击画布放置图片", "Click the canvas to place the image")).into_any_element());
         }
-        if self.text_at.is_some() || self.edit_link.is_some() {
+        if self.text_at.is_some() || self.edit_link.is_some() || self.edit_frame.is_some() || self.searching || self.edit_property.is_some() {
             result.push(self.field_panel(cx));
         }
         result
@@ -74,7 +82,7 @@ impl DrawingEditor {
                 tr("锁定当前工具", "Keep the selected tool active"), Some("Q"), self.tool_locked, enabled)
                 .on_click(cx.listener(|d, _, _, cx| { if !d.busy { d.tool_locked = !d.tool_locked; cx.notify(); } })))
             .child(tool_separator());
-        for &(tool, zh, en, key, glyph) in TOOLS.iter().filter(|(tool, ..)| *tool != Tool::Frame) {
+        for &(tool, zh, en, key, glyph) in TOOLS.iter().filter(|(tool, ..)| !matches!(tool, Tool::Frame | Tool::Laser | Tool::Eyedropper | Tool::Bucket)) {
             let key = key.to_ascii_uppercase();
             tools = tools.child(icon_button(("drawing-tool", tool as usize), glyph, tr(zh, en), Some(&key), self.tool == tool, enabled)
                 .when(tool != Tool::Image && tool != Tool::Pan, |d| d.child(div().absolute().bottom(px(1.)).right(px(3.)).text_size(px(8.))
@@ -85,13 +93,15 @@ impl DrawingEditor {
             .child(icon_button("drawing-more-tools", "grip-vertical", tr("更多工具", "More tools"), None, self.panel == Some(Panel::More) || self.tool == Tool::Frame, enabled)
                 .on_click(cx.listener(|d, _, _, cx| d.toggle_panel(Panel::More, cx))))
             .when(self.panel == Some(Panel::More), |d| d.child(ui::popover().id("drawing-tools-menu").occlude().absolute().right_0().top(px(42.)).w(px(160.)).py(px(5.))
-                .child(menu_button("drawing-frame-tool", "drawing-corners", tr("画框", "Frame"), enabled)
-                    .on_click(cx.listener(|d, _, w, cx| { if !d.busy { d.tool(Tool::Frame, w, cx); } })))))
+                .children(TOOLS.iter().filter(|(tool, ..)| matches!(tool, Tool::Frame | Tool::Laser | Tool::Eyedropper | Tool::Bucket)).map(|&(tool, zh, en, _, glyph)| {
+                    menu_button(("drawing-extra-tool", tool as usize), glyph, tr(zh, en), enabled)
+                        .on_click(cx.listener(move |d, _, w, cx| { if !d.busy { d.tool(tool, w, cx); } }))
+                }))))
     }
 
     fn tray(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let enabled = !self.busy;
-        let has_selection = enabled && self.selected.is_some();
+        let has_selection = enabled && !self.selection.is_empty();
         ui::popover().id("drawing-tray").occlude().flex().items_center().p(px(4.)).gap(px(2.))
             .child(icon_button("drawing-main-menu", "drawing-menu", tr("菜单", "Menu"), None, matches!(self.panel, Some(Panel::Menu | Panel::Export)), enabled)
                 .on_click(cx.listener(|d, _, _, cx| d.toggle_panel(Panel::Menu, cx))))
@@ -129,11 +139,15 @@ impl DrawingEditor {
 
     fn menu(&self, max_h: f32, cx: &mut Context<Self>) -> Stateful<Div> {
         let available = !self.busy;
-        let can_import = available && !self.dirty() && self.text_at.is_none() && self.edit_link.is_none();
+        let can_import = available && !self.dirty() && self.text_at.is_none() && self.edit_link.is_none() && self.edit_frame.is_none() && self.edit_property.is_none() && self.polyline.is_empty() && self.gesture.is_none();
         ui::popover().id("drawing-menu-panel").occlude().w(px(217.)).max_h(px(max_h)).overflow_y_scroll().py(px(7.))
             .child(div().px(px(10.)).pb(px(7.)).child(self.swatches(tr("画布背景", "Canvas background"), Colors::Paper, &self.doc.background, &PAPER, cx)))
             .child(menu_button("drawing-grid", "view-grid", tr("网格模式", "Grid mode"), available).when(self.grid, checked)
                 .on_click(cx.listener(|d, _, _, cx| { if !d.busy { d.grid = !d.grid; cx.notify(); } })))
+            .child(menu_button("drawing-snap", "drawing-corners", tr("对象吸附", "Snap to objects"), available).when(self.objects_snap, checked)
+                .on_click(cx.listener(|d, _, _, cx| { d.objects_snap = !d.objects_snap; cx.notify(); })))
+            .child(menu_button("drawing-view", "eye", tr("只读浏览", "View mode"), available).when(self.view_only, checked)
+                .on_click(cx.listener(|d, _, _, cx| { d.view_only = !d.view_only; d.selection.clear(); d.panel = None; cx.notify(); })))
             .child(menu_button("drawing-dark", "eye", tr("深色画布", "Dark canvas"), available).when(self.dark_canvas, checked)
                 .on_click(cx.listener(|d, _, _, cx| { if !d.busy { d.dark_canvas = !d.dark_canvas; cx.notify(); } })))
             .child(horizontal_line())
@@ -143,6 +157,14 @@ impl DrawingEditor {
                 .on_click(cx.listener(move |d, _, w, cx| { if can_import { d.import(w, cx); } })))
             .child(menu_button("drawing-menu-export", "export", tr("导出绘图…", "Export drawing…"), available)
                 .on_click(cx.listener(|d, _, _, cx| d.toggle_panel(Panel::Export, cx))))
+            .child(menu_button("drawing-library", "drawing-rectangle", tr("素材库", "Library"), available)
+                .on_click(cx.listener(|d, _, _, cx| d.toggle_panel(Panel::Library, cx))))
+            .child(menu_button("drawing-find", "search", tr("查找画板文字", "Find text on canvas"), available)
+                .on_click(cx.listener(|d, _, w, cx| d.start_find(w, cx))))
+            .child(menu_button("drawing-unlock-all", "drawing-unlock", tr("解锁全部", "Unlock all"), available)
+                .on_click(cx.listener(|d, _, _, cx| { if d.editable() { d.selection.clear(); d.lock_selection(cx); } })))
+            .child(menu_button("drawing-help", "keyboard", tr("快捷键", "Keyboard shortcuts"), available)
+                .on_click(cx.listener(|d, _, _, cx| d.toggle_panel(Panel::Help, cx))))
             .child(horizontal_line())
             .child(menu_button("drawing-reset", "trash-2", tr("重置画布", "Reset canvas"), available && self.doc.scene.non_deleted().next().is_some())
                 .on_click(cx.listener(|d, _, _, cx| { if !d.busy && d.doc.scene.non_deleted().next().is_some() { d.reset_confirmation = true; cx.notify(); } })))
@@ -152,6 +174,23 @@ impl DrawingEditor {
         let mut panel = ui::popover().id("drawing-export-panel").occlude().w(px(217.)).py(px(5.))
             .child(menu_button("drawing-export-back", "chevron-left", tr("导出绘图", "Export drawing"), true)
                 .on_click(cx.listener(|d, _, _, cx| d.toggle_panel(Panel::Menu, cx)))).child(horizontal_line());
+        if !self.selection.is_empty() {
+            panel = panel.child(menu_button("drawing-export-selection", "check", tr("仅导出所选内容", "Export selection only"), true)
+                .when(self.export_selection, checked).on_click(cx.listener(|d, _, _, cx| { d.export_selection = !d.export_selection; cx.notify(); })));
+        }
+        for (n, label, enabled) in [(0, tr("包含背景", "Background"), self.export_options.background), (1, tr("深色模式", "Dark mode"), self.export_options.dark), (2, tr("嵌入可编辑图源", "Embed drawing source"), self.export_options.embed)] {
+            panel = panel.child(menu_button(("drawing-export-option", n as usize), "check", label, true).when(enabled, checked)
+                .on_click(cx.listener(move |d, _, _, cx| {
+                    match n { 0 => d.export_options.background = !d.export_options.background, 1 => d.export_options.dark = !d.export_options.dark, _ => d.export_options.embed = !d.export_options.embed }
+                    cx.notify();
+                })));
+        }
+        panel = panel.child(div().px(px(12.)).py(px(7.)).flex().items_center().justify_between().text_size(px(12.))
+            .child(tr("PNG 倍率", "PNG scale"))
+            .children([1, 2, 3].map(|n| div().id(("drawing-export-scale", n as usize)).px(px(7.)).py(px(4.)).rounded(px(5.)).cursor_pointer()
+                .bg(if self.export_options.scale == n as f32 { Theme::drawing_selection() } else { Theme::bg_overlay() }).child(format!("{n}×"))
+                .on_click(cx.listener(move |d, _, _, cx| { d.export_options.scale = n as f32; cx.notify(); })))))
+            .child(horizontal_line());
         for (kind, label) in [(ExportKind::Source, "Excalidraw (.excalidraw)"), (ExportKind::Png, "PNG"), (ExportKind::Svg, "SVG")] {
             panel = panel.child(menu_button(("drawing-export", kind as usize), "export", label, !self.busy)
                 .on_click(cx.listener(move |d, _, w, cx| { d.panel = None; d.export(kind, w, cx); cx.notify(); })));
@@ -160,7 +199,7 @@ impl DrawingEditor {
     }
 
     fn properties(&self, max_h: f32, cx: &mut Context<Self>) -> Stateful<Div> {
-        let element = self.selected.map(|i| &self.doc.scene.elements[i]);
+        let element = self.selected().map(|i| &self.doc.scene.elements[i]);
         let b = element.map(Element::base);
         let tool = element.map_or(self.tool, |e| match e {
             Element::Text(_) => Tool::Text, Element::Line(_) => Tool::Line, Element::Arrow(_) => Tool::Arrow,
@@ -173,6 +212,8 @@ impl DrawingEditor {
             match label.unwrap_or(e) { Element::Text(t) => Some(t), _ => None }
         });
         let mut body = ui::popover().id("drawing-props-panel").occlude().w(px(214.)).max_h(px(max_h)).overflow_y_scroll().p(px(11.)).flex().flex_col().gap(px(9.));
+        if !self.selection.is_empty() { body = body.child(self.geometry_controls(cx)); }
+        if self.selection.len() > 1 { body = body.child(self.alignment_controls(cx)); }
         if tool == Tool::Text || text.is_some() {
             let ink = text.map_or(self.text_color.as_str(), |t| &t.base.stroke_color);
             body = body.child(self.swatches(tr("文字颜色", "Text color"), Colors::Text, ink, &STROKES, cx));
@@ -199,7 +240,8 @@ impl DrawingEditor {
                 property_button(("stroke-width", i), tr("描边宽度", "Stroke width"), (width - v).abs() < 0.001, cx, StyleChoice::Width(v))
                     .child(div().w(px(13. + v as f32 * 0.3)).h(px(v as f32)).rounded_full().bg(Theme::text()))
             });
-            body = body.child(section(tr("描边宽度", "Stroke width"), div().flex().gap(px(4.)).children(width_buttons)));
+            body = body.child(section(tr("描边宽度", "Stroke width"), div().flex().flex_wrap().gap(px(4.)).children(width_buttons)
+                .child(self.precision_button("custom-stroke-width", Property::StrokeWidth, format!("{width}"), cx))));
         }
         if !matches!(tool, Tool::Text | Tool::Image | Tool::Pen) {
             let style = b.map_or(opts.stroke_style, |b| b.stroke_style);
@@ -223,12 +265,14 @@ impl DrawingEditor {
             ], true, cx));
         }
         if tool == Tool::Arrow {
-            let arrowhead = match element { Some(Element::Arrow(a)) => a.linear.end_arrowhead, _ => self.arrowhead };
-            body = body.child(options("arrowhead", tr("箭头末端", "Arrowhead"), [
-                ("—", tr("无", "None"), arrowhead.is_none(), StyleChoice::ArrowHead(None)),
-                ("→", tr("箭头", "Arrow"), arrowhead == Some(Arrowhead::Arrow), StyleChoice::ArrowHead(Some(Arrowhead::Arrow))),
-                ("▸", tr("三角", "Triangle"), arrowhead == Some(Arrowhead::Triangle), StyleChoice::ArrowHead(Some(Arrowhead::Triangle))),
-                ("●", tr("圆点", "Dot"), arrowhead == Some(Arrowhead::Dot), StyleChoice::ArrowHead(Some(Arrowhead::Dot))),
+            let start = match element { Some(Element::Arrow(a)) => a.linear.start_arrowhead, _ => self.start_arrowhead };
+            let end = match element { Some(Element::Arrow(a)) => a.linear.end_arrowhead, _ => self.arrowhead };
+            body = body.child(self.arrowheads(true, start, cx)).child(self.arrowheads(false, end, cx));
+            let kind = match element { Some(Element::Arrow(a)) => if a.elbowed { 2 } else { u8::from(a.linear.base.roundness.is_some()) }, _ => self.arrow_type };
+            body = body.child(options("arrow-type", tr("箭头类型", "Arrow type"), [
+                ("→", tr("直线", "Straight"), kind == 0, StyleChoice::ArrowType(0)),
+                ("⌁", tr("曲线", "Curved"), kind == 1, StyleChoice::ArrowType(1)),
+                ("⌝", tr("折线", "Elbow"), kind == 2, StyleChoice::ArrowType(2)),
             ], false, cx));
         }
         if tool == Tool::Text || text.is_some() {
@@ -239,6 +283,7 @@ impl DrawingEditor {
             body = body.child(options("text-size", tr("字体大小", "Font size"), [("XS", 12.), ("S", 16.), ("M", 20.), ("L", 28.), ("XL", 36.)].map(|(label, v)| {
                 (label, label, font_size == v, StyleChoice::TextSize(v))
             }), false, cx));
+            body = body.child(self.precision_button("custom-font-size", Property::FontSize, format!("{font_size}"), cx));
             let mut alignment = div().flex().flex_col().gap(px(4.)).child(option_buttons("text-align", [
                 ("align-left", tr("左对齐", "Left"), align == DrawingAlign::Left, StyleChoice::TextAlign(DrawingAlign::Left)),
                 ("align-center", tr("居中", "Center"), align == DrawingAlign::Center, StyleChoice::TextAlign(DrawingAlign::Center)),
@@ -256,7 +301,7 @@ impl DrawingEditor {
             body = body.child(section(tr("文本对齐", "Text alignment"), alignment));
         }
         body = body.child(self.opacity_slider(b.map_or(opts.opacity, |b| b.opacity), cx));
-        if element.is_some() {
+        if !self.selection.is_empty() {
             let mut layer = div().flex().gap(px(4.));
             for (direction, glyph, label) in [(LayerMove::Bottom, "drawing-layer-down", tr("置于底层", "Send to back")), (LayerMove::Back, "drawing-down", tr("下移一层", "Send backward")),
                 (LayerMove::Forward, "drawing-up", tr("上移一层", "Bring forward")), (LayerMove::Top, "drawing-layer-up", tr("置于顶层", "Bring to front"))] {
@@ -268,8 +313,166 @@ impl DrawingEditor {
                     .child(icon_button("prop-copy", "copy", tr("创建副本", "Duplicate"), None, false, true).bg(Theme::bg_overlay()).on_click(cx.listener(|d, _, _, cx| d.duplicate(cx))))
                     .child(icon_button("prop-delete", "trash-2", tr("删除", "Delete"), None, false, true).bg(Theme::bg_overlay()).on_click(cx.listener(|d, _, _, cx| d.delete(cx))))
                     .child(icon_button("prop-link", "link", tr("链接", "Link"), None, b.is_some_and(|b| b.link.is_some()), true).bg(Theme::bg_overlay()).on_click(cx.listener(|d, _, w, cx| d.open_link_editor(w, cx))))));
+            body = body.child(div().flex().flex_wrap().gap(px(4.))
+                .child(menu_button("drawing-group", "drawing-rectangle", tr("编组", "Group selection"), self.selection.len() > 1)
+                    .on_click(cx.listener(|d, _, _, cx| d.group_selection(false, cx))))
+                .child(menu_button("drawing-ungroup", "drawing-unlock", tr("取消编组", "Ungroup selection"), true)
+                    .on_click(cx.listener(|d, _, _, cx| d.group_selection(true, cx))))
+                .child(menu_button("drawing-lock-selection", "drawing-lock", tr("锁定所选内容", "Lock selection"), true)
+                    .on_click(cx.listener(|d, _, _, cx| d.lock_selection(cx))))
+                .child(menu_button("drawing-flip-h", "drawing-arrow", tr("水平翻转", "Flip horizontal"), true)
+                    .on_click(cx.listener(|d, _, _, cx| d.flip_selection(true, cx))))
+                .child(menu_button("drawing-flip-v", "drawing-down", tr("垂直翻转", "Flip vertical"), true)
+                    .on_click(cx.listener(|d, _, _, cx| d.flip_selection(false, cx)))));
+            if element.is_some_and(|e| linear_points(e).is_some()) {
+                body = body.child(menu_button("drawing-edit-points", "pen-line", tr("编辑线条节点", "Edit line points"), true)
+                    .on_click(cx.listener(|d, _, w, cx| d.edit_points(w, cx))));
+            }
+            if matches!(element, Some(Element::Image(_))) {
+                body = body.child(menu_button("drawing-crop", "drawing-corners", tr("裁剪图片", "Crop image"), true)
+                    .on_click(cx.listener(|d, _, w, cx| d.edit_points(w, cx))))
+                    .child(menu_button("drawing-reset-crop", "undo", tr("还原裁剪", "Reset crop"), true)
+                        .on_click(cx.listener(|d, _, _, cx| d.reset_crop(cx))));
+            }
+            body = body.child(menu_button("drawing-add-library", "plus", tr("添加到素材库", "Add to library"), true)
+                .on_click(cx.listener(|d, _, _, cx| d.add_to_library(cx))));
         }
         body
+    }
+
+    fn precision_button(&self, id: impl Into<ElementId>, property: Property, value: String, cx: &mut Context<Self>) -> Stateful<Div> {
+        div().id(id).min_w(px(50.)).h(px(28.)).px(px(7.)).flex().items_center().rounded(px(5.)).bg(Theme::bg_overlay()).text_size(px(12.)).cursor_pointer()
+            .child(value.clone()).tip(property.label(), None)
+            .on_click(cx.listener(move |d, _, w, cx| d.start_property(property, value.clone(), w, cx)))
+    }
+
+    fn geometry_controls(&self, cx: &mut Context<Self>) -> Div {
+        let Some(b) = selection_bounds(&self.doc.scene, &self.selection) else { return div() };
+        let angle = self.selected().map_or(0., |i| self.doc.scene.elements[i].base().angle.to_degrees());
+        let mut row = div().flex().flex_wrap().gap(px(4.));
+        for (n, property, value) in [(0, Property::X, b.min_x), (1, Property::Y, b.min_y), (2, Property::Width, b.width()), (3, Property::Height, b.height()), (4, Property::Angle, angle)] {
+            row = row.child(div().w(px(92.)).flex().items_center().justify_between().gap(px(3.))
+                .child(div().text_size(px(11.)).text_color(Theme::text_caption()).child(property.label()))
+                .child(self.precision_button(("drawing-geometry", n as usize), property, format!("{value:.1}"), cx)));
+        }
+        section(tr("位置与尺寸", "Position and size"), row)
+    }
+
+    fn arrowheads(&self, start: bool, current: Option<Arrowhead>, cx: &mut Context<Self>) -> Div {
+        let choices = [("—", "None", None), ("→", "Arrow", Some(Arrowhead::Arrow)), ("▸", "Triangle", Some(Arrowhead::Triangle)),
+            ("▷", "Triangle outline", Some(Arrowhead::TriangleOutline)), ("●", "Dot", Some(Arrowhead::Dot)), ("⬤", "Circle", Some(Arrowhead::Circle)),
+            ("○", "Circle outline", Some(Arrowhead::CircleOutline)), ("◆", "Diamond", Some(Arrowhead::Diamond)), ("◇", "Diamond outline", Some(Arrowhead::DiamondOutline)),
+            ("│", "Bar", Some(Arrowhead::Bar)), ("1", "One", Some(Arrowhead::CardinalityOne)), ("N", "Many", Some(Arrowhead::CardinalityMany)),
+            ("1N", "One or many", Some(Arrowhead::CardinalityOneOrMany)), ("11", "Exactly one", Some(Arrowhead::CardinalityExactlyOne)),
+            ("01", "Zero or one", Some(Arrowhead::CardinalityZeroOrOne)), ("0N", "Zero or many", Some(Arrowhead::CardinalityZeroOrMany)),
+            ("⊣", "Crowfoot one", Some(Arrowhead::CrowfootOne)), ("≺", "Crowfoot many", Some(Arrowhead::CrowfootMany)), ("≼", "Crowfoot one or many", Some(Arrowhead::CrowfootOneOrMany))];
+        section(if start { tr("箭头起点", "Arrow start") } else { tr("箭头末端", "Arrowhead") }, div().flex().flex_wrap().gap(px(4.))
+            .children(choices.into_iter().enumerate().map(|(i, (glyph, label, head))| {
+                property_button((if start { "arrow-start" } else { "arrowhead" }, i), label, current == head, cx,
+                    if start { StyleChoice::StartArrowHead(head) } else { StyleChoice::ArrowHead(head) }).child(glyph)
+            })))
+    }
+
+    fn alignment_controls(&self, cx: &mut Context<Self>) -> Div {
+        let mut row = div().flex().flex_wrap().gap(px(3.));
+        for (direction, glyph, label) in [
+            (AlignSelection::Left, "align-left", tr("左对齐", "Left")), (AlignSelection::Center, "align-center", tr("水平居中", "Center horizontally")),
+            (AlignSelection::Right, "align-right", tr("右对齐", "Right")), (AlignSelection::Top, "valign-top", tr("顶部对齐", "Align top")),
+            (AlignSelection::Middle, "valign-middle", tr("垂直居中", "Align middle")), (AlignSelection::Bottom, "valign-bottom", tr("底部对齐", "Align bottom")),
+            (AlignSelection::Horizontal, "drawing-rectangle", tr("水平分布", "Distribute horizontally")), (AlignSelection::Vertical, "drawing-corners", tr("垂直分布", "Distribute vertically")),
+        ] {
+            let enabled = self.selection.len() >= if matches!(direction, AlignSelection::Horizontal | AlignSelection::Vertical) { 3 } else { 2 };
+            row = row.child(icon_button(("drawing-align", direction as usize), glyph, label, None, false, enabled).bg(Theme::bg_overlay())
+                .on_click(cx.listener(move |d, _, _, cx| d.align_selection(direction, cx))));
+        }
+        section(tr("对齐与分布", "Align and distribute"), row)
+    }
+
+    fn library_panel(&self, max_h: f32, cx: &mut Context<Self>) -> Stateful<Div> {
+        let mut panel = ui::popover().id("drawing-library-panel").occlude().w(px(260.)).max_h(px(max_h)).overflow_y_scroll().p(px(9.)).flex().flex_col().gap(px(6.))
+            .child(div().font_weight(FontWeight::MEDIUM).child(tr("素材库", "Library")))
+            .child(menu_button("library-add", "plus", tr("添加所选内容", "Add selection"), !self.selection.is_empty())
+                .on_click(cx.listener(|d, _, _, cx| d.add_to_library(cx))))
+            .child(menu_button("library-import", "import", tr("导入素材库", "Import library"), true)
+                .on_click(cx.listener(|d, _, w, cx| d.import_library(w, cx))))
+            .child(menu_button("library-export", "export", tr("导出素材库", "Export library"), !self.library.is_empty())
+                .on_click(cx.listener(|d, _, w, cx| d.export_library(w, cx))));
+        for index in 0..self.library.len() {
+            let preview = self.library_thumbnail(index);
+            panel = panel.child(div().flex().gap(px(4.)).items_center()
+                .child(div().id(("library-item", index)).flex_1().h(px(84.)).rounded(px(7.)).bg(Theme::bg_overlay()).cursor_pointer()
+                    .child(canvas(|_, _, _| (), move |bounds, _, w, _| {
+                        if let Some(image) = &preview {
+                            let dimensions = image.size(0); let ratio = dimensions.width.0 as f32 / dimensions.height.0.max(1) as f32;
+                            let h = f32::from(bounds.size.height).min(f32::from(bounds.size.width) / ratio);
+                            let size = size(px(h * ratio), px(h)); let at = bounds.center() - point(size.width / 2., size.height / 2.);
+                            let _ = w.paint_image(Bounds::new(at, size), Corners::default(), image.clone(), 0, false);
+                        }
+                    }).size_full())
+                    .on_click(cx.listener(move |d, _, w, cx| {
+                        if let Some(doc) = d.library.get(index).cloned() { let at = d.world(d.viewport.get().center()); d.insert_scene(doc, at, w, cx); }
+                    })))
+                .child(icon_button(("library-remove", index), "trash-2", tr("删除", "Delete"), None, false, true)
+                    .on_click(cx.listener(move |d, _, w, cx| {
+                        if index < d.library.len() {
+                            d.library.remove(index);
+                            for image in d.library_images.borrow_mut().drain().map(|(_, image)| image) { let _ = w.drop_image(image); }
+                            d.persist_library(); cx.notify();
+                        }
+                    }))));
+        }
+        panel
+    }
+
+    fn context_menu(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let selected = !self.selection.is_empty();
+        ui::popover().id("drawing-context").occlude().w(px(230.)).max_h(px(520.)).overflow_y_scroll().py(px(5.))
+            .child(menu_button("drawing-context-copy", "copy", tr("复制", "Copy"), selected)
+                .on_click(cx.listener(|d, _, _, cx| { d.copy_selection(false, cx); d.panel = None; cx.notify(); })))
+            .child(menu_button("drawing-context-cut", "scissors", tr("剪切", "Cut"), selected)
+                .on_click(cx.listener(|d, _, _, cx| { d.copy_selection(true, cx); d.panel = None; cx.notify(); })))
+            .child(menu_button("drawing-context-paste", "copy", tr("粘贴", "Paste"), true)
+                .on_click(cx.listener(|d, _, w, cx| { d.paste_selection(w, cx); d.panel = None; cx.notify(); })))
+            .child(menu_button("drawing-context-duplicate", "copy", tr("创建副本", "Duplicate"), selected)
+                .on_click(cx.listener(|d, _, _, cx| { d.duplicate(cx); d.panel = None; cx.notify(); })))
+            .child(menu_button("drawing-context-all", "check", tr("全选", "Select all"), true)
+                .on_click(cx.listener(|d, _, _, cx| d.select_all(cx))))
+            .child(horizontal_line())
+            .when(self.selection.len() > 1, |d| d.child(div().px(px(9.)).py(px(5.)).child(self.alignment_controls(cx))))
+            .child(menu_button("drawing-context-group", "drawing-rectangle", tr("编组", "Group selection"), self.selection.len() > 1)
+                .on_click(cx.listener(|d, _, _, cx| { d.group_selection(false, cx); d.panel = None; cx.notify(); })))
+            .child(menu_button("drawing-context-ungroup", "drawing-unlock", tr("取消编组", "Ungroup selection"), selected)
+                .on_click(cx.listener(|d, _, _, cx| { d.group_selection(true, cx); d.panel = None; cx.notify(); })))
+            .child(menu_button("drawing-context-lock", "drawing-lock", tr("锁定所选内容", "Lock selection"), selected)
+                .on_click(cx.listener(|d, _, _, cx| { d.lock_selection(cx); d.panel = None; cx.notify(); })))
+            .child(menu_button("drawing-context-unlock", "drawing-unlock", tr("解锁全部", "Unlock all"), true)
+                .on_click(cx.listener(|d, _, _, cx| { d.selection.clear(); d.lock_selection(cx); d.panel = None; cx.notify(); })))
+            .child(horizontal_line())
+            .child(menu_button("drawing-context-delete", "trash-2", tr("删除", "Delete"), selected)
+                .on_click(cx.listener(|d, _, _, cx| { d.delete(cx); d.panel = None; cx.notify(); })))
+    }
+
+    fn help_menu(&self, max_h: f32) -> Stateful<Div> {
+        let rows = [
+            (tr("选择", "Selection"), "V / 1"), (tr("平移", "Hand"), "H / Space"), (tr("矩形", "Rectangle"), "R / 2"),
+            (tr("菱形", "Diamond"), "D / 3"), (tr("椭圆", "Ellipse"), "O / 4"), (tr("箭头", "Arrow"), "A / 5"),
+            (tr("直线", "Line"), "L / 6"), (tr("画笔", "Freehand"), "P / 7"), (tr("文字", "Text"), "T / 8"),
+            (tr("图片", "Image"), "9"), (tr("橡皮擦", "Eraser"), "E / 0"), (tr("画框", "Frame"), "F"),
+            (tr("激光笔", "Laser pointer"), "K"), (tr("取色", "Eyedropper"), "I"), (tr("填充颜色", "Bucket fill"), "B"),
+            (tr("切换形状类型", "Convert element type"), "Tab / Shift+Tab"), (tr("绑定/解绑文字", "Bind / unbind text"), "W"), (tr("文字自动宽度", "Text auto resize"), "Alt+W"),
+            (tr("素材库", "Library"), "Shift+L"), (tr("复制为 PNG", "Copy as PNG"), "Alt+Shift+C"),
+            (tr("对象吸附", "Snap to objects"), "Alt+S"), (tr("只读浏览", "View mode"), "Alt+R"), (tr("专注模式", "Zen mode"), "Alt+Z"),
+            (tr("全选", "Select all"), "⌘A"), (tr("复制", "Copy"), "⌘C"), (tr("剪切", "Cut"), "⌘X"), (tr("粘贴", "Paste"), "⌘V"),
+            (tr("创建副本", "Duplicate"), "⌘D / Alt + drag"), (tr("编组", "Group selection"), "⌘G"), (tr("取消编组", "Ungroup selection"), "⌘⇧G"),
+            (tr("编辑线条节点", "Edit line points"), "⌘Enter"), (tr("锁定所选内容", "Lock selection"), "⌘⇧L"),
+            (tr("链接", "Link"), "⌘K"), (tr("查找画板文字", "Find text on canvas"), "⌘F"),
+            (tr("缩放到全部内容", "Zoom to fit"), "Shift + 1"), (tr("缩放到所选内容", "Zoom to selection"), "Shift + 2"),
+            (tr("网格模式", "Grid mode"), "Shift + G"), (tr("水平翻转", "Flip horizontal"), "Shift + H"), (tr("垂直翻转", "Flip vertical"), "Shift + V"),
+        ];
+        ui::popover().id("drawing-help-panel").occlude().w(px(310.)).max_h(px(max_h)).overflow_y_scroll().p(px(12.)).flex().flex_col().gap(px(7.))
+            .child(div().font_weight(FontWeight::MEDIUM).child(tr("快捷键", "Keyboard shortcuts")))
+            .children(rows.into_iter().map(|(label, key)| div().flex().justify_between().gap(px(8.)).text_size(px(12.)).child(label)
+                .child(div().text_color(Theme::text_caption()).child(key.replace('⌘', if cfg!(target_os = "macos") { "⌘" } else { "Ctrl+" })))))
     }
 
     fn font_picker(&self, current: FontFamily, cx: &mut Context<Self>) -> Div {
@@ -315,9 +518,14 @@ impl DrawingEditor {
                     Colors::Text => d.apply_style(StyleChoice::TextColor(color), true, w, cx),
                 }))
         }).collect::<Vec<_>>();
+        let common = buttons("drawing-color", colors); let extra = buttons("drawing-extra-color", &EXTRA);
         section(label, div().flex().flex_col().gap(px(4.))
-            .child(div().flex().gap(px(3.)).children(buttons("drawing-color", colors)).child(chooser))
-            .when(self.colors == Some(target), |d| d.child(div().w(px(148.)).flex().flex_wrap().gap(px(3.)).children(buttons("drawing-extra-color", &EXTRA)))))
+            .child(div().flex().gap(px(3.)).children(common).child(chooser))
+            .when(self.colors == Some(target), |d| d.child(div().w(px(180.)).flex().flex_wrap().gap(px(3.)).children(extra))
+                .child(div().flex().gap(px(4.))
+                    .child(self.precision_button(("drawing-custom-color", s), Property::Color(target), current.to_string(), cx))
+                    .child(icon_button(("drawing-eyedropper", s), "eye", tr("取色", "Eyedropper"), Some("I"), false, true)
+                        .on_click(cx.listener(move |d, _, w, cx| { d.eyedropper = target; d.tool = Tool::Eyedropper; d.colors = None; w.focus(&d.focus); cx.notify(); }))))))
     }
 
     fn opacity_slider(&self, opacity: f64, cx: &mut Context<Self>) -> Div {
@@ -347,7 +555,7 @@ impl DrawingEditor {
         let track = self.opacity_bounds.get();
         if track.size.width <= px(14.) { return; }
         let value = (100. * f32::from(x - track.left() - px(7.)) / f32::from(track.size.width - px(14.))).round().clamp(0., 100.) as f64;
-        let current = self.selected.map_or(self.style.opacity, |i| self.doc.scene.elements[i].base().opacity);
+        let current = self.selected().map_or(self.style.opacity, |i| self.doc.scene.elements[i].base().opacity);
         if current != value {
             self.apply_style(StyleChoice::Opacity(value), !has_checkpoint, window, cx);
             self.opacity_dragging = Some(true);
@@ -355,12 +563,12 @@ impl DrawingEditor {
     }
 
     fn field_panel(&self, cx: &mut Context<Self>) -> AnyElement {
-        let label = if self.edit_link.is_some() { tr("链接", "Link") } else { tr("文字", "Text") };
+        let label = if let Some(property) = self.edit_property { property.label() } else if self.searching { tr("查找", "Find") } else if self.edit_frame.is_some() { tr("画框名称", "Frame name") } else if self.edit_link.is_some() { tr("链接", "Link") } else { tr("文字", "Text") };
         let view = self.viewport.get();
         let at = self.text_at.map(|(p, _)| self.offset + point(px((p.x * self.zoom) as f32), px((p.y * self.zoom) as f32)));
         let (x, y) = at.map_or((px(14.), px(62.)), |at| (at.x.clamp(px(14.), (view.size.width - px(265.)).max(px(14.))), at.y.clamp(px(52.), (view.size.height - px(60.)).max(px(52.)))));
         ui::popover().id("drawing-field").occlude().absolute().top(y).left(x).w(px(250.)).p(px(6.)).flex().items_center().gap(px(5.))
-            .child(div().flex_1().min_w_0().px(px(7.)).py(px(4.)).rounded(px(6.)).bg(Theme::bg_overlay()).child(self.field.clone()))
+            .child(div().id("drawing-field-scroll").flex_1().min_w_0().max_h(px(240.)).overflow_y_scroll().px(px(7.)).py(px(4.)).rounded(px(6.)).bg(Theme::bg_overlay()).child(self.field.clone()))
             .child(icon_button("drawing-text-done", "check", label, Some("Enter"), true, true)
                 .on_click(cx.listener(|d, _, w, cx| d.finish_field(w, cx)))).into_any_element()
     }

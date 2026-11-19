@@ -18,6 +18,13 @@ const PREVIEW_SCALE: f32 = 2.;
 const MAX_PREVIEW_EDGE: u32 = 2048;
 const MAX_PNG: u64 = 20 * 1024 * 1024;
 
+#[derive(Clone, Copy)]
+pub(super) struct ExportOptions { pub background: bool, pub dark: bool, pub embed: bool, pub scale: f32 }
+
+impl Default for ExportOptions {
+    fn default() -> Self { Self { background: true, dark: false, embed: true, scale: 2. } }
+}
+
 #[derive(Clone)]
 pub(super) struct DrawingScene {
     pub scene: Scene,
@@ -69,6 +76,14 @@ fn load_element(mut fields: Map<String, Value>) -> Result<Element> {
     if let Element::Text(t) = &element {
         ensure!(t.text.len() <= 8192 && (1. ..=512.).contains(&t.font_size) && (0.5..=4.).contains(&t.line_height), "text exceeds drawing limits");
     }
+    if let Element::Image(image) = &element {
+        ensure!(image.scale.iter().all(|v| *v == 1. || *v == -1.), "invalid image scale");
+        if let Some(crop) = &image.crop {
+            ensure!(crop.x >= 0. && crop.y >= 0. && crop.width > 0. && crop.height > 0. && crop.natural_width > 0. && crop.natural_height > 0.
+                && crop.natural_width <= 4096. && crop.natural_height <= 4096. && crop.x + crop.width <= crop.natural_width + 0.001
+                && crop.y + crop.height <= crop.natural_height + 0.001, "invalid image crop");
+        }
+    }
     if let Some(points) = element_points(&mut element) {
         ensure!(!points.is_empty() && points.len() <= MAX_POINTS, "too many drawing points");
         for p in points.iter_mut() { *p += origin; ensure!(coord(p.x) && coord(p.y), "point outside canvas limits"); }
@@ -84,13 +99,132 @@ fn load_element(mut fields: Map<String, Value>) -> Result<Element> {
 
 fn coord(v: f64) -> bool { v.abs() <= MAX_COORD }
 
+fn decode_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let value: Value = serde_json::from_slice(bytes).or_else(|_| serde_json::from_str(&bytes.iter().map(|b| char::from(*b)).collect::<String>()))?;
+    let Some(encoded) = value.get("encoded").and_then(Value::as_str) else { return Ok(serde_json::to_vec(&value)?) };
+    ensure!(value["encoding"] == "bstring", "unknown drawing metadata encoding");
+    let bytes = encoded.chars().map(|c| u8::try_from(c as u32)).collect::<std::result::Result<Vec<_>, _>>()?;
+    let bytes = if value["compressed"] == true {
+        let mut out = Vec::new(); flate2::read::ZlibDecoder::new(bytes.as_slice()).take(MAX_SOURCE + 1).read_to_end(&mut out)?; out
+    } else { bytes };
+    ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing source is too large"); Ok(bytes)
+}
+
+fn encode_metadata(bytes: &[u8]) -> Result<String> {
+    use std::io::Write;
+    let mut zip = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default()); zip.write_all(bytes)?;
+    let encoded: String = zip.finish()?.into_iter().map(char::from).collect();
+    let json = json!({"version":"1", "encoding":"bstring", "compressed":true, "encoded":encoded}).to_string();
+    Ok(json.chars().map(|c| if c.is_ascii() { c.to_string() } else { format!("\\u{:04x}", c as u32) }).collect())
+}
+
 impl DrawingScene {
+    pub(super) fn load_library(bytes: &[u8]) -> Result<Vec<Self>> {
+        ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing library is too large");
+        let root: Value = serde_json::from_slice(bytes)?;
+        ensure!(root["type"] == "excalidrawlib", "expected an Excalidraw library");
+        let items = root.get("libraryItems").or_else(|| root.get("library")).and_then(Value::as_array).ok_or_else(|| anyhow!("missing library items"))?;
+        ensure!(items.len() <= 64, "too many library items");
+        items.iter().map(|item| {
+            let elements = if item.is_array() { item } else { &item["elements"] };
+            Self::load(&serde_json::to_vec(&json!({"type":"excalidraw", "elements":elements, "files":root.get("files").cloned().unwrap_or_else(|| json!({}))}))?)
+        }).collect()
+    }
+
+    pub(super) fn library_json(items: &[Self]) -> Result<Vec<u8>> {
+        let mut files = serde_json::Map::new();
+        let items = items.iter().map(|source| {
+            let mut doc = source.clone();
+            let old_files = doc.files.clone();
+            for (id, file) in old_files {
+                if files.get(&id).is_some_and(|old| *old != serde_json::to_value(&file).unwrap_or_default()) {
+                    let new_id = uuid::Uuid::new_v4().to_string(); let mut data = file; data.id = new_id.clone();
+                    doc.files.remove(&id); doc.files.insert(new_id.clone(), data);
+                    for e in &mut doc.scene.elements { if let Element::Image(i) = e && i.file_id.as_deref() == Some(&id) { i.file_id = Some(new_id.clone()); } }
+                }
+            }
+            doc.retain_used_files();
+            let value: Value = serde_json::from_slice(&doc.json()?)?;
+            if let Some(data) = value["files"].as_object() { files.extend(data.clone()); }
+            Ok(json!({"id":uuid::Uuid::new_v4().to_string(), "status":"unpublished", "created":0, "elements":value["elements"]}))
+        }).collect::<Result<Vec<_>>>()?;
+        let bytes = serde_json::to_vec(&json!({"type":"excalidrawlib", "version":2, "source":"https://quiet.md", "libraryItems":items, "files":files}))?;
+        ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing library is too large"); Ok(bytes)
+    }
+
+    pub(super) fn load_exported(bytes: &[u8]) -> Result<Self> {
+        ensure!(bytes.len() as u64 <= MAX_SOURCE * 4, "drawing file is too large");
+        if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+            let mut at: usize = 8;
+            while at + 12 <= bytes.len() {
+                let len = u32::from_be_bytes(bytes[at..at + 4].try_into()?) as usize;
+                let end = at.checked_add(len).and_then(|end| end.checked_add(12)).filter(|end| *end <= bytes.len()).ok_or_else(|| anyhow!("invalid PNG chunk"))?;
+                if &bytes[at + 4..at + 8] == b"tEXt" {
+                    let data = &bytes[at + 8..end - 4];
+                    if let Some(n) = data.iter().position(|b| *b == 0) && &data[..n] == b"application/vnd.excalidraw+json" {
+                        return Self::load(&decode_metadata(&data[n + 1..])?);
+                    }
+                }
+                at = end;
+            }
+            return Err(anyhow!("PNG has no drawing source"));
+        }
+        if let Ok(svg) = std::str::from_utf8(bytes) && svg.trim_start().starts_with('<') {
+            if let Some((_, payload)) = svg.split_once("<!-- payload-start -->") && let Some((payload, _)) = payload.split_once("<!-- payload-end -->") {
+                let encoded = base64::engine::general_purpose::STANDARD.decode(payload.trim())?;
+                return Self::load(&decode_metadata(&encoded)?);
+            }
+            let mut reader = quick_xml::Reader::from_str(svg); let mut metadata = false;
+            loop {
+                match reader.read_event()? {
+                    quick_xml::events::Event::Start(e) if e.name().as_ref() == b"metadata" => metadata = e.attributes().flatten().any(|a| a.key.as_ref() == b"id" && a.value.as_ref() == b"excalidraw-scene"),
+                    quick_xml::events::Event::Text(e) if metadata => return Self::load(e.unescape()?.as_bytes()),
+                    quick_xml::events::Event::End(e) if e.name().as_ref() == b"metadata" => metadata = false,
+                    quick_xml::events::Event::Eof => break,
+                    _ => {}
+                }
+            }
+            return Err(anyhow!("SVG has no drawing source"));
+        }
+        Self::load(bytes)
+    }
+
+    #[cfg(test)]
+    pub(super) fn editable_png(&self) -> Result<Vec<u8>> { self.export_png(ExportOptions::default()) }
+
+    pub(super) fn export_png(&self, options: ExportOptions) -> Result<Vec<u8>> {
+        let background = if options.background { &self.background } else { "transparent" };
+        let svg = export::SvgExporter::export_with_options(&self.scene, background, &self.files, options.dark);
+        let png = export::rasterize_pixels(&svg, options.scale.clamp(1., 3.), 4096).map_err(|e| anyhow!(e))?.encode_png().map_err(|e| anyhow!(e))?;
+        if options.embed { Ok(export::embed_png_scene_data(&png, &encode_metadata(&self.json()?)?)) } else { Ok(png) }
+    }
+
+    #[cfg(test)]
+    pub(super) fn editable_svg(&self) -> Result<String> { self.export_svg(ExportOptions::default()) }
+
+    pub(super) fn export_svg(&self, options: ExportOptions) -> Result<String> {
+        let mut svg = self.standalone_svg_with(if options.background { &self.background } else { "transparent" }, options.dark);
+        if options.embed {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(encode_metadata(&self.json()?)?.as_bytes());
+            let metadata = format!("<metadata><!-- payload-type:application/vnd.excalidraw+json --><!-- payload-version:2 --><!-- payload-start -->{encoded}<!-- payload-end --></metadata>");
+            if let Some(at) = svg.rfind("</svg>") { svg.insert_str(at, &metadata); }
+        }
+        Ok(svg)
+    }
+
     pub(super) fn read(root: &Path, source: &str) -> Result<Self> {
         Self::load(&source_bytes(root, source)?)
     }
 
     pub(super) fn new() -> Self {
         Self { scene: Scene::new(), background: "#ffffff".into(), files: HashMap::new(), template: Map::new(), original: HashMap::new() }
+    }
+
+    pub(super) fn retain_used_files(&mut self) {
+        let used: HashSet<_> = self.scene.non_deleted().filter_map(|e| if let Element::Image(i) = e { i.file_id.as_deref() } else { None }).collect();
+        self.files.retain(|id, _| used.contains(id.as_str()));
+        if let Some(Value::Object(files)) = self.template.get_mut("files") { files.retain(|id, _| used.contains(id.as_str())); }
     }
 
     pub(super) fn load(bytes: &[u8]) -> Result<Self> {
@@ -172,7 +306,10 @@ impl DrawingScene {
 
     pub(super) fn svg(&self) -> String { export::SvgExporter::export_with_files(&self.scene, &self.background, &self.files) }
 
-    pub(super) fn standalone_svg(&self) -> String {
+    #[cfg(test)]
+    pub(super) fn standalone_svg(&self) -> String { self.standalone_svg_with(&self.background, false) }
+
+    fn standalone_svg_with(&self, background: &str, dark: bool) -> String {
         use std::fmt::Write;
         let fonts: HashSet<_> = self.scene.non_deleted().filter_map(|e| match e {
             Element::Text(t) => Some(t.font_family),
@@ -185,7 +322,7 @@ impl DrawingScene {
                     base64::engine::general_purpose::STANDARD.encode(data));
             }
         }
-        let mut svg = self.svg();
+        let mut svg = export::SvgExporter::export_with_options(&self.scene, background, &self.files, dark);
         if !css.is_empty() && let Some(start) = svg.find('>') {
             svg.insert_str(start + 1, &format!("<style>{css}</style>"));
         }
@@ -259,6 +396,88 @@ pub(super) fn bounds(scene: &Scene) -> Option<Bounds> {
 mod tests {
     use super::*;
     use quiet_excalidraw::core::{arrowhead::Arrowhead, factory::{ElementOptions, new_arrow}, transform::translate_element};
+
+    #[test]
+    fn png_svg_and_library_keep_editable_unicode_source() {
+        let mut doc = DrawingScene::new();
+        doc.scene.elements.push(quiet_excalidraw::core::factory::new_text(10., 20., "中文 🚀 <&>", 20., &ElementOptions::default()));
+        let original: Value = serde_json::from_slice(&doc.json().unwrap()).unwrap();
+        for bytes in [doc.editable_png().unwrap(), doc.editable_svg().unwrap().into_bytes()] {
+            let reopened = DrawingScene::load_exported(&bytes).unwrap();
+            assert_eq!(serde_json::from_slice::<Value>(&reopened.json().unwrap()).unwrap(), original);
+        }
+        let legacy = export::embed_png_scene_data(&doc.png().unwrap(), std::str::from_utf8(&doc.json().unwrap()).unwrap());
+        assert_eq!(DrawingScene::load_exported(&legacy).unwrap().scene.elements, doc.scene.elements);
+        let items = DrawingScene::load_library(&DrawingScene::library_json(&[doc.clone()]).unwrap()).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].scene.elements, doc.scene.elements);
+    }
+
+    #[test]
+    fn export_options_control_transparency_scale_theme_and_source() {
+        let mut doc = DrawingScene::new();
+        doc.scene.elements.push(quiet_excalidraw::core::factory::new_rectangle(0., 0., 100., 50., &ElementOptions::default()));
+        let options = ExportOptions { background: false, dark: true, embed: false, scale: 1. };
+        let bytes = doc.export_png(options).unwrap(); let png = image::load_from_memory(&bytes).unwrap().into_rgba8();
+        assert_eq!(png.dimensions(), (120, 70)); assert_eq!(png.get_pixel(0, 0)[3], 0);
+        assert!(DrawingScene::load_exported(&bytes).is_err());
+        let bytes = doc.export_png(ExportOptions { scale: 3., embed: true, ..options }).unwrap();
+        assert_eq!(image::load_from_memory(&bytes).unwrap().width(), 360);
+        assert_eq!(DrawingScene::load_exported(&bytes).unwrap().scene.elements, doc.scene.elements);
+        let light = doc.export_svg(ExportOptions { dark: false, ..options }).unwrap();
+        let dark = doc.export_svg(options).unwrap();
+        assert_ne!(dark, light); assert!(!dark.contains("payload-start"));
+    }
+
+    #[test]
+    fn transformed_image_pixels_and_selection_assets_match_the_source() {
+        use quiet_excalidraw::core::{factory::new_image, element::ImageCrop};
+        let pixels = image::RgbaImage::from_fn(4, 2, |x, _| if x < 2 { image::Rgba([255, 0, 0, 255]) } else { image::Rgba([0, 0, 255, 255]) });
+        let mut png = Cursor::new(Vec::new()); pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let mut doc = DrawingScene::new();
+        let data = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png.into_inner()));
+        doc.files.insert("used".into(), BinaryFileData::new("used", "image/png", data.clone()));
+        doc.files.insert("unused".into(), BinaryFileData::new("unused", "image/png", data));
+        let mut e = new_image(0., 0., 200., 100., Some("used".into()), &ElementOptions::default());
+        if let Element::Image(i) = &mut e { i.scale = [-1., 1.]; }
+        doc.scene.elements.push(e);
+        let raster = image::load_from_memory(&doc.png().unwrap()).unwrap().into_rgba8();
+        assert_eq!(raster.get_pixel(80, 100).0, [0, 0, 255, 255]);
+        assert_eq!(raster.get_pixel(340, 100).0, [255, 0, 0, 255]);
+        if let Element::Image(i) = &mut doc.scene.elements[0] { i.crop = Some(ImageCrop { x: 2., y: 0., width: 2., height: 2., natural_width: 4., natural_height: 2. }); i.base.angle = std::f64::consts::FRAC_PI_2; }
+        let raster = image::load_from_memory(&doc.png().unwrap()).unwrap().into_rgba8();
+        assert_eq!(raster.get_pixel(raster.width() / 2, raster.height() / 2).0, [0, 0, 255, 255]);
+        let mut doc = DrawingScene::load(&doc.json().unwrap()).unwrap();
+        assert_eq!(doc.files.len(), 1);
+        doc.scene.elements.clear(); doc.retain_used_files();
+        assert!(doc.files.is_empty());
+        let json: Value = serde_json::from_slice(&doc.json().unwrap()).unwrap();
+        assert_eq!(json["files"], json!({}));
+    }
+
+    #[test]
+    fn frame_export_clips_children_without_changing_their_geometry() {
+        use quiet_excalidraw::core::factory::{new_frame, new_rectangle};
+        let mut doc = DrawingScene::new(); let options = ElementOptions::default();
+        let frame = new_frame(0., 0., 100., 100., None, &options);
+        let mut child = new_rectangle(50., 50., 100., 100., &options);
+        child.base_mut().frame_id = Some(frame.id().to_string());
+        child.base_mut().background_color = "#ff0000".into(); child.base_mut().fill_style = quiet_excalidraw::core::types::FillStyle::Solid;
+        doc.scene.elements = vec![frame, child];
+        let raster = image::load_from_memory(&doc.png().unwrap()).unwrap().into_rgba8();
+        assert_eq!(raster.get_pixel(160, 160).0, [255, 0, 0, 255]);
+        assert_eq!(raster.get_pixel(280, 160).0, [255, 255, 255, 255]);
+        assert_eq!(doc.scene.elements[1].base().width, 100.);
+    }
+
+    #[test]
+    fn compressed_metadata_and_png_chunk_lengths_are_bounded() {
+        let encoded = encode_metadata(&vec![b'x'; MAX_SOURCE as usize + 1]).unwrap();
+        assert!(decode_metadata(encoded.as_bytes()).is_err());
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&u32::MAX.to_be_bytes()); png.extend_from_slice(b"tEXt1234");
+        assert!(DrawingScene::load_exported(&png).is_err());
+    }
 
     #[test]
     fn bound_text_style_survives_layout_and_export() {

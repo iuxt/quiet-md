@@ -605,6 +605,33 @@ fn mouse_step(view: usize, cmd: &str, n: &[f32]) -> bool {
 
 fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
     match cmd {
+        "pointer" => {
+            let mut args = rest.split_whitespace();
+            let op = args.next().unwrap_or("");
+            let args: Vec<_> = args.collect();
+            let n: Vec<f32> = args.iter().filter_map(|s| s.parse().ok()).collect();
+            if n.len() < 2 { return; }
+            let modifiers = Modifiers { shift: args.contains(&"shift"), alt: args.contains(&"alt"), control: args.contains(&"ctrl"), platform: args.contains(&"cmd"), ..Default::default() };
+            let button = if args.contains(&"middle") { MouseButton::Middle } else { MouseButton::Left };
+            let p = |x, y| point(px(x), px(y));
+            let down = |position| PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers, click_count: 1, first_mouse: false });
+            let up = |position| PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers, click_count: 1 });
+            let moved = |position, pressed| PlatformInput::MouseMove(MouseMoveEvent { position, modifiers, pressed_button: pressed });
+            let start = p(n[0], n[1]);
+            match op {
+                "down" => { window.dispatch_event(down(start), cx); }
+                "up" => { window.dispatch_event(up(start), cx); }
+                "move" => { window.dispatch_event(moved(start, None), cx); }
+                "dragto" => { window.dispatch_event(moved(start, Some(button)), cx); }
+                "click" => { window.dispatch_event(moved(start, None), cx); window.dispatch_event(down(start), cx); window.dispatch_event(up(start), cx); }
+                "drag" if n.len() >= 4 => {
+                    window.dispatch_event(moved(start, None), cx); window.dispatch_event(down(start), cx);
+                    for i in 1..=8 { let t = i as f32 / 8.; window.dispatch_event(moved(p(n[0] + (n[2] - n[0]) * t, n[1] + (n[3] - n[1]) * t), Some(button)), cx); }
+                    window.dispatch_event(up(p(n[2], n[3])), cx);
+                }
+                _ => eprintln!("devtools: bad pointer step: {rest}"),
+            }
+        }
         // Synthesized right-button NSEvents report buttonNumber 0, so GPUI would
         // read them as left clicks; feed the right click to GPUI directly.
         "forget-uploads" => eprintln!("devtools: forgot {} uploads", crate::editor::image::forget_uploads(window, cx)),

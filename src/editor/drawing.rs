@@ -1,13 +1,20 @@
 //! GPUI canvas for Excalidraw blocks. Draft changes stay local until Save.
 #[path = "drawing_ui.rs"]
 mod chrome;
+#[path = "drawing_edit.rs"]
+mod edit;
+#[path = "drawing_commands.rs"]
+mod commands;
+use commands::Property;
+use edit::{AlignSelection, selection_indices, selection_bounds, transform_selection};
 
 use super::{drawing_scene::{self, DrawingScene, MAX_COORD, MAX_ELEMENTS, MAX_POINTS, MAX_SOURCE}, render::Env, view::{Editor, EditorEvent}};
 use crate::{input::{TextField, TextFieldEvent}, model::{BlockId, BlockKind, Drawing}, settings::tr, store::{self, Store}, theme::{self, Theme}, ui};
 use gpui::{prelude::FluentBuilder, *};
 use quiet_excalidraw::core::{self as scene, arrowhead::Arrowhead, bounds::element_bounds, element::{Element, TextElement}, factory::{self, ElementOptions}, geometry::Point as World, scene::Scene, types::{FillStyle, FontFamily, Roundness, RoundnessType, StrokeStyle, TextAlign as DrawingAlign, VerticalAlign}};
 use quiet_excalidraw::render::shape::{Drawable, Op, Rgba as Ink, render_element, render_element_with_lookup};
-actions!(drawing, [SaveDrawing, UndoDrawing, RedoDrawing]);
+actions!(drawing, [SaveDrawing, UndoDrawing, RedoDrawing, CopyDrawing, CutDrawing, PasteDrawing, SelectDrawing, DuplicateDrawing,
+    GroupDrawing, UngroupDrawing, EditDrawingPoints, LinkDrawing, LockDrawing, CopyDrawingStyle, PasteDrawingStyle, FindDrawing, OpenDrawing, ExportDrawing, CopyDrawingPng, PasteDrawingText]);
 
 pub(crate) fn load_fonts(cx: &App) {
     let fonts = quiet_excalidraw::fonts::BUNDLED.iter().map(|(_, data)| std::borrow::Cow::Borrowed(*data)).collect();
@@ -21,10 +28,19 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-z", UndoDrawing, context),
         KeyBinding::new("secondary-shift-z", RedoDrawing, context),
         KeyBinding::new("secondary-y", RedoDrawing, context),
+        KeyBinding::new("secondary-c", CopyDrawing, context), KeyBinding::new("secondary-x", CutDrawing, context),
+        KeyBinding::new("secondary-v", PasteDrawing, context), KeyBinding::new("secondary-a", SelectDrawing, context),
+        KeyBinding::new("secondary-d", DuplicateDrawing, context), KeyBinding::new("secondary-g", GroupDrawing, context),
+        KeyBinding::new("secondary-shift-g", UngroupDrawing, context), KeyBinding::new("secondary-enter", EditDrawingPoints, context),
+        KeyBinding::new("secondary-k", LinkDrawing, context), KeyBinding::new("secondary-shift-l", LockDrawing, context),
+        KeyBinding::new("secondary-alt-c", CopyDrawingStyle, context), KeyBinding::new("secondary-alt-v", PasteDrawingStyle, context),
+        KeyBinding::new("secondary-f", FindDrawing, context),
+        KeyBinding::new("alt-shift-c", CopyDrawingPng, context), KeyBinding::new("secondary-shift-v", PasteDrawingText, context),
+        KeyBinding::new("secondary-o", OpenDrawing, context), KeyBinding::new("secondary-shift-e", ExportDrawing, context),
     ]);
 }
 
-use std::{cell::Cell, collections::{HashMap, VecDeque}, rc::Rc, sync::Arc};
+use std::{cell::{Cell, RefCell}, collections::{HashMap, VecDeque}, rc::Rc, sync::Arc};
 
 #[derive(Clone)]
 enum Target {
@@ -92,7 +108,7 @@ impl Editor {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Tool { Pan, Select, Rect, Diamond, Ellipse, Arrow, Line, Pen, Text, Image, Sticky, Eraser, Frame }
+enum Tool { Pan, Select, Rect, Diamond, Ellipse, Arrow, Line, Pen, Text, Image, Sticky, Eraser, Frame, Laser, Eyedropper, Bucket }
 
 const TOOLS: &[(Tool, &str, &str, &str, &str)] = &[
     (Tool::Pan, "平移", "Hand", "h", "drawing-hand"),
@@ -108,10 +124,13 @@ const TOOLS: &[(Tool, &str, &str, &str, &str)] = &[
     (Tool::Sticky, "便签", "Sticky note", "n", "drawing-note"),
     (Tool::Eraser, "橡皮擦", "Eraser", "e", "drawing-eraser"),
     (Tool::Frame, "画框", "Frame", "f", "drawing-corners"),
+    (Tool::Laser, "激光笔", "Laser pointer", "k", "pen-line"),
+    (Tool::Eyedropper, "取色", "Eyedropper", "i", "eye"),
+    (Tool::Bucket, "填充颜色", "Bucket fill", "b", "drawing-note"),
 ];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Panel { Menu, Properties, More, Export }
+enum Panel { Menu, Properties, More, Export, Context, Help, Library }
 
 #[derive(Clone)]
 struct DrawingState { scene: Scene, background: String }
@@ -119,7 +138,7 @@ struct DrawingState { scene: Scene, background: String }
 #[derive(Clone, Copy)]
 enum StyleChoice {
     Stroke(&'static str), Fill(&'static str), Width(f64), StrokeStyle(StrokeStyle), FillStyle(FillStyle), Roughness(f64), Round(bool), Opacity(f64),
-    TextColor(&'static str), TextFont(FontFamily), TextSize(f64), TextAlign(DrawingAlign), TextVertical(VerticalAlign), ArrowHead(Option<Arrowhead>),
+    TextColor(&'static str), TextFont(FontFamily), TextSize(f64), TextAlign(DrawingAlign), TextVertical(VerticalAlign), ArrowHead(Option<Arrowhead>), StartArrowHead(Option<Arrowhead>), ArrowType(u8),
 }
 
 #[derive(Clone, Copy)]
@@ -129,13 +148,17 @@ enum LayerMove { Bottom, Back, Forward, Top }
 enum ExportKind { Source, Png, Svg }
 
 enum Gesture {
+    Laser,
+    Crop { pointer: World, corner: usize, start: scene::bounds::Bounds, rect: scene::bounds::Bounds, index: usize },
+    Box { start: World, end: World, previous: Vec<usize>, deep: bool },
+    Vertex { start: World, delta: World, indices: Vec<usize>, insert: Option<(usize, World)>, index: usize },
     Endpoint { pointer: World, start: World, end: World, endpoint: usize, index: usize },
-    Resize { pointer: World, corner: usize, start: scene::bounds::Bounds, rect: scene::bounds::Bounds, index: usize },
-    Rotate { start: f64, angle: f64, index: usize },
+    Resize { pointer: World, corner: usize, start: scene::bounds::Bounds, rect: scene::bounds::Bounds },
+    Rotate { start: f64, angle: f64 },
     Erase { indices: Vec<usize>, last: World },
     Pan { start: Point<Pixels>, offset: Point<Pixels> },
-    Move { start: World, delta: World, index: usize },
-    Shape { start: World, end: World, ink: Vec<World>, point_limit: usize },
+    Move { start: World, delta: World, copy: bool },
+    Shape { start: World, end: World, ink: Vec<World>, point_limit: usize, from_center: bool },
 }
 
 pub(crate) struct DrawingEditor {
@@ -148,6 +171,14 @@ pub(crate) struct DrawingEditor {
     text_at: Option<(World, Option<usize>)>,
     text_container: Option<usize>,
     edit_link: Option<usize>,
+    edit_frame: Option<usize>,
+    searching: bool,
+    edit_property: Option<Property>,
+    eyedropper: chrome::Colors,
+    laser: Vec<(World, std::time::Instant)>,
+    objects_snap: bool,
+    snap_guides: Vec<(World, World)>,
+    view_only: bool,
     tool_locked: bool,
     panel: Option<Panel>,
     grid: bool,
@@ -163,12 +194,27 @@ pub(crate) struct DrawingEditor {
     text_align: DrawingAlign,
     text_color: String,
     arrowhead: Option<Arrowhead>,
+    start_arrowhead: Option<Arrowhead>,
+    binding_disabled: bool,
+    arrow_type: u8,
     opacity_dragging: Option<bool>,
     opacity_bounds: Rc<Cell<Bounds<Pixels>>>,
     pending_image: Option<(scene::scene::BinaryFileData, u32, u32)>,
     tool: Tool,
-    selected: Option<usize>,
+    selection: Vec<usize>,
     gesture: Option<Gesture>,
+    editing_group: Option<String>,
+    line_edit: Option<usize>,
+    crop: Option<usize>,
+    selected_points: Vec<usize>,
+    polyline: Vec<World>,
+    pointer: World,
+    space: bool,
+    copied_style: Option<Element>,
+    export_selection: bool,
+    export_options: drawing_scene::ExportOptions,
+    library: Vec<DrawingScene>,
+    library_images: RefCell<HashMap<usize, Arc<RenderImage>>>,
     viewport: Rc<Cell<Bounds<Pixels>>>,
     offset: Point<Pixels>,
     zoom: f64,
@@ -179,6 +225,7 @@ pub(crate) struct DrawingEditor {
     imported: bool,
     artwork: Rc<Vec<Vec<Drawable>>>,
     images: Rc<HashMap<String, Arc<RenderImage>>>,
+    raster_artwork: RefCell<HashMap<String, (u64, Arc<RenderImage>)>>,
     busy: bool,
     close_after_save: bool,
     saving: bool,
@@ -191,21 +238,27 @@ impl DrawingEditor {
         cx.on_release_in(window, |d, window, _| d.drop_images(window)).detach();
         let field = cx.new(|cx| {
             let mut f = TextField::new(tr("输入画板文字", "Enter drawing text"), cx);
-            f.max_len = Some(256); f
+            f.max_len = Some(2048); f
         });
         let field_sub = cx.subscribe_in(&field, window, |d, _, event, window, cx| match event {
+            TextFieldEvent::Submit if d.searching => d.find_text(false, cx),
+            TextFieldEvent::Changed if d.searching => d.find_text(false, cx),
+            TextFieldEvent::ShiftSubmit if d.searching => d.find_text(true, cx),
             TextFieldEvent::Submit => d.finish_field(window, cx),
-            TextFieldEvent::Cancel => { d.text_at = None; d.edit_link = None; window.focus(&d.focus); cx.notify(); }
+            TextFieldEvent::Cancel => {
+                if d.text_at.is_some() { d.finish_field(window, cx); }
+                d.text_at = None; d.edit_link = None; d.edit_frame = None; d.edit_property = None; d.searching = false; window.focus(&d.focus); cx.notify();
+            }
             _ => {}
         });
         let saved = DrawingState { scene: doc.scene.clone(), background: doc.background.clone() };
         let mut this = Self { parent, target, doc, focus: cx.focus_handle(), field, _field_sub: field_sub, text_at: None, text_container: None,
-            edit_link: None, tool_locked: false, panel: None, colors: None, more_fonts: false, grid: false, zen: false, dark_canvas: false, reset_confirmation: false,
+            edit_link: None, edit_frame: None, searching: false, edit_property: None, eyedropper: chrome::Colors::Stroke, laser: Vec::new(), objects_snap: false, snap_guides: Vec::new(), view_only: false, tool_locked: false, panel: None, colors: None, more_fonts: false, grid: false, zen: false, dark_canvas: false, reset_confirmation: false,
             text_color: ElementOptions::default().stroke_color, style: ElementOptions::default(), rounded: true,
-            text_font: FontFamily::Excalifont, text_size: 20., text_align: DrawingAlign::Left, arrowhead: Some(Arrowhead::Arrow),
+            text_font: FontFamily::Excalifont, text_size: 20., text_align: DrawingAlign::Left, arrowhead: Some(Arrowhead::Arrow), start_arrowhead: None, binding_disabled: false, arrow_type: 1,
             opacity_dragging: None, opacity_bounds: Rc::default(), pending_image: None,
-            tool: Tool::Select, selected: None, gesture: None, viewport: Rc::new(Cell::new(Bounds::default())), offset: point(px(0.), px(0.)), zoom: 1., fit: true,
-            undo: VecDeque::new(), redo: Vec::new(), saved, imported: false, artwork: Rc::default(), images: Rc::default(), busy: false, close_after_save: false, saving: false, discard: false, error: None };
+            tool: Tool::Select, selection: Vec::new(), gesture: None, editing_group: None, line_edit: None, crop: None, selected_points: Vec::new(), polyline: Vec::new(), pointer: World::zero(), space: false, copied_style: None, export_selection: false, export_options: drawing_scene::ExportOptions::default(), library_images: RefCell::default(), library: store::read_bounded(&Store::internal_dir().join("drawing-library.excalidrawlib"), MAX_SOURCE).ok().and_then(|bytes| DrawingScene::load_library(&bytes).ok()).unwrap_or_default(), viewport: Rc::new(Cell::new(Bounds::default())), offset: point(px(0.), px(0.)), zoom: 1., fit: true,
+            undo: VecDeque::new(), redo: Vec::new(), saved, imported: false, artwork: Rc::default(), images: Rc::default(), raster_artwork: RefCell::default(), busy: false, close_after_save: false, saving: false, discard: false, error: None };
         this.rebuild();
         this.load_images(window);
         this
@@ -226,14 +279,16 @@ impl DrawingEditor {
     }
 
     fn drop_images(&self, window: &mut Window) {
-        if self.images.is_empty() { return; }
+        if self.images.is_empty() && self.raster_artwork.borrow().is_empty() && self.library_images.borrow().is_empty() { return; }
         // The atlas owns a separate copy. Redraw before presenting a scene that used these tiles.
         window.refresh();
         for image in self.images.values() { let _ = window.drop_image(image.clone()); }
+        for (_, image) in self.raster_artwork.borrow().values() { let _ = window.drop_image(image.clone()); }
+        for image in self.library_images.borrow().values() { let _ = window.drop_image(image.clone()); }
     }
 
     fn load_images(&mut self, window: &mut Window) {
-        self.drop_images(window);
+        self.drop_images(window); self.raster_artwork.borrow_mut().clear();
         self.images = Rc::new(self.doc.files.iter().filter_map(|(id, file)| Some((id.clone(), Self::decode_image(file)?))).collect());
     }
 
@@ -248,11 +303,13 @@ impl DrawingEditor {
     }
 
     fn history(&mut self, redo: bool, cx: &mut Context<Self>) {
-        if self.gesture.is_some() || self.text_at.is_some() || self.edit_link.is_some() { return; }
+        if !self.polyline.is_empty() { if !redo { self.polyline.pop(); cx.notify(); } return; }
+        self.line_edit = None; self.crop = None; self.selected_points.clear(); self.editing_group = None;
+        if self.gesture.is_some() || self.text_at.is_some() || self.edit_link.is_some() || self.edit_property.is_some() || self.edit_frame.is_some() { return; }
         if redo {
             if let Some(state) = self.redo.pop() { let current = self.swap_state(state); self.undo.push_back(current); }
         } else if let Some(state) = self.undo.pop_back() { let current = self.swap_state(state); self.redo.push(current); }
-        self.selected = None;
+        self.selection.clear();
         self.rebuild();
         cx.notify();
     }
@@ -272,7 +329,7 @@ impl DrawingEditor {
 
     pub(crate) fn confirm_exit(&mut self, cx: &mut Context<Self>) -> bool {
         if self.busy { self.close_after_save = self.saving; return true; }
-        if !self.dirty() && self.text_at.is_none() && self.edit_link.is_none() && self.gesture.is_none() { return false; }
+        if !self.dirty() && self.text_at.is_none() && self.edit_link.is_none() && self.edit_frame.is_none() && self.edit_property.is_none() && self.polyline.is_empty() && self.gesture.is_none() { return false; }
         self.discard = true;
         self.gesture = None;
         cx.notify();
@@ -282,7 +339,7 @@ impl DrawingEditor {
     fn keep_editing(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.discard = false;
         let _ = self.parent.update(cx, |_, cx| cx.emit(EditorEvent::DrawingExitCanceled));
-        let focus = if self.text_at.is_some() || self.edit_link.is_some() { self.field.read(cx).focus_handle(cx) } else { self.focus.clone() };
+        let focus = if self.text_at.is_some() || self.edit_link.is_some() || self.edit_frame.is_some() || self.edit_property.is_some() { self.field.read(cx).focus_handle(cx) } else { self.focus.clone() };
         window.focus(&focus);
         cx.notify();
     }
@@ -294,7 +351,7 @@ impl DrawingEditor {
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.gesture.is_some() { return; }
-        self.finish_field(window, cx);
+        self.finish_field(window, cx); self.finish_polyline(cx);
         if !self.dirty() { return; }
         self.busy = true;
         self.saving = true;
@@ -345,17 +402,17 @@ impl DrawingEditor {
         cx.notify();
         let picked = crate::devtools::take_pick();
         let rx = picked.is_none().then(|| cx.prompt_for_paths(PathPromptOptions { files: true, directories: false, multiple: false,
-            prompt: Some(tr("导入 Excalidraw", "Import Excalidraw").into()), extensions: Some(vec!["excalidraw".into()]) }));
+            prompt: Some(tr("导入 Excalidraw", "Import Excalidraw").into()), extensions: Some(["excalidraw", "png", "svg"].map(Into::into).to_vec()) }));
         cx.spawn_in(window, async move |this, cx| {
             let paths = match rx { Some(rx) => rx.await.ok().and_then(Result::ok).flatten(), None => picked };
             let doc = if let Some(path) = paths.and_then(|p| p.into_iter().next()) {
-                Some(cx.background_executor().spawn(async move { DrawingScene::load(&store::read_bounded(&path, MAX_SOURCE)?) }).await)
+                Some(cx.background_executor().spawn(async move { DrawingScene::load_exported(&store::read_bounded(&path, MAX_SOURCE * 4)?) }).await)
             } else { None };
             let _ = this.update_in(cx, |d, window, cx| {
                 d.busy = false;
                 if let Some(result) = doc {
                     match result {
-                        Ok(doc) => { d.pending_image = None; d.doc = doc; d.imported = true; d.undo.clear(); d.redo.clear(); d.selected = None; d.text_at = None; d.fit = true; d.load_images(window); d.rebuild(); }
+                        Ok(doc) => { d.pending_image = None; d.doc = doc; d.imported = true; d.undo.clear(); d.redo.clear(); d.selection.clear(); d.text_at = None; d.edit_link = None; d.edit_frame = None; d.edit_property = None; d.line_edit = None; d.crop = None; d.selected_points.clear(); d.editing_group = None; d.polyline.clear(); d.fit = true; d.load_images(window); d.rebuild(); }
                         Err(e) => { log::warn!("import drawing: {e:#}"); d.error = Some(tr("无法导入此 Excalidraw 文件", "Could not import this Excalidraw file")); }
                     }
                 }
@@ -366,19 +423,20 @@ impl DrawingEditor {
 
     fn export(&mut self, kind: ExportKind, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy { return; }
-        self.finish_field(window, cx);
+        self.finish_field(window, cx); self.finish_polyline(cx);
         let name = match kind { ExportKind::Source => "Drawing.excalidraw", ExportKind::Png => "Drawing.png", ExportKind::Svg => "Drawing.svg" };
         let path = crate::devtools::take_pick().and_then(|p| p.into_iter().next());
         let dir = dirs::download_dir().or_else(dirs::document_dir).unwrap_or_default();
         let rx = path.is_none().then(|| cx.prompt_for_new_path(&dir, Some(name)));
-        let doc = self.doc.clone();
+        let doc = if self.export_selection && !self.selection.is_empty() { self.selection_document() } else { self.doc.clone() };
+        let options = self.export_options;
         cx.spawn_in(window, async move |this, cx| {
             let picked = match rx { Some(rx) => rx.await.ok().and_then(Result::ok).flatten(), None => path };
             let Some(path) = picked else { return };
             let result = cx.background_executor().spawn(async move {
                 let bytes = match kind {
-                    ExportKind::Source => doc.json()?, ExportKind::Png => doc.png()?,
-                    ExportKind::Svg => doc.standalone_svg().into_bytes(),
+                    ExportKind::Source => doc.json()?, ExportKind::Png => doc.export_png(options)?,
+                    ExportKind::Svg => doc.export_svg(options)?.into_bytes(),
                 };
                 Ok::<_, anyhow::Error>(std::fs::write(path, bytes)?)
             }).await;
@@ -411,6 +469,8 @@ impl DrawingEditor {
         self.offset = at - self.viewport.get().origin - point(px((at_world.x * self.zoom) as f32), px((at_world.y * self.zoom) as f32));
     }
 
+    fn selected(&self) -> Option<usize> { (self.selection.len() == 1).then(|| self.selection[0]) }
+
     fn select_at(&self, p: World) -> Option<usize> {
         hit_at(&self.doc.scene, p, self.zoom, &[])
     }
@@ -422,69 +482,153 @@ impl DrawingEditor {
 
     fn down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.discard || self.reset_confirmation { return; }
-        self.finish_field(window, cx);
-        window.focus(&self.focus);
-        cx.stop_propagation();
-        let p = self.world(event.position);
-        if event.button == MouseButton::Middle || self.tool == Tool::Pan {
+        if self.fit { self.fit_view(); }
+        self.finish_field(window, cx); window.focus(&self.focus); cx.stop_propagation();
+        let p = self.world(event.position); self.pointer = p; self.binding_disabled = event.modifiers.secondary();
+        if event.button == MouseButton::Middle || self.tool == Tool::Pan || self.space || self.view_only {
             self.gesture = Some(Gesture::Pan { start: event.position, offset: self.offset });
+        } else if self.tool == Tool::Laser {
+            self.laser.push((p, std::time::Instant::now())); self.gesture = Some(Gesture::Laser);
+        } else if self.tool == Tool::Eyedropper {
+            self.pick_color(p, cx);
+        } else if self.tool == Tool::Bucket {
+            self.fill_at(p, cx);
         } else if self.tool == Tool::Select {
-            if let Some(index) = self.selected {
+            if let Some(index) = self.crop {
+                let e = &self.doc.scene.elements[index]; let b = e.base();
+                let rect = scene::bounds::Bounds::new(b.x, b.y, b.x + b.width, b.y + b.height);
+                let local = p.rotate(-b.angle, element_center(e));
+                if let Some(corner) = rect_corners(rect).iter().position(|q| local.distance(*q) <= 9. / self.zoom) {
+                    self.gesture = Some(Gesture::Crop { pointer: local, corner, start: rect, rect, index }); cx.notify(); return;
+                }
+                self.crop = None;
+            }
+            if let Some(index) = self.line_edit {
+                let e = &self.doc.scene.elements[index];
+                if let Some(points) = linear_points(e) {
+                    let points: Vec<_> = points.iter().map(|q| q.rotate(e.base().angle, element_center(e))).collect();
+                    let elbow = matches!(e, Element::Arrow(a) if a.elbowed);
+                    if let Some(point) = points.iter().enumerate().position(|(n, q)| (!elbow || n == 0 || n + 1 == points.len()) && p.distance(*q) <= 9. / self.zoom) {
+                        if event.modifiers.shift {
+                            if self.selected_points.contains(&point) { self.selected_points.retain(|i| *i != point); } else { self.selected_points.push(point); }
+                        } else if !self.selected_points.contains(&point) { self.selected_points = vec![point]; }
+                        self.gesture = Some(Gesture::Vertex { start: p, delta: World::zero(), indices: self.selected_points.clone(), insert: None, index });
+                        cx.notify(); return;
+                    }
+                    if points.len() < MAX_POINTS && self.doc.remaining_points() > 0 {
+                        let segment = points.windows(2).enumerate().find(|(n, pair)| (!elbow || *n > 0 && *n + 2 < points.len()) && p.distance(pair[0].lerp(pair[1], 0.5)) <= 9. / self.zoom);
+                        let segment = segment.or_else(|| (!elbow && event.modifiers.alt).then(|| points.windows(2).enumerate().min_by(|(_, a), (_, b)| {
+                            scene::collision::distance_to_segment(p, a[0], a[1]).total_cmp(&scene::collision::distance_to_segment(p, b[0], b[1]))
+                        })).flatten());
+                        if let Some((n, pair)) = segment {
+                            let at = if event.modifiers.alt { p } else { pair[0].lerp(pair[1], 0.5) };
+                            self.selected_points = if elbow { vec![n, n + 1] } else { vec![n + 1] };
+                            self.gesture = Some(Gesture::Vertex { start: p, delta: World::zero(), indices: self.selected_points.clone(), insert: (!elbow).then_some((n + 1, at)), index });
+                            cx.notify(); return;
+                        }
+                    }
+                }
+                self.line_edit = None; self.selected_points.clear();
+            }
+            if !event.modifiers.shift && let Some(index) = self.selected() {
                 let e = &self.doc.scene.elements[index];
                 if let Some((endpoint, start)) = endpoint_at(e, p, self.zoom) {
                     self.gesture = Some(Gesture::Endpoint { pointer: p, start, end: start, endpoint, index });
                     cx.notify(); return;
                 }
-                if can_resize(e) {
-                    let b = element_bounds(e);
-                    let corners = rect_corners(b);
-                    if let Some(corner) = corners.iter().position(|q| p.distance(*q) <= 9. / self.zoom) {
-                        self.gesture = Some(Gesture::Resize { pointer: p, corner, start: b, rect: b, index });
-                        cx.notify(); return;
-                    }
+            }
+            if !event.modifiers.shift && let Some(b) = selection_bounds(&self.doc.scene, &self.selection) {
+                let resizable = self.selection.len() > 1 || self.selected().is_some_and(|i| can_resize(&self.doc.scene.elements[i]));
+                if resizable && let Some(corner) = rect_corners(b).iter().position(|q| p.distance(*q) <= 9. / self.zoom) {
+                    self.gesture = Some(Gesture::Resize { pointer: p, corner, start: b, rect: b }); cx.notify(); return;
                 }
-                if can_rotate(e) && p.distance(rotation_handle(e, self.zoom)) <= 9. / self.zoom {
-                    let pivot = element_center(e);
-                    self.gesture = Some(Gesture::Rotate { start: (p.y - pivot.y).atan2(p.x - pivot.x), angle: e.base().angle, index });
-                    cx.notify(); return;
+                let knob = World::new(b.center().x, b.min_y - 17. / self.zoom);
+                let rotatable = self.selection.len() > 1 || self.selected().is_some_and(|i| can_rotate(&self.doc.scene.elements[i]));
+                if rotatable && p.distance(knob) <= 9. / self.zoom {
+                    self.gesture = Some(Gesture::Rotate { start: (p.y - b.center().y).atan2(p.x - b.center().x), angle: 0. }); cx.notify(); return;
                 }
             }
-            self.selected = self.select_at(p);
-            if let Some(i) = self.selected && let Element::Text(t) = &self.doc.scene.elements[i]
-                && let Some(id) = t.container_id.as_deref()
-                && let Some(container) = self.doc.scene.elements.iter().position(|e| e.id() == id && !e.is_deleted() && !e.base().locked) {
-                self.selected = Some(container);
-            }
-            if let Some(i) = self.selected {
+            let hit = self.select_at(p);
+            if let Some(i) = hit {
+                if event.click_count == 2 && !self.doc.scene.elements[i].base().group_ids.is_empty() {
+                    let groups = &self.doc.scene.elements[i].base().group_ids;
+                    self.editing_group = self.editing_group.as_ref().and_then(|g| groups.iter().position(|id| id == g)).and_then(|n| n.checked_sub(1))
+                        .and_then(|n| groups.get(n)).or_else(|| groups.last()).cloned();
+                }
+                let roots = if event.modifiers.secondary() { vec![i] } else { self.expand_selection(&[i]) };
+                if event.modifiers.shift {
+                    if roots.iter().all(|i| self.selection.contains(i)) { self.selection.retain(|i| !roots.contains(i)); }
+                    else { self.selection.extend(roots); self.selection.sort_unstable(); self.selection.dedup(); }
+                } else if event.modifiers.secondary() || !roots.iter().all(|i| self.selection.contains(i)) { self.selection = roots; }
                 if self.panel.is_none() { self.panel = Some(Panel::Properties); }
-                if event.click_count == 2 { self.edit_selection_text(window, cx); }
-                else { self.gesture = Some(Gesture::Move { start: p, delta: World::zero(), index: i }); }
-            } else if self.panel == Some(Panel::Properties) && event.click_count < 2 {
-                self.panel = None;
+                if event.click_count == 2 && self.selected().is_some() {
+                    let i = self.selected().unwrap();
+                    if matches!(self.doc.scene.elements[i], Element::Image(_)) { self.crop = Some(i); }
+                    else if matches!(self.doc.scene.elements[i], Element::Line(_)) || event.modifiers.secondary() && linear_points(&self.doc.scene.elements[i]).is_some() {
+                        self.line_edit = Some(i); self.selected_points.clear();
+                    } else { self.edit_selection_text(window, cx); }
+                } else if !self.selection.is_empty() && !event.modifiers.shift {
+                    self.gesture = Some(Gesture::Move { start: p, delta: World::zero(), copy: event.modifiers.alt });
+                }
+            } else if event.click_count == 2 {
+                self.selection.clear(); self.start_text(p, None, String::new(), window, cx);
+            } else {
+                let previous = if event.modifiers.shift { self.selection.clone() } else { Vec::new() };
+                self.selection.clone_from(&previous);
+                if !event.modifiers.shift { self.editing_group = None; }
+                self.gesture = Some(Gesture::Box { start: p, end: p, previous, deep: event.modifiers.secondary() });
             }
         } else if self.tool == Tool::Text {
             self.start_text(p, None, String::new(), window, cx);
         } else if self.tool == Tool::Image {
             if self.pending_image.is_some() { self.place_image(p, cx); } else { self.pick_image(window, cx); }
         } else if self.tool == Tool::Eraser {
-            self.gesture = Some(Gesture::Erase { indices: self.select_at(p).into_iter().collect(), last: p });
+            self.gesture = Some(Gesture::Erase { indices: self.select_at(p).map(|i| self.expand_selection(&[i])).unwrap_or_default(), last: p });
+        } else if !self.polyline.is_empty() {
+            if event.click_count == 2 || self.polyline.last().is_some_and(|q| p.distance(*q) <= 9. / self.zoom) { self.finish_polyline(cx); }
+            else if self.polyline.len() < self.doc.remaining_points().min(MAX_POINTS) { self.polyline.push(self.snap(p, event.modifiers.secondary())); }
         } else if self.doc.scene.elements.len() < MAX_ELEMENTS {
-            self.selected = None;
+            self.selection.clear();
+            let p = self.snap(p, event.modifiers.secondary());
             let point_limit = self.doc.remaining_points().min(MAX_POINTS);
             if point_limit >= 2 || !matches!(self.tool, Tool::Pen | Tool::Line | Tool::Arrow) {
-                self.gesture = Some(Gesture::Shape { start: p, end: p, ink: vec![p], point_limit });
+                self.gesture = Some(Gesture::Shape { start: p, end: p, ink: vec![p], point_limit, from_center: event.modifiers.alt });
             }
         }
         cx.notify();
     }
 
+    fn snap(&self, p: World, disabled: bool) -> World {
+        if self.grid && !disabled { World::new(scene::binding::snap_to_grid(p.x, 20.), scene::binding::snap_to_grid(p.y, 20.)) } else { p }
+    }
+
     fn moved(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
-        let p = self.world(event.position);
+        let p = self.world(event.position); self.pointer = p;
+        self.binding_disabled = event.modifiers.secondary();
+        let snapped = self.snap(p, event.modifiers.secondary());
         match &mut self.gesture {
+            Some(Gesture::Laser) => {
+                if self.laser.last().is_none_or(|(q, _)| q.distance(p) * self.zoom >= 2.) { self.laser.push((p, std::time::Instant::now())); }
+                if self.laser.len() > 1000 { self.laser.remove(0); }
+            }
+            Some(Gesture::Crop { pointer, corner, start, rect, index }) => {
+                let e = &self.doc.scene.elements[*index]; let local = p.rotate(-e.base().angle, element_center(e));
+                let q = rect_corners(*start)[*corner] + local - *pointer;
+                *rect = resize_corner(*start, *corner, q, false);
+                rect.min_x = rect.min_x.max(start.min_x); rect.min_y = rect.min_y.max(start.min_y);
+                rect.max_x = rect.max_x.min(start.max_x); rect.max_y = rect.max_y.min(start.max_y);
+            }
+            Some(Gesture::Box { end, .. }) => *end = p,
             Some(Gesture::Pan { start, offset }) => self.offset = *offset + event.position - *start,
-            Some(Gesture::Move { start, delta, .. }) => *delta = p - *start,
+            Some(Gesture::Move { start, delta, .. }) => {
+                *delta = p - *start;
+                if event.modifiers.shift { if delta.x.abs() > delta.y.abs() { delta.y = 0.; } else { delta.x = 0.; } }
+                if self.grid && !event.modifiers.secondary() { delta.x = scene::binding::snap_to_grid(delta.x, 20.); delta.y = scene::binding::snap_to_grid(delta.y, 20.); }
+                if let Some(b) = selection_bounds(&self.doc.scene, &self.selection) { *delta = edit::bounded_delta(b, *delta); }
+            }
+            Some(Gesture::Vertex { start, delta, .. }) => *delta = snapped - *start,
             Some(Gesture::Endpoint { pointer, start, end, endpoint, index }) => {
-                let mut q = *start + p - *pointer;
+                let mut q = *start + snapped - *pointer;
                 if event.modifiers.shift && let Some(points) = linear_points(&self.doc.scene.elements[*index]) {
                     let anchor = if *endpoint == 0 { points[1] } else { points[points.len() - 2] };
                     let e = &self.doc.scene.elements[*index];
@@ -492,94 +636,131 @@ impl DrawingEditor {
                 }
                 *end = World::new(q.x.clamp(-MAX_COORD, MAX_COORD), q.y.clamp(-MAX_COORD, MAX_COORD));
             }
-            Some(Gesture::Resize { pointer, corner, start, rect, .. }) => {
-                let delta = p - *pointer;
-                let q = rect_corners(*start)[*corner] + delta;
-                *rect = resize_corner(*start, *corner, q, event.modifiers.shift);
+            Some(Gesture::Resize { pointer, corner, start, rect }) => {
+                let q = rect_corners(*start)[*corner] + snapped - *pointer;
+                let image = self.selection.len() == 1 && matches!(self.doc.scene.elements[self.selection[0]], Element::Image(_));
+                *rect = resize_corner(*start, *corner, q, event.modifiers.shift != image);
+                if event.modifiers.alt {
+                    let c = start.center();
+                    let w = (rect.width() - start.width() / 2.).max(0.5);
+                    let h = (rect.height() - start.height() / 2.).max(0.5);
+                    *rect = scene::bounds::Bounds::new(c.x - w, c.y - h, c.x + w, c.y + h);
+                }
             }
-            Some(Gesture::Rotate { start, angle, index }) => {
-                let e = &self.doc.scene.elements[*index];
-                let pivot = element_center(e);
-                *angle = (e.base().angle + (p.y - pivot.y).atan2(p.x - pivot.x) - *start).rem_euclid(std::f64::consts::TAU);
-                if event.modifiers.shift { *angle = (*angle / std::f64::consts::FRAC_PI_4).round() * std::f64::consts::FRAC_PI_4; }
+            Some(Gesture::Rotate { start, angle }) => {
+                if let Some(b) = selection_bounds(&self.doc.scene, &self.selection) {
+                    *angle = (p.y - b.center().y).atan2(p.x - b.center().x) - *start;
+                    if event.modifiers.shift { *angle = (*angle / std::f64::consts::FRAC_PI_4).round() * std::f64::consts::FRAC_PI_4; }
+                }
             }
             Some(Gesture::Erase { indices, last }) => {
                 let steps = (p.distance(*last) * self.zoom / 6.).ceil().clamp(1., 128.) as usize;
                 for step in 1..=steps {
                     let sample = last.lerp(p, step as f64 / steps as f64);
-                    if let Some(i) = hit_at(&self.doc.scene, sample, self.zoom, indices) { indices.push(i); }
+                    if let Some(i) = hit_at(&self.doc.scene, sample, self.zoom, indices) && !event.modifiers.alt {
+                        indices.push(i);
+                        if let Some(g) = self.doc.scene.elements[i].base().group_ids.last() {
+                            indices.extend(self.doc.scene.elements.iter().enumerate().filter_map(|(n, e)| (!e.is_deleted() && !e.base().locked && e.base().group_ids.contains(g)).then_some(n)));
+                        }
+                    }
+                    if event.modifiers.alt { indices.retain(|i| !scene::collision::hit_test_element(&self.doc.scene.elements[*i], sample, 7. / self.zoom)); }
                 }
                 *last = p;
             }
-            Some(Gesture::Shape { start, end, ink, point_limit }) => {
+            Some(Gesture::Shape { start, end, ink, point_limit, from_center }) => {
+                *from_center = event.modifiers.alt;
                 let point = if event.modifiers.shift {
-                    if matches!(self.tool, Tool::Line | Tool::Arrow) { scene::binding::constrain_angle(*start, p, 45.) }
-                    else if self.tool != Tool::Pen { scene::binding::constrain_square(*start, p) } else { p }
-                } else { p };
+                    if matches!(self.tool, Tool::Line | Tool::Arrow) { scene::binding::constrain_angle(*start, snapped, 45.) }
+                    else if self.tool != Tool::Pen { scene::binding::constrain_square(*start, snapped) } else { p }
+                } else { snapped };
                 *end = World::new(point.x.clamp(-MAX_COORD, MAX_COORD), point.y.clamp(-MAX_COORD, MAX_COORD));
                 if self.tool == Tool::Pen && ink.len() < *point_limit && ink.last().is_some_and(|last| last.distance(p) >= 1. / self.zoom) { ink.push(p); }
             }
+            None if !self.polyline.is_empty() => {}
             None => return,
+        }
+        self.snap_guides.clear();
+        if self.objects_snap && !self.grid && !event.modifiers.secondary() && !event.modifiers.shift
+            && let Some(Gesture::Move { delta, .. }) = &self.gesture {
+            let (snapped, guides) = commands::snap_delta(&self.doc.scene, &self.selection, *delta, 6. / self.zoom);
+            if let Some(Gesture::Move { delta, .. }) = &mut self.gesture { *delta = snapped; }
+            self.snap_guides = guides;
+        }
+        if let Some(Gesture::Box { start, end, previous, deep }) = &self.gesture {
+            let b = scene::bounds::Bounds::from_points(&[*start, *end]);
+            let mut indices = previous.clone();
+            indices.extend(self.doc.scene.elements.iter().enumerate().filter_map(|(i, e)| {
+                if e.is_deleted() || e.base().locked { return None; }
+                let r = element_bounds(e);
+                (b.contains(World::new(r.min_x, r.min_y)) && b.contains(World::new(r.max_x, r.max_y))).then_some(i)
+            }));
+            self.selection = if *deep { indices } else { self.expand_selection(&indices) };
         }
         cx.notify();
     }
 
     fn up(&mut self, cx: &mut Context<Self>) {
-        match self.gesture.take() {
-            Some(Gesture::Endpoint { start, end, endpoint, index, .. }) if start.distance(end) > 0.5 => {
-                self.checkpoint();
-                move_endpoint(&mut self.doc.scene, index, endpoint, end);
-                touch(&mut self.doc.scene.elements[index]);
-                self.rebuild();
+        self.snap_guides.clear();
+        let gesture = self.gesture.take();
+        let mut next = self.doc.scene.clone();
+        let changed = match &gesture {
+            Some(Gesture::Crop { start, rect, index, .. }) if start != rect => { edit::crop_image(&mut next.elements[*index], *start, *rect, self.image_dimensions(*index)); true }
+            Some(Gesture::Endpoint { start, end, endpoint, index, .. }) if start.distance(*end) > 0.5 => {
+                move_endpoint_binding(&mut next, *index, *endpoint, *end, !self.binding_disabled); true
             }
-            Some(Gesture::Move { delta, index, .. }) if delta.length() > 0.5 => {
-                self.checkpoint();
-                let element = &mut self.doc.scene.elements[index];
-                let b = element_bounds(element);
-                let dx = delta.x.clamp(-MAX_COORD - b.min_x, (MAX_COORD - b.max_x).max(-MAX_COORD - b.min_x));
-                let dy = delta.y.clamp(-MAX_COORD - b.min_y, (MAX_COORD - b.max_y).max(-MAX_COORD - b.min_y));
-                scene::transform::translate_element(element, dx, dy);
-                touch(element);
-                scene::binding::refresh_derived(&mut self.doc.scene);
-                self.rebuild();
+            Some(Gesture::Vertex { start, delta, indices, insert, index }) if insert.is_some() || delta.length() > 0.5 => {
+                edit::move_vertices(&mut next, *index, indices, *insert, *start, *delta, !self.binding_disabled); true
             }
-            Some(Gesture::Resize { rect, start, index, .. }) if rect != start => {
-                self.checkpoint();
-                let e = &mut self.doc.scene.elements[index];
-                apply_rect(e, rect);
-                touch(e);
-                scene::binding::refresh_derived(&mut self.doc.scene);
-                self.rebuild();
+            Some(Gesture::Move { delta, copy, .. }) if delta.length() > 0.5 => {
+                if *copy {
+                    let old_len = self.doc.scene.elements.len();
+                    self.duplicate_offset(false, cx);
+                    if self.doc.scene.elements.len() == old_len { return; }
+                    next = self.doc.scene.clone();
+                }
+                if let Some(b) = selection_bounds(&next, &self.selection) {
+                    transform_selection(&mut next, &self.selection, b, scene::bounds::Bounds::new(b.min_x + delta.x, b.min_y + delta.y, b.max_x + delta.x, b.max_y + delta.y), 0.);
+                }
+                true
             }
-            Some(Gesture::Rotate { angle, index, .. }) if (self.doc.scene.elements[index].base().angle - angle).abs() > 0.001 => {
-                self.checkpoint();
-                self.doc.scene.elements[index].base_mut().angle = angle;
-                touch(&mut self.doc.scene.elements[index]);
-                self.rebuild();
+            Some(Gesture::Resize { rect, start, .. }) if rect != start => { edit::resize_selection(&mut next, &self.selection, *start, *rect); true }
+            Some(Gesture::Rotate { angle, .. }) if angle.abs() > 0.001 => {
+                if let Some(b) = selection_bounds(&next, &self.selection) { transform_selection(&mut next, &self.selection, b, b, *angle); } true
             }
             Some(Gesture::Erase { indices, .. }) if !indices.is_empty() => {
-                self.checkpoint();
-                for index in indices { self.erase_element(index); }
-                self.rebuild();
+                self.checkpoint(); for &i in indices { self.erase_element(i); }
+                self.rebuild(); cx.notify(); return;
             }
-            Some(Gesture::Shape { start, end, ink, .. }) => {
-                if let Some(mut e) = self.shape(start, end, &ink) {
-                    self.checkpoint();
-                    if let Element::Arrow(a) = &mut e {
-                        a.linear.start_binding = arrow_binding(&self.doc.scene, start);
-                        a.linear.end_binding = arrow_binding(&self.doc.scene, end);
-                    }
-                    let index = self.doc.scene.elements.len();
-                    self.doc.scene.elements.push(e);
-                    self.after_drawing(index);
-                    scene::binding::update_bindings(&mut self.doc.scene);
-                    self.rebuild();
-                }
+            Some(Gesture::Shape { start, end, ink, from_center, .. }) => {
+                if start.distance(*end) < 2. / self.zoom && matches!(self.tool, Tool::Line | Tool::Arrow) {
+                    self.polyline = vec![*start]; self.pointer = *end;
+                } else if let Some(e) = self.shape(if *from_center && self.tool != Tool::Pen { *start * 2. - *end } else { *start }, *end, ink) { self.insert_shape(e, cx); }
+                cx.notify(); return;
             }
-            Some(_) => {}
-            None => return,
+            _ => false,
+        };
+        if changed && next.elements != self.doc.scene.elements {
+            if !matches!(gesture, Some(Gesture::Move { copy: true, .. })) { self.checkpoint(); }
+            self.doc.scene = next; self.touch_selection(); self.sync_frames(); self.rebuild();
         }
-        cx.notify();
+        if gesture.is_some() { cx.notify(); }
+    }
+
+    fn insert_shape(&mut self, mut e: Element, cx: &mut Context<Self>) {
+        if let Element::Arrow(a) = &mut e && !self.binding_disabled {
+            a.linear.start_binding = arrow_binding(&self.doc.scene, a.linear.points[0]);
+            a.linear.end_binding = arrow_binding(&self.doc.scene, *a.linear.points.last().unwrap());
+        }
+        self.checkpoint();
+        let index = self.doc.scene.elements.len(); self.doc.scene.elements.push(e);
+        self.after_drawing(index);
+        edit::refresh_scene(&mut self.doc.scene); self.rebuild(); cx.notify();
+    }
+
+    fn finish_polyline(&mut self, cx: &mut Context<Self>) {
+        let points = std::mem::take(&mut self.polyline);
+        if points.len() < 2 { cx.notify(); return; }
+        if let Some(e) = self.shape(points[0], *points.last().unwrap(), &points) { self.insert_shape(e, cx); }
     }
 
     fn shape(&self, start: World, end: World, ink: &[World]) -> Option<Element> {
@@ -592,15 +773,19 @@ impl DrawingEditor {
             Tool::Rect => factory::new_rectangle(x, y, w.max(1.), h.max(1.), o),
             Tool::Diamond => factory::new_diamond(x, y, w.max(1.), h.max(1.), o),
             Tool::Ellipse => factory::new_ellipse(x, y, w.max(1.), h.max(1.), o),
-            Tool::Line => factory::new_line(vec![start, end], o),
-            Tool::Arrow => factory::new_arrow(vec![start, end], None, self.arrowhead, o),
+            Tool::Line => factory::new_line(if ink.len() > 2 { ink.to_vec() } else { vec![start, end] }, o),
+            Tool::Arrow => factory::new_arrow(if ink.len() > 2 { ink.to_vec() } else { vec![start, end] }, self.start_arrowhead, self.arrowhead, o),
             Tool::Pen if ink.len() > 1 => factory::new_freedraw(ink.to_vec(), o),
             Tool::Sticky => factory::new_sticky_note(x, y, if far_enough { w.max(36.) } else { 160. }, if far_enough { h.max(24.) } else { 100. }, o),
             Tool::Frame => factory::new_frame(x, y, w.max(1.), h.max(1.), Some(tr("画框", "Frame").into()), o),
             _ => return None,
         };
-        if matches!(self.tool, Tool::Rect | Tool::Diamond | Tool::Arrow | Tool::Line) {
-            shape.base_mut().roundness = self.rounded.then(|| roundness(self.tool));
+        if let Element::Arrow(a) = &mut shape {
+            a.elbowed = self.arrow_type == 2;
+            if a.elbowed { edit::elbow_points(a); }
+        }
+        if matches!(self.tool, Tool::Rect | Tool::Diamond | Tool::Line) || self.tool == Tool::Arrow && self.arrow_type != 2 {
+            shape.base_mut().roundness = (if self.tool == Tool::Arrow { self.arrow_type == 1 } else { self.rounded }).then(|| roundness(self.tool));
         }
         Some(shape)
     }
@@ -609,7 +794,7 @@ impl DrawingEditor {
         if index.is_none() && self.doc.scene.elements.len() >= MAX_ELEMENTS { return; }
         self.text_at = Some((p, index));
         self.text_container = None;
-        self.field.update(cx, |f, cx| { f.set_placeholder(tr("输入画板文字", "Enter drawing text"), cx); f.set_text(&text, cx); f.select_all_text(cx); });
+        self.field.update(cx, |f, cx| { f.multiline = true; f.wrap = true; f.set_placeholder(tr("输入画板文字", "Enter drawing text"), cx); f.set_text(&text, cx); f.select_all_text(cx); });
         window.focus(&self.field.read(cx).focus_handle(cx));
     }
 
@@ -617,7 +802,11 @@ impl DrawingEditor {
         let Some((at, index)) = self.text_at.take() else { return };
         let container = self.text_container.take();
         let value = self.field.read(cx).text.trim().to_string();
-        if !value.is_empty() {
+        if value.is_empty() {
+            if let Some(i) = index {
+                self.checkpoint(); self.erase_element(i); self.rebuild();
+            }
+        } else {
             if let Some(i) = index {
                 if matches!(&self.doc.scene.elements[i], Element::Text(t) if text_to_edit(t) != value) {
                     self.checkpoint();
@@ -649,7 +838,7 @@ impl DrawingEditor {
                 }
                 self.doc.scene.elements.push(el);
                 if let Some(c) = container {
-                    self.selected = Some(c);
+                    self.selection = vec![c];
                     self.sync_text(index);
                 } else { self.after_drawing(index); }
             }
@@ -660,95 +849,74 @@ impl DrawingEditor {
     }
 
     fn delete(&mut self, cx: &mut Context<Self>) {
-        if self.busy { return; }
-        if let Some(i) = self.selected.take() {
-            self.checkpoint();
-            self.erase_element(i);
-            self.rebuild();
-            cx.notify();
-        }
+        if self.busy || self.selection.is_empty() { return; }
+        self.checkpoint();
+        for i in selection_indices(&self.doc.scene, &self.selection) { self.erase_element(i); }
+        self.selection.clear(); self.line_edit = None; self.crop = None; self.selected_points.clear(); self.rebuild(); cx.notify();
     }
 
     fn after_drawing(&mut self, index: usize) {
         if !self.tool_locked {
             self.tool = Tool::Select;
-            self.selected = Some(index);
+            self.selection = vec![index];
             if self.panel.is_none() { self.panel = Some(Panel::Properties); }
         }
+        self.sync_frames();
     }
 
     fn erase_element(&mut self, index: usize) {
         let id = self.doc.scene.elements[index].id().to_string();
         for (i, element) in self.doc.scene.elements.iter_mut().enumerate() {
             let following = matches!(element, Element::Text(t) if t.container_id.as_deref() == Some(id.as_str()));
-            if (i == index || following) && !element.is_deleted() {
-                element.base_mut().is_deleted = true;
-                touch(element);
+            if (i == index || following) && !element.is_deleted() { element.base_mut().is_deleted = true; touch(element); }
+            match element {
+                Element::Arrow(a) => {
+                    if a.linear.start_binding.as_ref().is_some_and(|b| b.element_id == id) { a.linear.start_binding = None; }
+                    if a.linear.end_binding.as_ref().is_some_and(|b| b.element_id == id) { a.linear.end_binding = None; }
+                }
+                Element::Line(l) => {
+                    if l.linear.start_binding.as_ref().is_some_and(|b| b.element_id == id) { l.linear.start_binding = None; }
+                    if l.linear.end_binding.as_ref().is_some_and(|b| b.element_id == id) { l.linear.end_binding = None; }
+                }
+                _ => {}
             }
+            if element.base().frame_id.as_deref() == Some(id.as_str()) { element.base_mut().frame_id = None; }
         }
     }
 
-    fn duplicate(&mut self, cx: &mut Context<Self>) {
-        if self.busy { return; }
-        let Some(i) = self.selected else { return };
-        let mut e = self.doc.scene.elements[i].clone();
-        let labels: Vec<_> = self.doc.scene.non_deleted().filter(|item| {
-            matches!(item, Element::Text(t) if t.container_id.as_deref() == Some(e.id()))
-        }).cloned().collect();
-        if self.doc.scene.elements.len() + labels.len() >= MAX_ELEMENTS { return; }
-        let points = match &e { Element::Line(l) => l.linear.points.len(), Element::Arrow(a) => a.linear.points.len(), Element::Freedraw(f) => f.points.len(), _ => 0 };
-        if points > self.doc.remaining_points() { return; }
+    fn duplicate(&mut self, cx: &mut Context<Self>) { self.duplicate_offset(true, cx); }
+
+    fn duplicate_offset(&mut self, offset: bool, cx: &mut Context<Self>) {
+        if self.busy || self.selection.is_empty() { return; }
+        let indices = selection_indices(&self.doc.scene, &self.selection);
+        let elements: Vec<_> = indices.iter().map(|i| self.doc.scene.elements[*i].clone()).collect();
+        let mut doc = self.doc.clone(); doc.scene.elements = elements;
+        let points = drawing_scene::MAX_SCENE_POINTS - doc.remaining_points();
+        if indices.len() + self.doc.scene.elements.len() > MAX_ELEMENTS || points > self.doc.remaining_points() { return; }
+        let Some(b) = selection_bounds(&self.doc.scene, &indices) else { return };
         self.checkpoint();
-        let b = e.base_mut();
-        b.id = factory::new_id(); b.index = None; b.group_ids.clear(); b.bound_elements = None;
-        match &mut e {
-            Element::Line(l) => { l.linear.start_binding = None; l.linear.end_binding = None; }
-            Element::Arrow(a) => { a.linear.start_binding = None; a.linear.end_binding = None; }
-            Element::Text(t) => { t.container_id = None; }
-            _ => {}
-        }
-        let b = labels.iter().map(element_bounds).fold(element_bounds(&e), |b, label| b.union(&label));
-        let dx = (MAX_COORD - b.max_x).clamp(0., 12.);
-        let dy = (MAX_COORD - b.max_y).clamp(0., 12.);
-        scene::transform::translate_element(&mut e, dx, dy);
-        let id = e.id().to_string();
-        let labels: Vec<_> = labels.into_iter().map(|mut label| {
-            let Element::Text(t) = &mut label else { unreachable!() };
-            t.base.id = factory::new_id(); t.base.index = None; t.base.group_ids.clear(); t.container_id = Some(id.clone());
-            e.base_mut().bound_elements.get_or_insert_with(Vec::new)
-                .push(scene::element::BoundElement { id: t.base.id.clone(), kind: scene::element::BoundElementType::Text });
-            scene::transform::translate_element(&mut label, dx, dy);
-            label
-        }).collect();
-        self.selected = Some(self.doc.scene.elements.len());
-        self.doc.scene.elements.push(e);
-        self.doc.scene.elements.extend(labels);
-        self.rebuild();
-        cx.notify();
+        let start = self.doc.scene.elements.len();
+        let mut elements = edit::clone_elements(&doc.scene.elements);
+        let delta = if offset { edit::bounded_delta(b, World::new(12., 12.)) } else { World::zero() };
+        for e in &mut elements { scene::transform::translate_element(e, delta.x, delta.y); }
+        self.selection = indices.iter().enumerate().filter_map(|(n, i)| self.selection.contains(i).then_some(start + n)).collect();
+        self.doc.scene.elements.extend(elements); self.line_edit = None; self.crop = None; self.selected_points.clear(); self.rebuild(); cx.notify();
     }
 
     fn reorder(&mut self, direction: LayerMove, cx: &mut Context<Self>) {
-        if self.busy { return; }
-        let Some(index) = self.selected else { return };
-        let scene = &self.doc.scene.elements;
-        let first = || scene.iter().position(|e| !e.is_deleted());
-        let last = || scene.iter().rposition(|e| !e.is_deleted());
-        let dest = match direction {
-            LayerMove::Bottom => first(), LayerMove::Top => last(),
-            LayerMove::Back => scene[..index].iter().rposition(|e| !e.is_deleted()),
-            LayerMove::Forward => scene[index + 1..].iter().position(|e| !e.is_deleted()).map(|i| index + 1 + i),
-        };
-        let Some(dest) = dest.filter(|d| *d != index) else { return };
+        if self.busy || self.selection.is_empty() { return; }
+        let selected = selection_indices(&self.doc.scene, &self.selection);
+        let mut order: Vec<_> = (0..self.doc.scene.elements.len()).collect();
+        match direction {
+            LayerMove::Bottom | LayerMove::Top => order.sort_by_key(|i| selected.contains(i) == matches!(direction, LayerMove::Bottom)),
+            LayerMove::Back => for i in 1..order.len() { if selected.contains(&order[i]) && !selected.contains(&order[i - 1]) { order.swap(i, i - 1); } },
+            LayerMove::Forward => for i in (0..order.len().saturating_sub(1)).rev() { if selected.contains(&order[i]) && !selected.contains(&order[i + 1]) { order.swap(i, i + 1); } },
+        }
+        if order.iter().enumerate().all(|(i, old)| i == *old) { return; }
         self.checkpoint();
-        let scene = &mut self.doc.scene.elements;
-        let mut e = scene.remove(index);
-        // Keep the file order and let Excalidraw regenerate the moved index.
-        e.base_mut().index = None;
-        touch(&mut e);
-        scene.insert(dest, e);
-        self.selected = Some(dest);
-        self.rebuild();
-        cx.notify();
+        self.selection = order.iter().enumerate().filter_map(|(i, old)| self.selection.contains(old).then_some(i)).collect();
+        self.doc.scene.elements = order.into_iter().map(|i| { let mut e = self.doc.scene.elements[i].clone(); e.base_mut().index = None; touch(&mut e); e }).collect();
+        self.line_edit = None; self.crop = None; self.selected_points.clear(); self.rebuild(); cx.notify();
     }
 
     fn change_paper(&mut self, color: &str, cx: &mut Context<Self>) {
@@ -765,7 +933,8 @@ impl DrawingEditor {
         if self.doc.scene.non_deleted().next().is_none() { return cx.notify(); }
         self.checkpoint();
         self.doc.scene.elements.clear();
-        self.selected = None;
+        self.line_edit = None; self.crop = None; self.selected_points.clear(); self.polyline.clear(); self.editing_group = None; self.edit_property = None; self.edit_frame = None; self.text_at = None; self.edit_link = None;
+        self.selection.clear();
         self.rebuild();
         cx.notify();
     }
@@ -793,13 +962,16 @@ impl DrawingEditor {
             StyleChoice::TextAlign(v) => self.text_align = v,
             StyleChoice::TextVertical(_) => {}
             StyleChoice::ArrowHead(v) => self.arrowhead = v,
+            StyleChoice::StartArrowHead(v) => self.start_arrowhead = v,
+            StyleChoice::ArrowType(v) => self.arrow_type = v,
         }
-        let target = self.selected.and_then(|i| {
+        let targets: Vec<_> = self.selection.iter().copied().filter_map(|i| {
             let e = &self.doc.scene.elements[i];
             if matches!(choice, StyleChoice::TextColor(_) | StyleChoice::TextFont(_) | StyleChoice::TextSize(_) | StyleChoice::TextAlign(_) | StyleChoice::TextVertical(_))
                 && !matches!(e, Element::Text(_)) { self.bound_text_index(e) } else { Some(i) }
-        });
-        if let Some(i) = target {
+        }).collect();
+        let mut checked = false;
+        for i in targets {
             let mut e = self.doc.scene.elements[i].clone();
             let base = e.base_mut();
             match choice {
@@ -815,6 +987,12 @@ impl DrawingEditor {
                     e.base_mut().roundness = v.then(|| roundness(tool));
                 }
                 StyleChoice::ArrowHead(v) => if let Element::Arrow(a) = &mut e { a.linear.end_arrowhead = v; },
+                StyleChoice::StartArrowHead(v) => if let Element::Arrow(a) = &mut e { a.linear.start_arrowhead = v; },
+                StyleChoice::ArrowType(v) => if let Element::Arrow(a) = &mut e {
+                    a.elbowed = v == 2; a.fixed_segments = None;
+                    a.linear.base.roundness = (v == 1).then(|| roundness(Tool::Arrow));
+                    if v == 2 { edit::elbow_points(a); }
+                },
                 _ => if let Element::Text(t) = &mut e {
                     match choice {
                         StyleChoice::TextColor(c) => t.base.stroke_color = c.into(),
@@ -827,7 +1005,7 @@ impl DrawingEditor {
                 },
             }
             if e != self.doc.scene.elements[i] {
-                if checkpoint { self.checkpoint(); }
+                if checkpoint && !checked { self.checkpoint(); checked = true; }
                 touch(&mut e);
                 self.doc.scene.elements[i] = e;
                 if matches!(choice, StyleChoice::TextFont(_) | StyleChoice::TextSize(_) | StyleChoice::TextVertical(_)) { self.sync_text(i); }
@@ -839,15 +1017,26 @@ impl DrawingEditor {
 
     fn open_link_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy { return; }
-        let Some(i) = self.selected else { return };
+        let Some(i) = self.selected() else { return };
         let url = self.doc.scene.elements[i].base().link.clone().unwrap_or_default();
         self.edit_link = Some(i);
-        self.field.update(cx, |f, cx| { f.set_placeholder(tr("添加链接", "Add link"), cx); f.set_text(&url, cx); f.select_all_text(cx); });
+        self.field.update(cx, |f, cx| { f.multiline = false; f.set_placeholder(tr("添加链接", "Add link"), cx); f.set_text(&url, cx); f.select_all_text(cx); });
         window.focus(&self.field.read(cx).focus_handle(cx));
         cx.notify();
     }
 
     fn finish_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.edit_property.is_some() { self.finish_property(window, cx); return; }
+        if self.searching { self.searching = false; window.focus(&self.focus); cx.notify(); return; }
+        if let Some(index) = self.edit_frame.take() {
+            let value = self.field.read(cx).text.trim().to_string();
+            if matches!(&self.doc.scene.elements[index], Element::Frame(f) | Element::MagicFrame(f) if f.name.as_deref().unwrap_or("") != value) {
+                self.checkpoint();
+                if let Element::Frame(f) | Element::MagicFrame(f) = &mut self.doc.scene.elements[index] { f.name = (!value.is_empty()).then_some(value); }
+                touch(&mut self.doc.scene.elements[index]); self.rebuild();
+            }
+            window.focus(&self.focus); cx.notify(); return;
+        }
         if let Some(index) = self.edit_link.take() {
             let raw = self.field.read(cx).text.trim().to_string();
             let link = (!raw.is_empty()).then_some(raw);
@@ -866,13 +1055,18 @@ impl DrawingEditor {
     }
 
     fn edit_selection_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(i) = self.selected else { return };
+        let Some(i) = self.selected() else { return };
         let e = &self.doc.scene.elements[i];
+        if let Element::Frame(f) | Element::MagicFrame(f) = e {
+            let text = f.name.clone().unwrap_or_default(); self.edit_frame = Some(i);
+            self.field.update(cx, |f, cx| { f.multiline = false; f.set_placeholder(tr("画框名称", "Frame name"), cx); f.set_text(&text, cx); f.select_all_text(cx); });
+            window.focus(&self.field.read(cx).focus_handle(cx)); cx.notify(); return;
+        }
         if let Element::Text(t) = e {
             self.start_text(element_center(e), Some(i), text_to_edit(t).to_owned(), window, cx);
         } else if let Some(idx) = self.bound_text_index(e) && let Element::Text(t) = &self.doc.scene.elements[idx] {
             self.start_text(element_center(e), Some(idx), text_to_edit(t).to_owned(), window, cx);
-        } else if matches!(e, Element::StickyNote(_) | Element::Rectangle { .. } | Element::Ellipse { .. } | Element::Diamond { .. })
+        } else if matches!(e, Element::StickyNote(_) | Element::Rectangle { .. } | Element::Ellipse { .. } | Element::Diamond { .. } | Element::Arrow(_) | Element::Line(_))
             && self.doc.scene.elements.len() < MAX_ELEMENTS {
             self.start_text(element_center(e), None, String::new(), window, cx);
             self.text_container = Some(i);
@@ -940,12 +1134,14 @@ impl DrawingEditor {
 
     fn tool(&mut self, tool: Tool, window: &mut Window, cx: &mut Context<Self>) {
         self.finish_field(window, cx);
+        if !self.polyline.is_empty() { self.finish_polyline(cx); }
+        self.line_edit = None; self.crop = None; self.selected_points.clear();
         self.panel = (tool == Tool::Text || self.panel == Some(Panel::Properties)).then_some(Panel::Properties);
         self.more_fonts = false;
         self.colors = None;
         self.tool = tool;
         if tool != Tool::Image { self.pending_image = None; } else { self.pick_image(window, cx); }
-        self.selected = None;
+        if tool != Tool::Eyedropper { self.selection.clear(); }
         self.gesture = None;
         window.focus(&self.focus);
         cx.notify();
@@ -953,37 +1149,72 @@ impl DrawingEditor {
 
     fn key(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if !self.focus.is_focused(window) { return; }
-        let key = e.keystroke.key.as_str();
-        let m = e.keystroke.modifiers;
+        let key = e.keystroke.key.as_str(); let m = e.keystroke.modifiers;
         cx.stop_propagation();
         if self.busy { return; }
-        if self.reset_confirmation {
-            if key == "escape" { self.reset_confirmation = false; cx.notify(); }
-            return;
-        }
-        if self.discard {
-            if key == "escape" { self.keep_editing(window, cx); }
-            return;
-        }
-        if m.secondary() && key == "d" { self.duplicate(cx); } else if !m.secondary() {
+        if self.reset_confirmation { if key == "escape" { self.reset_confirmation = false; cx.notify(); } return; }
+        if self.discard { if key == "escape" { self.keep_editing(window, cx); } return; }
+        if key == "escape" && self.gesture.is_some() { self.gesture = None; cx.notify(); return; }
+        if self.gesture.is_some() { return; }
+        if matches!(key, "space" | " ") { self.space = true; cx.notify(); return; }
+        if !self.polyline.is_empty() && matches!(key, "enter" | "escape") { self.finish_polyline(cx); return; }
+        if self.command_key(key, m, window, cx) { return; }
+        if self.view_only && !m.secondary() && !matches!(key, "escape" | "1" | "2" | "pageup" | "pagedown") { return; }
+        if m.secondary() {
             match key {
-                "escape" if self.gesture.take().is_some() => cx.notify(),
-                "escape" if self.zen => { self.zen = false; cx.notify(); }
-                "escape" if self.panel.take().is_some() => cx.notify(),
-                "escape" if self.tool != Tool::Select => self.tool(Tool::Select, window, cx),
-                "escape" if self.selected.take().is_some() => cx.notify(),
-                "enter" if self.selected.is_some() => self.edit_selection_text(window, cx),
-                "q" => { self.tool_locked = !self.tool_locked; cx.notify(); }
-                "escape" => self.cancel(window, cx),
-                "delete" | "backspace" if self.gesture.is_none() => self.delete(cx),
-                "0" => { self.fit = true; cx.notify(); }
-                _ => if let Some(tool) = "123456789".find(key).filter(|_| key.len() == 1)
-                    .map(|i| TOOLS[i + 1].0).or_else(|| TOOLS.iter().find_map(|(tool, _, _, k, _)| (*k == key).then_some(*tool))) {
-                    self.tool(tool, window, cx);
+                "[" => self.reorder(if m.alt || m.shift { LayerMove::Bottom } else { LayerMove::Back }, cx),
+                "]" => self.reorder(if m.alt || m.shift { LayerMove::Top } else { LayerMove::Forward }, cx),
+                "left" | "right" | "up" | "down" if m.shift => self.align_selection(match key {
+                    "left" => AlignSelection::Left, "right" => AlignSelection::Right, "up" => AlignSelection::Top, _ => AlignSelection::Bottom,
+                }, cx),
+                "=" | "+" | "-" | "0" => {
+                    let view = self.viewport.get();
+                    let factor = match key { "-" => 1. / 1.2, "0" => 1. / self.zoom, _ => 1.2 };
+                    self.zoom_at(view.center(), factor); cx.notify();
                 }
+                "'" => { self.grid = !self.grid; cx.notify(); }
+                _ => {}
+            }
+            return;
+        }
+        match key {
+            "enter" | "escape" if self.crop.take().is_some() => cx.notify(),
+            "escape" if self.line_edit.take().is_some() => { self.selected_points.clear(); cx.notify(); }
+            "escape" if self.editing_group.take().is_some() => { self.selection.clear(); cx.notify(); }
+            "escape" if self.zen => { self.zen = false; cx.notify(); }
+            "escape" if self.panel.take().is_some() => cx.notify(),
+            "escape" if self.tool != Tool::Select => self.tool(Tool::Select, window, cx),
+            "escape" if !self.selection.is_empty() => { self.selection.clear(); cx.notify(); }
+            "enter" if self.selected().is_some_and(|i| matches!(self.doc.scene.elements[i], Element::Image(_))) => { self.crop = self.selected(); cx.notify(); }
+            "enter" if self.selected().is_some() => self.edit_selection_text(window, cx),
+            "q" => { self.tool_locked = !self.tool_locked; cx.notify(); }
+            "escape" => self.cancel(window, cx),
+            "delete" | "backspace" if self.line_edit.is_some() => self.delete_points(cx),
+            "delete" | "backspace" => self.delete(cx),
+            "left" | "right" | "up" | "down" => {
+                let step = if m.shift { 10. } else if self.grid { 20. } else { 1. };
+                let delta = match key { "left" => World::new(-step, 0.), "right" => World::new(step, 0.), "up" => World::new(0., -step), _ => World::new(0., step) };
+                if let Some(index) = self.line_edit && !self.selected_points.is_empty() {
+                    self.checkpoint(); edit::move_vertices(&mut self.doc.scene, index, &self.selected_points, None, World::zero(), delta, true);
+                    touch(&mut self.doc.scene.elements[index]); self.rebuild(); cx.notify();
+                } else { self.move_selection(delta, cx); }
+            }
+            "1" if m.shift => { self.fit_view(); cx.notify(); }
+            "2" if m.shift => self.zoom_selection(cx),
+            "l" if m.shift => { self.panel = Some(Panel::Library); cx.notify(); }
+            "g" if m.shift => { self.grid = !self.grid; cx.notify(); }
+            "h" if m.shift => self.flip_selection(true, cx),
+            "v" if m.shift => self.flip_selection(false, cx),
+            "?" | "/" if key == "?" || m.shift => { self.panel = Some(Panel::Help); cx.notify(); }
+            "0" => self.tool(Tool::Eraser, window, cx),
+            _ => if let Some(tool) = "123456789".find(key).filter(|_| key.len() == 1)
+                .map(|i| TOOLS[i + 1].0).or_else(|| TOOLS.iter().find_map(|(tool, _, _, k, _)| (*k == key).then_some(*tool))) {
+                if tool == Tool::Arrow && self.tool == Tool::Arrow { self.arrow_type = (self.arrow_type + 1) % 3; cx.notify(); }
+                else { self.tool(tool, window, cx); }
             }
         }
     }
+
 }
 
 fn linear_points(e: &Element) -> Option<&[World]> {
@@ -1002,8 +1233,13 @@ fn endpoint_at(e: &Element, p: World, zoom: f64) -> Option<(usize, World)> {
         .min_by(|(_, a), (_, b)| p.distance(*a).total_cmp(&p.distance(*b)))
 }
 
+#[cfg(test)]
 fn move_endpoint(doc: &mut Scene, index: usize, endpoint: usize, p: World) {
-    let binding = arrow_binding(doc, p);
+    move_endpoint_binding(doc, index, endpoint, p, true);
+}
+
+fn move_endpoint_binding(doc: &mut Scene, index: usize, endpoint: usize, p: World, bind: bool) {
+    let binding = bind.then(|| arrow_binding(doc, p)).flatten();
     let e = &mut doc.elements[index];
     let (angle, pivot) = (e.base().angle, element_center(e));
     let linear = match e { Element::Arrow(a) => &mut a.linear, Element::Line(l) => &mut l.linear, _ => return };
@@ -1024,24 +1260,19 @@ fn move_endpoint(doc: &mut Scene, index: usize, endpoint: usize, p: World) {
             if segment.end == old { segment.end = p; }
         }
     }
-    scene::binding::refresh_derived(doc);
+    edit::refresh_scene(doc);
 }
 
 fn can_resize(e: &Element) -> bool {
-    e.base().angle.abs() < 0.001 && matches!(e, Element::Rectangle { .. } | Element::Ellipse { .. } | Element::Diamond { .. } | Element::StickyNote(_) | Element::Frame(_) | Element::Image(_))
+    !matches!(e, Element::Arrow(_) | Element::Line(_))
 }
 
 fn can_rotate(e: &Element) -> bool {
-    matches!(e, Element::Rectangle { .. } | Element::Ellipse { .. } | Element::Diamond { .. } | Element::StickyNote(_))
+    !matches!(e, Element::Frame(_) | Element::MagicFrame(_))
 }
 
 fn element_center(e: &Element) -> World {
     let b = e.base(); World::new(b.x + b.width / 2., b.y + b.height / 2.)
-}
-
-fn rotation_handle(e: &Element, zoom: f64) -> World {
-    let b = element_bounds(e);
-    World::new(b.center().x, b.min_y - 17. / zoom)
 }
 
 fn rect_corners(b: scene::bounds::Bounds) -> [World; 4] {
@@ -1063,12 +1294,6 @@ fn resize_corner(b: scene::bounds::Bounds, corner: usize, pointer: World, square
     scene::bounds::Bounds::from_points(&[anchor, p])
 }
 
-fn apply_rect(e: &mut Element, rect: scene::bounds::Bounds) {
-    let b = e.base_mut();
-    (b.x, b.y, b.width, b.height) = (rect.min_x, rect.min_y, rect.width().max(1.), rect.height().max(1.));
-    if let Element::StickyNote(note) = e { note.base_height = note.base.height; }
-}
-
 fn roundness(tool: Tool) -> Roundness {
     Roundness { kind: if tool == Tool::Rect || tool == Tool::Diamond { RoundnessType::AdaptiveRadius } else { RoundnessType::ProportionalRadius }, value: None }
 }
@@ -1076,6 +1301,12 @@ fn roundness(tool: Tool) -> Roundness {
 fn hit_at(doc: &Scene, p: World, zoom: f64, exclude: &[usize]) -> Option<usize> {
     doc.elements.iter().enumerate().rev().find(|(i, e)| {
         if e.is_deleted() || e.base().locked || exclude.contains(i) { return false; }
+        if let Some(frame) = e.base().frame_id.as_deref().and_then(|id| doc.get(id)) && !element_bounds(frame).contains(p) { return false; }
+        if matches!(e, Element::Frame(_) | Element::MagicFrame(_)) {
+            let b = element_bounds(e);
+            if p.x >= b.min_x && p.x <= b.max_x && p.y >= b.min_y - 24. / zoom && p.y < b.min_y { return true; }
+            if b.contains(p) && (p.x - b.min_x).min(b.max_x - p.x).min(p.y - b.min_y).min(b.max_y - p.y) > 7. / zoom { return false; }
+        }
         let at = if matches!(e, Element::Line(_) | Element::Arrow(_) | Element::Freedraw(_)) { p.rotate(-e.base().angle, element_center(e)) } else { p };
         scene::collision::hit_test_element(e, at, 7. / zoom)
     }).map(|(i, _)| i)
@@ -1117,9 +1348,9 @@ fn paint_grid(bounds: Bounds<Pixels>, origin: Point<Pixels>, zoom: f64, window: 
     if let Ok(path) = grid.build() { window.paint_path(path, Theme::text_caption().opacity(0.16)); }
 }
 
-fn paint_selection(bounds: Bounds<Pixels>, resize: bool, rotate: Option<Point<Pixels>>, endpoints: Option<[Point<Pixels>; 2]>, paper: Hsla, window: &mut Window) {
+fn paint_selection(bounds: Bounds<Pixels>, show_box: bool, resize: bool, rotate: Option<Point<Pixels>>, endpoints: Option<[Point<Pixels>; 2]>, paper: Hsla, window: &mut Window) {
     let ink = Theme::text_caption();
-    window.paint_quad(outline(bounds, ink, BorderStyle::Solid));
+    if show_box { window.paint_quad(outline(bounds, ink, BorderStyle::Solid)); }
     let mut handle = |center, radius| {
         let extents = Bounds::new(center - point(px(4.), px(4.)), size(px(8.), px(8.)));
         window.paint_quad(quad(extents, px(radius), paper, Edges::all(px(1.5)), ink, BorderStyle::Solid));
@@ -1144,36 +1375,41 @@ fn touch(element: &mut Element) {
 
 impl Render for DrawingEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut preview = None;
-        if let Some(Gesture::Endpoint { index, endpoint, start, end, .. }) = self.gesture && start.distance(end) > 0.5 {
-            let mut scene = self.doc.scene.clone();
-            move_endpoint(&mut scene, index, endpoint, end);
-            preview = Some(scene);
-        }
+        self.laser.retain(|(_, at)| at.elapsed().as_millis() < 900);
+        if !self.laser.is_empty() { let weak = cx.weak_entity(); window.on_next_frame(move |_, cx| { let _ = weak.update(cx, |_, cx| cx.notify()); }); }
+        let laser = self.laser.clone();
+        let snap_guides = self.snap_guides.clone();
+        let preview = self.preview_scene();
         let scene = preview.as_ref().unwrap_or(&self.doc.scene);
-        let transform = match self.gesture {
-            Some(Gesture::Resize { rect, index, .. }) => { let mut e = self.doc.scene.elements[index].clone(); apply_rect(&mut e, rect); Some((index, e)) }
-            Some(Gesture::Rotate { angle, index, .. }) => { let mut e = self.doc.scene.elements[index].clone(); e.base_mut().angle = angle; Some((index, e)) }
-            _ => None,
-        };
-        let handles = self.selected.map(|i| {
-            let e = transform.as_ref().filter(|(index, _)| *index == i).map_or(&scene.elements[i], |(_, e)| e);
-            (can_resize(e), can_rotate(e), rotation_handle(e, self.zoom), endpoints(e))
+        let rasters = self.rasterized_elements(scene, window);
+        let single = self.selected().map(|i| &scene.elements[i]);
+        let show_selection_box = single.is_none_or(|e| linear_points(e).is_none());
+        let handles = selection_bounds(scene, &self.selection).map(|b| {
+            (b, self.line_edit.is_none() && single.is_none_or(can_resize), self.line_edit.is_none() && single.is_none_or(can_rotate), single.and_then(endpoints))
         });
+        let crop_handles = self.crop.map(|i| {
+            let e = &scene.elements[i]; let b = e.base(); rect_corners(scene::bounds::Bounds::new(b.x, b.y, b.x + b.width, b.y + b.height)).map(|p| p.rotate(b.angle, element_center(e)))
+        });
+        let nodes = self.line_edit.and_then(|i| { let e = &scene.elements[i]; linear_points(e).map(|points| points.iter().map(|p| p.rotate(e.base().angle, element_center(e))).collect::<Vec<_>>()) });
+        let elbow_edit = self.line_edit.is_some_and(|i| matches!(scene.elements[i], Element::Arrow(ref a) if a.elbowed));
+        let selected_points = self.selected_points.clone();
         let erasing = match &self.gesture { Some(Gesture::Erase { indices, .. }) => indices.clone(), _ => Vec::new() };
         let viewport = self.viewport.clone();
         let art = self.artwork.clone();
         let images = self.images.clone();
-        let moving = match self.gesture { Some(Gesture::Move { index, delta, .. }) => Some((index, delta)), _ => None };
-        let pending = match &self.gesture {
-            Some(Gesture::Shape { start, end, ink, .. }) => self.shape(*start, *end, ink).map(|el| render_element(&el)),
+        let pending = if !self.polyline.is_empty() {
+            let mut points = self.polyline.clone(); points.push(self.pointer);
+            self.shape(points[0], *points.last().unwrap(), &points).map(|el| render_element(&el))
+        } else { match &self.gesture {
+            Some(Gesture::Shape { start, end, ink, from_center, .. }) => self.shape(if *from_center && self.tool != Tool::Pen { *start * 2. - *end } else { *start }, *end, ink).map(|el| render_element(&el)),
             _ => None,
-        };
-        let geometry: Vec<_> = scene.elements.iter().enumerate().map(|(i, e)| {
-            let e = transform.as_ref().filter(|(index, _)| *index == i).map_or(e, |(_, e)| e);
-            let b = e.base();
-            (element_bounds(e), World::new(b.x + b.width / 2., b.y + b.height / 2.), b.angle)
-        }).collect();
+        }};
+        let geometry: Vec<_> = scene.elements.iter().map(|e| (element_bounds(e), element_center(e), e.base().angle)).collect();
+        let clips: Vec<_> = scene.elements.iter().map(|e| e.base().frame_id.as_deref().and_then(|id| scene.get(id)).map(element_bounds)).collect();
+        let copy_preview = matches!(self.gesture, Some(Gesture::Move { copy: true, .. }));
+        let originals: Vec<_> = self.doc.scene.elements.iter().map(|e| (element_center(e), e.base().angle)).collect();
+        let selection = self.selection.clone();
+        let box_select = match self.gesture { Some(Gesture::Box { start, end, .. }) => Some((start, end)), _ => None };
         let mut transformed = HashMap::new();
         if preview.is_some() {
             let lookup = scene.non_deleted().map(|e| (e.id(), e)).collect();
@@ -1181,12 +1417,10 @@ impl Render for DrawingEditor {
                 if !e.is_deleted() && *e != self.doc.scene.elements[i] { transformed.insert(i, render_element_with_lookup(e, &lookup)); }
             }
         }
-        if let Some((i, e)) = transform { transformed.insert(i, render_element(&e)); }
         let fit = self.fit;
         let weak = cx.weak_entity();
         let offset = self.offset;
         let zoom = self.zoom;
-        let selection = self.selected;
         let dark = self.dark_canvas;
         let grid = self.grid;
         let paper = drawable_ink(Ink::from_hex(if self.doc.background == "transparent" { "#ffffff" } else { &self.doc.background }), 1., dark);
@@ -1198,15 +1432,60 @@ impl Render for DrawingEditor {
             if grid { paint_grid(bounds, origin, zoom, window); }
             for (i, (drawables, (extent, pivot, angle))) in art.iter().zip(geometry).enumerate() {
                 if drawables.is_empty() || erasing.contains(&i) { continue; }
-                let delta = moving.filter(|(index, _)| *index == i).map_or(World::zero(), |(_, delta)| delta);
                 let screen = |p: World| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32));
-                let box_bounds = Bounds::from_corners(screen(World::new(extent.min_x + delta.x, extent.min_y + delta.y)), screen(World::new(extent.max_x + delta.x, extent.max_y + delta.y)));
-                if !bounds.intersects(&box_bounds.dilate(px(96.))) { continue; }
-                let drawables = transformed.get(&i).unwrap_or(drawables);
-                for d in drawables { paint(d, |p| screen(p.rotate(angle, pivot) + delta), zoom, dark, &images, window, cx); }
-                if selection == Some(i) && let Some((resize, rotate, knob, endpoints)) = handles {
-                    paint_selection(box_bounds, resize, rotate.then(|| screen(knob + delta)), endpoints.map(|points| points.map(|p| screen(p + delta))), paper, window);
+                let box_bounds = Bounds::from_corners(screen(World::new(extent.min_x, extent.min_y)), screen(World::new(extent.max_x, extent.max_y)));
+                if copy_preview && selection.contains(&i) {
+                    let (pivot, angle) = originals[i];
+                    for d in drawables { paint(d, |p| screen(p.rotate(angle, pivot)), zoom, dark, &images, window, cx); }
                 }
+                if !bounds.intersects(&box_bounds.dilate(px(96.))) { continue; }
+                let mask = clips[i].map(|rect| ContentMask { bounds: Bounds::from_corners(screen(World::new(rect.min_x, rect.min_y)), screen(World::new(rect.max_x, rect.max_y))) });
+                window.with_content_mask(mask, |window| {
+                if let Some((image, rect)) = rasters.get(&i) {
+                    let b = Bounds::from_corners(screen(World::new(rect.min_x, rect.min_y)), screen(World::new(rect.max_x, rect.max_y)));
+                    let _ = window.paint_image(b, Corners::default(), image.clone(), 0, false);
+                } else {
+                    let drawables = transformed.get(&i).unwrap_or(drawables);
+                    for d in drawables { paint(d, |p| screen(p.rotate(angle, pivot)), zoom, dark, &images, window, cx); }
+                }
+                });
+            }
+            let screen = |p: World| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32));
+            for (a, b) in &snap_guides {
+                let mut path = PathBuilder::stroke(px(1.)); path.move_to(screen(*a)); path.line_to(screen(*b));
+                if let Ok(path) = path.build() { window.paint_path(path, Theme::drawing_accent().opacity(0.6)); }
+            }
+            for pair in laser.windows(2) {
+                let mut path = PathBuilder::stroke(px(3.)); path.move_to(screen(pair[0].0)); path.line_to(screen(pair[1].0));
+                let alpha = (1. - pair[0].1.elapsed().as_secs_f32() / 0.9).clamp(0., 1.);
+                if let Ok(path) = path.build() { window.paint_path(path, Theme::drawing_accent().opacity(alpha)); }
+            }
+            if let Some((b, resize, rotate, endpoints)) = handles {
+                let box_bounds = Bounds::from_corners(screen(World::new(b.min_x, b.min_y)), screen(World::new(b.max_x, b.max_y)));
+                let knob = screen(World::new(b.center().x, b.min_y - 17. / zoom));
+                paint_selection(box_bounds, show_selection_box, resize && crop_handles.is_none(), (rotate && crop_handles.is_none()).then_some(knob), if nodes.is_none() { endpoints.map(|points| points.map(screen)) } else { None }, paper, window);
+            }
+            if let Some(points) = crop_handles {
+                for p in points {
+                    let b = Bounds::new(screen(p) - point(px(5.), px(5.)), size(px(10.), px(10.)));
+                    window.paint_quad(quad(b, px(1.), paper, Edges::all(px(2.)), Theme::drawing_accent(), BorderStyle::Solid));
+                }
+            }
+            if let Some(points) = &nodes {
+                for (i, p) in points.iter().enumerate() {
+                    if elbow_edit && i > 0 && i + 1 < points.len() { continue; }
+                    let b = Bounds::new(screen(*p) - point(px(4.), px(4.)), size(px(8.), px(8.)));
+                    window.paint_quad(quad(b, px(4.), if selected_points.contains(&i) { Theme::drawing_accent() } else { paper }, Edges::all(px(1.5)), Theme::drawing_accent(), BorderStyle::Solid));
+                }
+                for (n, pair) in points.windows(2).enumerate() {
+                    if elbow_edit && (n == 0 || n + 2 == points.len()) { continue; }
+                    let b = Bounds::new(screen(pair[0].lerp(pair[1], 0.5)) - point(px(3.), px(3.)), size(px(6.), px(6.)));
+                    window.paint_quad(quad(b, px(3.), paper, Edges::all(px(1.)), Theme::text_caption(), BorderStyle::Solid));
+                }
+            }
+            if let Some((start, end)) = box_select {
+                let b = Bounds::from_corners(screen(World::new(start.x.min(end.x), start.y.min(end.y))), screen(World::new(start.x.max(end.x), start.y.max(end.y))));
+                window.paint_quad(quad(b, px(0.), Theme::drawing_selection().opacity(0.25), Edges::all(px(1.)), Theme::drawing_accent(), BorderStyle::Solid));
             }
             if let Some(pending) = pending {
                 for d in &pending { paint(d, |p| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32)), zoom, dark, &images, window, cx); }
@@ -1215,17 +1494,41 @@ impl Render for DrawingEditor {
         let mut card = div().id("drawing-dialog").size_full().occlude().bg(Theme::bg_body())
             .relative().flex().flex_col().overflow_hidden().track_focus(&self.focus).key_context("DrawingEditor")
             .on_action(cx.listener(|d, _: &SaveDrawing, w, cx| { if !d.discard && !d.reset_confirmation { d.save(w, cx); } }))
-            .on_action(cx.listener(|d, _: &UndoDrawing, _, cx| { if !d.busy && !d.discard && !d.reset_confirmation { d.history(false, cx); } }))
-            .on_action(cx.listener(|d, _: &RedoDrawing, _, cx| { if !d.busy && !d.discard && !d.reset_confirmation { d.history(true, cx); } }))
+            .on_action(cx.listener(|d, _: &UndoDrawing, _, cx| { if !d.busy && !d.discard && !d.reset_confirmation && !d.view_only { d.history(false, cx); } }))
+            .on_action(cx.listener(|d, _: &RedoDrawing, _, cx| { if !d.busy && !d.discard && !d.reset_confirmation && !d.view_only { d.history(true, cx); } }))
+            .on_action(cx.listener(|d, _: &CopyDrawing, _, cx| { if d.editable() { d.copy_selection(false, cx); } }))
+            .on_action(cx.listener(|d, _: &CutDrawing, _, cx| { if d.editable() { d.copy_selection(true, cx); } }))
+            .on_action(cx.listener(|d, _: &PasteDrawing, w, cx| { if d.editable() { d.paste_selection(w, cx); } }))
+            .on_action(cx.listener(|d, _: &SelectDrawing, _, cx| { if d.editable() { d.select_all(cx); } }))
+            .on_action(cx.listener(|d, _: &DuplicateDrawing, _, cx| { if d.editable() { d.duplicate(cx); } }))
+            .on_action(cx.listener(|d, _: &GroupDrawing, _, cx| { if d.editable() { d.group_selection(false, cx); } }))
+            .on_action(cx.listener(|d, _: &UngroupDrawing, _, cx| { if d.editable() { d.group_selection(true, cx); } }))
+            .on_action(cx.listener(|d, _: &LinkDrawing, w, cx| { if d.editable() { d.open_link_editor(w, cx); } }))
+            .on_action(cx.listener(|d, _: &LockDrawing, _, cx| { if d.editable() { d.lock_selection(cx); } }))
+            .on_action(cx.listener(|d, _: &CopyDrawingStyle, _, cx| { if d.editable() { d.copy_style(cx); } }))
+            .on_action(cx.listener(|d, _: &PasteDrawingStyle, w, cx| { if d.editable() { d.paste_style(w, cx); } }))
+            .on_action(cx.listener(|d, _: &CopyDrawingPng, w, cx| { if d.editable() { d.copy_png(w, cx); } }))
+            .on_action(cx.listener(|d, _: &PasteDrawingText, w, cx| { if d.editable() { d.paste_text(w, cx); } }))
+            .on_action(cx.listener(|d, _: &FindDrawing, w, cx| { if d.editable() { d.start_find(w, cx); } }))
+            .on_action(cx.listener(|d, _: &EditDrawingPoints, w, cx| { if d.editable() { d.edit_points(w, cx); } }))
+            .on_action(cx.listener(|d, _: &OpenDrawing, w, cx| { if d.editable() && !d.dirty() && d.text_at.is_none() && d.edit_link.is_none() && d.edit_frame.is_none() && d.edit_property.is_none() && d.polyline.is_empty() { d.import(w, cx); } }))
+            .on_action(cx.listener(|d, _: &ExportDrawing, _, cx| { if d.editable() { d.panel = Some(Panel::Export); cx.notify(); } }))
             .on_key_down(cx.listener(Self::key))
+            .on_key_up(cx.listener(|d, e: &KeyUpEvent, _, cx| { if matches!(e.keystroke.key.as_str(), "space" | " ") { d.space = false; cx.notify(); } }))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(self.header(cx))
             .child(div().relative().flex_1().min_h_0().w_full()
             .child(div().id("drawing-surface").absolute().inset_0().overflow_hidden().bg(paper)
                 .cursor(match self.tool { Tool::Select => CursorStyle::Arrow, Tool::Pan => CursorStyle::OpenHand, Tool::Text => CursorStyle::IBeam, _ => CursorStyle::Crosshair })
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::down)).on_mouse_down(MouseButton::Middle, cx.listener(Self::down))
+                .on_mouse_down(MouseButton::Right, cx.listener(|d, e: &MouseDownEvent, w, cx| {
+                    if !d.editable() { return; }
+                    d.finish_field(w, cx); d.pointer = d.world(e.position);
+                    if let Some(i) = d.select_at(d.pointer) && !d.selection.contains(&i) { d.selection = d.expand_selection(&[i]); }
+                    d.panel = Some(Panel::Context); cx.stop_propagation(); cx.notify();
+                }))
                 .on_mouse_move(cx.listener(|d, e: &MouseMoveEvent, _, cx| {
-                    if e.pressed_button.is_none() { d.up(cx); } else { d.moved(e, cx); }
+                    if e.pressed_button.is_none() && d.polyline.is_empty() { d.up(cx); d.pointer = d.world(e.position); } else { d.moved(e, cx); }
                 }))
                 .on_mouse_up(MouseButton::Left, cx.listener(|d, _, _, cx| d.up(cx)))
                 .on_mouse_up_out(MouseButton::Left, cx.listener(|d, _, _, cx| d.up(cx)))

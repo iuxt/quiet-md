@@ -195,10 +195,10 @@ pub fn sync_container_text(scene: &mut Scene) {
         .collect();
 
     for (_, cid, font_size, line_height, text) in &jobs {
-        let Some(bounds) = scene.get(cid).map(element_bounds) else {
+        let Some(base) = scene.get(cid).map(Element::base) else {
             continue;
         };
-        let inner_w = (bounds.width() - pad * 2.0).max(*font_size);
+        let inner_w = (base.width - pad * 2.0).max(*font_size);
         let lines = crate::text::wrap_text(text, inner_w, *font_size)
             .split('\n')
             .count()
@@ -223,14 +223,18 @@ pub fn sync_container_text(scene: &mut Scene) {
                 t.base.y = mid.y - height / 2.0;
                 t.base.width = width;
                 t.base.height = height;
+                t.base.angle = 0.0;
                 t.text = text;
             }
             continue;
         }
 
-        let Some(bounds) = scene.get(&cid).map(element_bounds) else {
+        let Some(base) = scene.get(&cid).map(Element::base) else {
             continue;
         };
+        let bounds = Bounds::new(base.x, base.y, base.x + base.width, base.y + base.height);
+        let angle = base.angle;
+        let pivot = bounds.center();
         let inner_w = (bounds.width() - pad * 2.0).max(font_size);
         let wrapped = crate::text::wrap_text(&text, inner_w, font_size);
         let text_h = crate::text::text_height(&wrapped, font_size, line_height);
@@ -243,8 +247,10 @@ pub fn sync_container_text(scene: &mut Scene) {
                 crate::types::VerticalAlign::Middle => spare / 2.0,
                 crate::types::VerticalAlign::Bottom => spare - inset,
             };
-            t.base.x = x;
-            t.base.y = y;
+            let center = Point::new(x + inner_w / 2.0, y + text_h / 2.0).rotate(angle, pivot);
+            t.base.x = center.x - inner_w / 2.0;
+            t.base.y = center.y - text_h / 2.0;
+            t.base.angle = angle;
             t.base.width = inner_w;
             t.base.height = text_h;
             t.text = wrapped;
@@ -253,11 +259,14 @@ pub fn sync_container_text(scene: &mut Scene) {
 }
 
 fn linear_points(element: &Element) -> Option<Vec<Point>> {
-    match element {
+    let points = match element {
         Element::Arrow(a) => Some(a.linear.points.clone()),
         Element::Line(l) => Some(l.linear.points.clone()),
         _ => None,
-    }
+    }?;
+    let b = element.base();
+    let pivot = Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0);
+    Some(points.into_iter().map(|p| p.rotate(b.angle, pivot)).collect())
 }
 
 /// Point half way along a polyline, matching upstream's

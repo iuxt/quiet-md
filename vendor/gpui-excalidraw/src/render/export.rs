@@ -257,16 +257,24 @@ impl SvgExporter {
         }
 
         let lookup: HashMap<&str, &Element> = elements.iter().map(|e| (e.id(), *e)).collect();
-        for element in &elements {
+        for (n, element) in elements.iter().enumerate() {
             let base = element.base();
+            let clip = base.frame_id.as_deref().and_then(|id| lookup.get(id)).filter(|e| matches!(e, Element::Frame(_) | Element::MagicFrame(_)));
+            if let Some(frame) = clip {
+                let b = frame.base();
+                let _ = write!(svg, "<defs><clipPath id=\"quiet-frame-{n}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath></defs><g clip-path=\"url(#quiet-frame-{n})\">", b.x, b.y, b.width, b.height);
+            }
             if base.angle != 0.0 {
                 let _ = write!(svg, "<g transform=\"rotate({} {} {})\">", base.angle.to_degrees(), base.x + base.width / 2.0, base.y + base.height / 2.0);
             }
-            let drawables = render_element_with_lookup(element, &lookup);
-            for d in drawables {
-                write_drawable(&mut svg, &d, files, dark_mode);
+            if let Element::Image(image) = element && (image.crop.is_some() || image.scale != [1.0, 1.0]) {
+                write_transformed_image(&mut svg, image, files);
+            } else {
+                let drawables = render_element_with_lookup(element, &lookup);
+                for d in drawables { write_drawable(&mut svg, &d, files, dark_mode); }
             }
             if base.angle != 0.0 { svg.push_str("</g>"); }
+            if clip.is_some() { svg.push_str("</g>"); }
         }
 
         svg.push_str("</svg>");
@@ -308,6 +316,23 @@ impl SvgExporter {
         svg.push_str("</svg>");
         svg
     }
+}
+
+// quiet.md: use the original image metadata for crop and reflection. Rotation
+// is supplied by the same outer group as every other scene element.
+fn write_transformed_image(svg: &mut String, image: &crate::core::element::ImageElement, files: &BinaryFiles) {
+    let Some(data) = image.file_id.as_deref().and_then(|id| files.get(id)) else { return };
+    let b = &image.base;
+    let cx = b.x + b.width / 2.0;
+    let cy = b.y + b.height / 2.0;
+    let _ = write!(svg, "<g transform=\"translate({cx} {cy}) scale({} {}) translate({} {})\" opacity=\"{}\">", image.scale[0], image.scale[1], -cx, -cy, (b.opacity / 100.0).clamp(0.0, 1.0));
+    if let Some(crop) = &image.crop {
+        let _ = write!(svg, "<svg x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" viewBox=\"{} {} {} {}\" preserveAspectRatio=\"none\" overflow=\"hidden\"><image width=\"{}\" height=\"{}\" xlink:href=\"{}\"/></svg>",
+            b.x, b.y, b.width, b.height, crop.x, crop.y, crop.width, crop.height, crop.natural_width, crop.natural_height, escape_xml(&data.data_url));
+    } else {
+        let _ = write!(svg, "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" xlink:href=\"{}\"/>", b.x, b.y, b.width, b.height, escape_xml(&data.data_url));
+    }
+    svg.push_str("</g>");
 }
 
 fn write_drawable(svg: &mut String, d: &Drawable, files: &BinaryFiles, dark_mode: bool) {
