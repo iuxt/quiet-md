@@ -234,8 +234,7 @@ impl<'a> Writer<'a> {
             return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         }
         // The library's own image or attachment: a copy beside the file.
-        use crate::store::{ASSETS, LEGACY_ASSETS};
-        match self.opts.name.filter(|_| [ASSETS, LEGACY_ASSETS].iter().any(|dir| abs.starts_with(root.join(dir))) && abs.is_file()) {
+        match self.opts.name.filter(|_| abs.starts_with(root.join(crate::store::ASSETS)) && abs.is_file()) {
             Some(name) => self.beside(&abs, base, name, image),
             None => abs.to_string_lossy().into_owned(),
         }
@@ -837,10 +836,10 @@ mod tests {
             Block::new(BlockKind::Heading { level: 2, seq_auto: false }, RichText::plain("小节")),
             Block::new(BlockKind::Todo { done: true }, RichText::plain("done")),
             Block::new(BlockKind::Text, eq),
-            Block::new(BlockKind::Image { src_kind: "path".into(), src: ".assets/a b.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default()),
+            Block::new(BlockKind::Image { src_kind: "path".into(), src: "assets/a b.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default()),
         ];
         let md = clipboard(Some("T"), &blocks, &root);
-        let img = root.join(".assets/a b.png").to_string_lossy().replace(' ', "%20");
+        let img = root.join("assets/a b.png").to_string_lossy().replace(' ', "%20");
         assert!(md.starts_with("# T\n\n## 小节\n\n- [x] done\n\ne: $X_t$\n\n![]("), "{md}");
         assert!(md.contains(&img), "{md}");
         assert!(!clipboard(None, &blocks[..1], &root).contains("# T"));

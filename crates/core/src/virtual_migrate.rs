@@ -68,7 +68,7 @@ impl Store {
             std::fs::create_dir_all(crate::git::safe_path(&self.root, NOTES)?)?;
             for (_, to, text) in &outputs { write_atomic(&crate::git::safe_path(&self.root, to)?, text.as_bytes())?; }
             save_json(&self.root.join(FILE), &manifest)?;
-            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FIRST_VIRTUAL_FORMAT })?)?;
+            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
             Ok(())
         })();
         if let Err(error) = converted {
@@ -138,7 +138,7 @@ mod tests {
             let state = Migration { backup: ".quiet/before-virtual-6-test".into(), originals: vec!["Old/note.xml".into()],
                 destinations: vec![to.clone()], folders: vec!["Old".into()], marker: b"{\"format\":5}".to_vec(), manifest: None };
             save_json(&root.join(JOURNAL), &state).unwrap();
-            std::fs::write(root.join(".quiet/format.json"), if committed { b"{\"format\":7}" } else { b"{\"format\":5}" }).unwrap();
+            std::fs::write(root.join(".quiet/format.json"), if committed { b"{\"format\":8}" } else { b"{\"format\":5}" }).unwrap();
             recover(&root).unwrap(); assert!(!root.join(JOURNAL).exists());
             if committed {
                 assert!(!root.join("Old").exists()); assert_eq!(std::fs::read_to_string(root.join(to)).unwrap(), body);

@@ -103,7 +103,7 @@ impl LibraryRepo {
             if format >= FORMAT && before.as_ref().map(|t| self.tree_format(t)).transpose()?.unwrap_or_default() < FORMAT {
                 let attr = tree.get_path(Path::new(".gitattributes")).context("请同时暂存 Git LFS 规则")?;
                 let attr = self.repo.find_blob(attr.id())?;
-                ensure!(std::str::from_utf8(attr.content())?.lines().any(|line| line == VISIBLE_ASSET_ATTRIBUTE), "请同时暂存 Git LFS 规则");
+                ensure!(std::str::from_utf8(attr.content())?.lines().any(|line| line == ASSET_ATTRIBUTE), "请同时暂存 Git LFS 规则");
             }
             for pointer in self.pointers(None, &tree)? { lfs::Lfs::new(self.repo.path()).read(&pointer)?; }
         }
@@ -132,7 +132,7 @@ impl LibraryRepo {
         if let Ok(entry) = index.get_path(Path::new(path)) {
             ensure!(entry.filemode() == 0o100644, "Git 文档库不允许符号链接或可执行文件");
             let blob = self.repo.find_blob(entry.id())?;
-            let bytes = if is_asset_path(path, self.tree_format(&index)?) {
+            let bytes = if is_asset_path(path) {
                 lfs::Lfs::new(self.repo.path()).read(&Pointer::parse(blob.content())?.context("图片缺少 LFS 指针")?)?
             } else { blob.content().to_vec() };
             if path == FORMAT_PATH {

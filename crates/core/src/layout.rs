@@ -94,7 +94,7 @@ pub(super) struct Scan {
 }
 
 /// Walk the library: `.md` and `.xml` files and the folders holding them;
-/// names starting with `.` (`.quiet`, `.assets`, `.git` …) are not the user's notes.
+/// Skip hidden entries and the library's resource directory.
 pub(super) fn scan(root: &Path) -> Scan {
     fn walk(root: &Path, rel: &str, out: &mut Scan) {
         let Ok(rd) = std::fs::read_dir(if rel.is_empty() { root.to_path_buf() } else { root.join(rel) }) else { out.partial = true; return };
@@ -105,7 +105,7 @@ pub(super) fn scan(root: &Path) -> Scan {
                 if real.ends_with(".md") || real.ends_with(".xml") { out.pending.push(join_rel(rel, real)); }
                 continue;
             }
-            if name.starts_with('.') { continue; }
+            if name.starts_with('.') || (rel.is_empty() && name == super::ASSETS) { continue; }
             let Ok(kind) = e.file_type() else { continue };
             // Symbolic links are not followed: a link to a parent would never end.
             let dir = kind.is_dir();
@@ -149,30 +149,6 @@ pub(super) fn each_inline(doc: &mut Document, f: &mut dyn FnMut(&mut crate::mode
     walk(&mut doc.blocks, f);
 }
 
-/// The library's images and attachments moved from `assets/` to `.assets/`:
-/// `="assets/…"` inside a tag of a DocxXML file.
-pub(super) fn hide_assets_xml(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut in_tag = false;
-    let mut rest = text;
-    while let Some(c) = rest.chars().next() {
-        if in_tag && rest.starts_with("=\"assets/") {
-            out.push_str("=\".assets/");
-            rest = &rest["=\"assets/".len()..];
-            continue;
-        }
-        match c { '<' => in_tag = true, '>' => in_tag = false, _ => {} }
-        out.push(c);
-        rest = &rest[c.len_utf8()..];
-    }
-    out
-}
-
-/// The same for a Markdown file: `](assets/…` and `src="assets/…"`.
-pub(super) fn hide_assets_md(text: &str) -> String {
-    text.replace("](assets/", "](.assets/").replace("src=\"assets/", "src=\".assets/").replace("](<assets/", "](<.assets/")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,11 +190,5 @@ mod tests {
         assert_eq!(resolve("", "../a.xml"), None);
         assert_eq!(resolve("a", "https://x/y"), None);
         assert_eq!(resolve("a", "./b/../c.xml#x"), Some("a/c.xml".into()));
-    }
-
-    #[test]
-    fn assets_hidden_only_in_tags() {
-        let x = "<title cover=\"assets/c.png\">T</title>\n<p>=\"assets/x\"</p>\n<img src=\"assets/i.png\"/>";
-        assert_eq!(hide_assets_xml(x), "<title cover=\".assets/c.png\">T</title>\n<p>=\"assets/x\"</p>\n<img src=\".assets/i.png\"/>");
     }
 }

@@ -2,7 +2,7 @@
 """Synthetic UI/resource stress suite (macOS, release devtools, Pillow).
 
 python3 tools/perf/stress_suite.py /tmp/quiet-stress [--cases idle,million]
-Each case runs sequentially, with its own disposable FORMAT 7 library.
+Each case runs sequentially, with its own disposable FORMAT 8 library.
 No system clipboard, focus activation, network or real notes are used.
 """
 import argparse
@@ -24,7 +24,7 @@ OPEN_MIXED = OPEN_FIRST + "key down\nkey end\n"
 def library(root, docs):
     (root / ".quiet").mkdir(parents=True)
     (root / "notes").mkdir()
-    (root / ".quiet/format.json").write_text('{"format":7}')
+    (root / ".quiet/format.json").write_text('{"format":8}')
     (root / ".quiet/preferences.json").write_text(json.dumps({
         "english": True, "appearance": "light", "theme": "craft", "quick_hotkey": False,
     }))
@@ -94,7 +94,7 @@ def main():
     cases["windows"] = (many_docs, PRELUDE + "phase idle-before\nidle 15000\nphase churn-20\nchurn-windows 20\n"
                        "phase idle-after-20\nidle 20000\nphase churn-20-more\nchurn-windows 20\nphase idle-after-40\nidle 20000\n", 240)
     docs = [("Photo notes", "<p>Text only.</p>", "xml")]
-    docs += [(f"Photo {i:02d}", f'<p>Photo test {i}</p><img src=".assets/photos/{i}.jpg" width="600" height="450"/><p>After image.</p>', "xml") for i in range(24)]
+    docs += [(f"Photo {i:02d}", f'<p>Photo test {i}</p><img src="assets/photos/{i}.jpg" width="600" height="450"/><p>After image.</p>', "xml") for i in range(24)]
     steps = PRELUDE + "phase photo-home\nclick 70 65\nwait 6000\n"
     for cycle in range(3):
         steps += f"phase photo-cycle-{cycle}\n"
@@ -120,7 +120,7 @@ def main():
         library(source, docs)
         if name == "photos":
             from PIL import Image
-            photos = source / ".assets/photos"
+            photos = source / "assets/photos"
             photos.mkdir(parents=True)
             image = Image.open(HERE.parents[1] / "shared-mock/guides/assets/sample-photo.jpg").convert("RGB").resize((4032, 3024))
             for i in range(24):

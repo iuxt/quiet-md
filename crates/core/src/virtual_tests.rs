@@ -58,7 +58,7 @@ fn trash_folders_open_documents_and_history_without_restoring_or_writing_bodies(
     let folder = s.create_folder("Deleted folder", None).unwrap(); let nested = s.create_folder("Nested", Some(&folder)).unwrap();
     let xml = s.create_from_in(&doc("Stored title"), Some(&nested)).unwrap();
     s.rename(&xml, "Manifest title").unwrap();
-    let md = s.create_markdown_in(&doc("Markdown title"), "# Heading\n\n![Image](../.assets/picture.png)\n", Some(&nested)).unwrap();
+    let md = s.create_markdown_in(&doc("Markdown title"), "# Heading\n\n![Image](../assets/picture.png)\n", Some(&nested)).unwrap();
     let ids = [&xml, &md];
     let bodies: Vec<_> = ids.iter().map(|id| (s.file_path(id).unwrap(), std::fs::read(s.file_path(id).unwrap()).unwrap())).collect();
     for id in ids { assert!(s.save_version_now(id).unwrap()); }
@@ -72,7 +72,7 @@ fn trash_folders_open_documents_and_history_without_restoring_or_writing_bodies(
     assert_eq!(reopened.load_trash(&xml).unwrap().title.text, "Manifest title");
     let markdown = reopened.load_trash(&md).unwrap();
     assert_eq!(markdown.title.text, "Markdown title"); assert!(markdown.plain_text().contains("Heading"));
-    assert!(Path::new(&markdown.asset_sources()[0]).ends_with(".assets/picture.png"));
+    assert!(Path::new(&markdown.asset_sources()[0]).ends_with("assets/picture.png"));
     for id in [&xml, &md] {
         let versions = reopened.versions(id); assert_eq!(versions.len(), 1);
         let name = &versions[0].name;
@@ -127,15 +127,15 @@ fn legacy_physical_library_migrates_titles_links_images_with_backup() {
     std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
     let mut s = lib.open(); let root = s.create_folder("Physical", None).unwrap(); let nested = s.create_folder("Child", Some(&root)).unwrap();
     let id = s.create_from_in(&doc("XML"), Some(&nested)).unwrap();
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap(); std::fs::write(lib.0.join(".assets/image.png"), b"image bytes").unwrap();
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap(); std::fs::write(lib.0.join("assets/image.png"), b"image bytes").unwrap();
     let md = s.create_markdown_in(&doc("Markdown"), "", Some(&root)).unwrap();
-    let source = format!("---\nkeep: true\n---\n[XML](Child/{id}.xml#part)\n\n![image](../.assets/image.png)\n\n`[code](Child/{id}.xml)`\n\n[ref][n]\n\n[n]: Child/{id}.xml\n");
+    let source = format!("---\nkeep: true\n---\n[XML](Child/{id}.xml#part)\n\n![image](assets/image.png)\n\n`[code](Child/{id}.xml)`\n\n[ref][n]\n\n[n]: Child/{id}.xml\n");
     std::fs::write(s.file_path(&md).unwrap(), &source).unwrap();
     let original_path = s.file_path(&id).unwrap(); let original = std::fs::read(&original_path).unwrap();
     s.use_virtual_folders().unwrap(); assert!(s.virtual_folders()); assert!(!original_path.exists());
     assert_eq!(std::fs::read(s.file_path(&id).unwrap()).unwrap(), original); assert_eq!(s.index[&id].parent.as_deref(), Some(nested.as_str()));
     let text = std::fs::read_to_string(s.file_path(&md).unwrap()).unwrap();
-    assert!(text.contains(&format!("[XML]({id}.xml#part)"))); assert!(text.contains("![image](../.assets/image.png)"));
+    assert!(text.contains(&format!("[XML]({id}.xml#part)"))); assert!(text.contains("![image](../assets/image.png)"));
     assert!(text.contains(&format!("`[code](Child/{id}.xml)`"))); assert!(text.contains(&format!("[n]: {id}.xml")));
     assert!(text.starts_with("---\nkeep: true\n---\n")); assert_eq!(s.load(&md).unwrap().title.text, "Markdown");
     let backup = std::fs::read_dir(lib.0.join(".quiet")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("before-virtual-6-")).unwrap().path();

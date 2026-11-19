@@ -328,13 +328,11 @@ struct Batch { lock: Option<WriteLock>, depth: u32, index: std::cell::Cell<bool>
 /// fixed notes/<UUID> body paths regardless of Git. 7: trash changes only
 /// metadata; deleted bodies keep their notes/ paths. 8: visible assets/.
 pub const FORMAT: u32 = 8;
-const FIRST_VIRTUAL_FORMAT: u32 = 7;
-pub(crate) fn virtual_format(format: u32) -> bool { (FIRST_VIRTUAL_FORMAT..=FORMAT).contains(&format) }
+pub(crate) fn virtual_format(format: u32) -> bool { format == FORMAT }
 /// The hidden folder holding the library's own data.
 pub const INTERNAL: &str = ".quiet";
 /// The folder holding pasted and inserted images and attachments.
 pub const ASSETS: &str = "assets";
-pub const LEGACY_ASSETS: &str = ".assets";
 
 #[path = "folders.rs"]
 mod folders;
@@ -527,22 +525,17 @@ pub fn image_path_in(root: &Path, src: &str) -> Option<PathBuf> {
     (!src.is_empty() && !src.contains(':') && src.contains('/')).then(|| root.join(p))
 }
 
-/// Images and attachments are kept by absolute path (pasted ones too), so one
-/// that is gone may just have moved with the library: `assets/` became
-/// `.assets/` in the move to real folders (#213), or the library itself was
-/// moved. The same file in this library's images folder, when it is there.
+/// Find a missing absolute asset path after the library has moved.
 fn moved_asset(root: &Path, p: &Path) -> Option<PathBuf> {
     use std::path::Component;
     if p.exists() { return None; }
     let parts: Vec<Component> = p.components().collect();
     // The last folder so named that leads to a file; a file may be named `assets` itself.
-    (0..parts.len()).rev().filter(|&i| matches!(parts[i].as_os_str().to_str(), Some(ASSETS | LEGACY_ASSETS))).find_map(|i| {
+    (0..parts.len()).rev().filter(|&i| parts[i].as_os_str() == ASSETS).find_map(|i| {
         let rest = &parts[i + 1..];
         if rest.is_empty() || !rest.iter().all(|c| matches!(c, Component::Normal(_))) { return None; }
-        let name = parts[i].as_os_str();
-        let other = if name == ASSETS { LEGACY_ASSETS } else { ASSETS };
-        [root.join(name), root.join(other)].into_iter()
-            .map(|dir| dir.join(rest.iter().collect::<PathBuf>())).find(|q| q.exists())
+        let path = root.join(ASSETS).join(rest.iter().collect::<PathBuf>());
+        path.exists().then_some(path)
     })
 }
 
@@ -650,9 +643,7 @@ impl Store {
     }
 
     /// Where new images and attachments go.
-    pub fn assets_in(root: &Path) -> PathBuf {
-        root.join(if Self::format_at(root).is_some_and(|format| format < FIRST_VIRTUAL_FORMAT) { LEGACY_ASSETS } else { ASSETS })
-    }
+    pub fn assets_in(root: &Path) -> PathBuf { root.join(ASSETS) }
 
     /// What the library's files are, without reading them: changes when a
     /// document or folder is added, removed or renamed (by hand, or a model
@@ -750,7 +741,11 @@ impl Store {
     /// Open the library at `root` in the layout it has; never moves it.
     pub fn open_at(root: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&root)?;
-        anyhow::ensure!(reread::<FormatMarker>(&root.join(".quiet/format.json")).is_none_or(|m| m.format != 6), "请先手动处理旧版回收站并更新文档库格式标记");
+        match Self::format_at(&root) {
+            Some(6) => anyhow::bail!("请先手动处理旧版回收站并更新文档库格式标记"),
+            Some(7) => anyhow::bail!("文档库格式 7 已不受支持"),
+            _ => {}
+        }
         virtual_migrate::recover(&root)?;
         let mut warnings = vec![];
         let internal = root.join(INTERNAL);
@@ -1041,6 +1036,7 @@ impl Store {
         anyhow::ensure!(!self.flat || !self.root.join(INTERNAL).join("format.json").exists(), "文档库已升级到新格式，请重新打开 Quiet.md");
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(self.internal().join("format.json"))?)?;
         anyhow::ensure!(marker.format != 6, "请先手动处理旧版回收站并更新文档库格式标记");
+        anyhow::ensure!(marker.format != 7, "文档库格式 7 已不受支持");
         anyhow::ensure!(marker.format <= FORMAT, "这个文档库由更新版本的 Quiet.md 创建，请升级后再打开");
         // An unreadable index is not judged here (that is `open`'s job): the
         // version in memory is written back unchanged.
@@ -1130,6 +1126,7 @@ impl Store {
             let name = match ext { Some(e) => format!("{stem}.{e}"), None => stem };
             let rel = join_rel(dir, &name);
             let low = rel.to_lowercase();
+            if low == ASSETS { continue; }
             if own_rel.as_deref() == Some(low.as_str()) { return name; }
             let path = self.abs(&rel);
             let on_disk = path.symlink_metadata().is_ok() || layout::placeholder(&path).is_some_and(|p| p.exists());
@@ -1151,18 +1148,8 @@ impl Store {
     fn require_uuid_format(&self) -> Result<()> {
         let path = self.internal().join("format.json");
         let marker: FormatMarker = serde_json::from_slice(&std::fs::read(&path)?)?;
-        let required = if self.virtual_folders() { FIRST_VIRTUAL_FORMAT } else { 5 };
+        let required = if self.virtual_folders() { FORMAT } else { 5 };
         if marker.format < required { write_atomic(&path, &serde_json::to_vec_pretty(&FormatMarker { format: required })?)?; }
-        Ok(())
-    }
-
-    /// Publish the format change with the first note save that can refer to new assets.
-    /// The caller holds the library write lock, and old asset paths stay valid.
-    fn require_asset_format(&self) -> Result<()> {
-        if Self::format_at(&self.root) == Some(FIRST_VIRTUAL_FORMAT) && self.root.join(ASSETS).is_dir() {
-            if self.git_enabled() { crate::git::write_rules(&self.root, FORMAT)?; }
-            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
-        }
         Ok(())
     }
 
@@ -1572,7 +1559,6 @@ impl Store {
         // formatting is the user's.
         let same = disk.as_deref().is_some_and(|d| d == xml || self.is_markdown(id) && self.parse_doc(id, d).is_ok_and(|was| self.serialize_doc(id, &was, Some(d)) == xml));
         if !same {
-            if self.virtual_folders() && !self.index.get(id).is_some_and(Meta::local) { self.require_asset_format()?; }
             // Images and attachments first, so the file never links to a missing one.
             if let Some(base) = self.base(id) {
                 for (src, rel) in &copies {
@@ -1648,7 +1634,6 @@ impl Store {
         let id = uuid::Uuid::new_v4().to_string();
         let lock = self.begin_write()?;
         self.validate_folder(None, parent)?;
-        if self.virtual_folders() { self.require_asset_format()?; }
         let t = now();
         if self.flat {
             self.require_markdown_format()?;
@@ -2550,9 +2535,9 @@ mod tests {
         let file = dir.join("Plan.md");
         std::fs::write(&file, "text\n").unwrap();
         let mut s = lib.open();
-        std::fs::create_dir_all(lib.0.join(LEGACY_ASSETS)).unwrap();
-        let pasted = lib.0.join(".assets/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
-        let picked = lib.0.join(".assets/1a2b3c4d-截图说明.png");
+        std::fs::create_dir_all(lib.0.join(ASSETS)).unwrap();
+        let pasted = lib.0.join("assets/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
+        let picked = lib.0.join("assets/1a2b3c4d-截图说明.png");
         std::fs::write(&pasted, b"p").unwrap();
         std::fs::write(&picked, b"q").unwrap();
         // Something already there keeps its name.
@@ -3129,7 +3114,7 @@ mod tests {
         // Text and titles.
         for (id, (title, body)) in &before {
             let d = s.load(id).unwrap();
-            assert_eq!(d.plain_text(), body.replace("](assets/", "](.assets/"), "{title}");
+            assert_eq!(d.plain_text(), *body, "{title}");
             if id != &md { assert_eq!(d.title.text, *title); }
         }
         assert_eq!(by[md.as_str()].title, "随手记");
@@ -3158,10 +3143,9 @@ mod tests {
         assert!(text.contains("href=\"../../../索引.xml\"") && text.contains("href=\"../../周报 2.xml\""), "{text}");
         // No id is written in any document.
         for id in before.keys() { for e in &list { if let Some(p) = s.file_path(&e.id) && !e.meta.local() { assert!(!std::fs::read_to_string(p).unwrap().contains(id.as_str())); } } }
-        // Images: `.assets/`, the sources with them.
-        assert!(lib.0.join(".assets/p.png").is_file() && !lib.0.join("assets").exists());
-        assert_eq!(std::fs::read_to_string(s.abs("同名 2/图.xml")).unwrap(), "<title>图</title>\n<img src=\".assets/p.png\"/>\n<p>=\"assets/x\"</p>\n");
-        assert_eq!(std::fs::read_to_string(s.abs("工作/子/深/随手记.md")).unwrap(), "看图 ![](.assets/p.png)\n");
+        assert!(lib.0.join("assets/p.png").is_file());
+        assert_eq!(std::fs::read_to_string(s.abs("同名 2/图.xml")).unwrap(), "<title>图</title>\n<img src=\"assets/p.png\"/>\n<p>=\"assets/x\"</p>\n");
+        assert_eq!(std::fs::read_to_string(s.abs("工作/子/深/随手记.md")).unwrap(), "看图 ![](assets/p.png)\n");
         // Attached and local information.
         assert!(by[w1.as_str()].meta.pinned);
         assert_eq!(by[w1.as_str()].meta.opened, 77);
@@ -3176,7 +3160,7 @@ mod tests {
         // What the user sees: their folders and notes only.
         let mut top_names: Vec<String> = std::fs::read_dir(&lib.0).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         top_names.sort();
-        assert_eq!(top_names, [".assets", ".quiet", "CON_.xml", "a／b", "同名", "同名 2", "周报.xml", "孤儿", "工作", "索引.xml"]);
+        assert_eq!(top_names, [".quiet", "CON_.xml", "assets", "a／b", "同名", "同名 2", "周报.xml", "孤儿", "工作", "索引.xml"]);
         // The old layout, whole, as a backup.
         let backup = lib.0.join(".quiet").join(migrate::BACKUP);
         for id in before.keys() { assert!(backup.join("docs").join(format!("{id}.xml")).is_file() || backup.join("docs").join(format!("{id}.md")).is_file()); }
@@ -3415,10 +3399,7 @@ mod tests {
         assert_eq!(s.settings().window_size, Some([1., 2.]));
     }
 
-    /// Pasted images and attachments kept their absolute path in `assets/`;
-    /// after the move to real folders (`.assets/`), or after the library
-    /// itself moved, they are found where they are now (#213). Nothing
-    /// outside the library's images folder is reached that way.
+    /// Absolute paths to assets still resolve when the library moves.
     #[test]
     fn absolute_asset_paths_survive_the_move() {
         use crate::model::{Block, BlockKind, FileBlock, FileView, RichText};
@@ -3432,7 +3413,7 @@ mod tests {
             Block::new(BlockKind::File(FileBlock { src_kind: "path".into(), src: abs("assets/files/1234/报告.pdf"), name: "报告.pdf".into(), view: FileView::Card }), RichText::default()),
             image(moved.clone()),
             image(abs("assets/gone.png")),
-            // Only through `.assets/x/` once moved: the fallback must not follow it.
+            // The fallback must not follow a path outside the asset directory.
             image(std::env::temp_dir().join("elsewhere/Quiet.md/assets/x/../../secret.png").to_string_lossy().into_owned()),
         ], ..Default::default() };
         let id = old.put(&d, Meta::default());
@@ -3442,11 +3423,10 @@ mod tests {
         std::fs::write(lib.0.join("assets/files/1234/报告.pdf"), b"pdf").unwrap();
         std::fs::write(lib.0.join("secret.png"), b"s").unwrap();
         let s = lib.migrated();
-        assert!(!lib.0.join("assets").exists());
-        std::fs::create_dir_all(lib.0.join(".assets/x")).unwrap();
+        std::fs::create_dir_all(lib.0.join("assets/x")).unwrap();
         let srcs = s.load(&id).unwrap().asset_sources();
         let found: Vec<Option<PathBuf>> = srcs.iter().map(|src| image_path_in(&lib.0, src).filter(|p| p.is_file())).collect();
-        assert_eq!(found, [Some(lib.0.join(".assets/p.png")), Some(lib.0.join(".assets/files/1234/报告.pdf")), Some(lib.0.join(".assets/p.png")), None, None]);
+        assert_eq!(found, [Some(lib.0.join("assets/p.png")), Some(lib.0.join("assets/files/1234/报告.pdf")), Some(lib.0.join("assets/p.png")), None, None]);
         assert!(export_path_in(&lib.0, &srcs[0]).is_some() && export_path_in(&lib.0, &srcs[1]).is_some());
         assert!(export_path_in(&lib.0, &srcs[3]).is_none() && export_path_in(&lib.0, &srcs[4]).is_none());
         // A path that still exists is used as it is.
@@ -3484,7 +3464,7 @@ mod tests {
         assert_eq!(report.changed, 2);
         assert!(report.kept.join("夹/甲改.xml").is_file() && report.kept.join(format!("{new}.xml")).is_file());
         assert_eq!(std::fs::read(lib.0.join("docs").join(format!("{a}.xml"))).unwrap(), original);
-        assert!(lib.0.join("assets/p.png").is_file() && !lib.0.join(".assets").exists());
+        assert!(lib.0.join("assets/p.png").is_file());
         assert_eq!(std::fs::read(lib.0.join("preferences.json")).unwrap(), b"{\"new\":1}");
         assert!(!lib.0.join("夹").exists() && !lib.0.join(".quiet/format.json").exists());
         assert_eq!(Store::migration_state(&lib.0), MigrationState::NeedsConsent(ConsentReason::Restored));

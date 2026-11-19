@@ -166,22 +166,22 @@ pub(super) fn restore(root: &Path) -> Result<RestoreReport> {
     std::fs::create_dir_all(&kept)?;
     // What the new layout holds now: changed since the move?
     let mut changed = 0;
-    fn count(dir: &Path, since: u128, n: &mut usize) {
+    fn count(dir: &Path, assets: &Path, since: u128, n: &mut usize) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             let p = e.path();
-            if e.file_name().to_string_lossy().starts_with('.') { continue; }
-            if p.is_dir() { count(&p, since, n); continue; }
+            if p == assets || e.file_name().to_string_lossy().starts_with('.') { continue; }
+            if p.is_dir() { count(&p, assets, since, n); continue; }
             let ext = p.extension().and_then(|x| x.to_str());
             let t = e.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis());
             if matches!(ext, Some("xml" | "md")) && t > since { *n += 1; }
         }
     }
-    count(root, since, &mut changed);
+    count(root, &Store::assets_in(root), since, &mut changed);
     // Set aside: the notes and folders, then the new layout's own files.
     for e in std::fs::read_dir(root)?.flatten() {
         let n = e.file_name().to_string_lossy().into_owned();
-        if n.starts_with('.') { continue; }
+        if n.starts_with('.') || n == ASSETS { continue; }
         std::fs::rename(e.path(), kept.join(&n))?;
     }
     let inner = kept.join(INTERNAL);
@@ -204,7 +204,6 @@ pub(super) fn restore(root: &Path) -> Result<RestoreReport> {
         if to.is_dir() { let _ = std::fs::remove_dir_all(&to); } else if to.exists() { let _ = std::fs::remove_file(&to); }
         std::fs::rename(&from, &to)?;
     }
-    if root.join(LEGACY_ASSETS).is_dir() && !root.join("assets").exists() { std::fs::rename(root.join(LEGACY_ASSETS), root.join("assets"))?; }
     let _ = std::fs::remove_dir(&backup);
     let _ = std::fs::remove_file(internal.join(BACKUP_INFO));
     write_atomic(&internal.join(RESTORED), &serde_json::to_vec_pretty(&BackupInfo { created: now(), launches: 0, done_ms: now_ms() })?)?;
@@ -224,8 +223,6 @@ struct Plan {
     dirs: Vec<String>,
     /// Entries made in `.quiet/`.
     internal: Vec<String>,
-    /// `assets/` renamed `.assets/`.
-    assets: bool,
 }
 
 
@@ -279,7 +276,6 @@ fn undo(root: &Path, plan: &Plan) {
         let p = internal.join(name);
         let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
     }
-    if plan.assets && !root.join("assets").exists() && root.join(LEGACY_ASSETS).is_dir() { let _ = std::fs::rename(root.join(LEGACY_ASSETS), root.join("assets")); }
 }
 
 /// Set the old layout aside, whole, in `.quiet/before-folders-4/`.
@@ -344,6 +340,7 @@ impl Names {
         for n in 1.. {
             let stem = if n == 1 { base.to_string() } else { format!("{base} {n}") };
             let name = match ext { Some(e) => format!("{stem}.{e}"), None => stem };
+            if dir.is_empty() && name.eq_ignore_ascii_case(ASSETS) { continue; }
             if used.insert(name.to_lowercase()) { return name; }
         }
         unreachable!()
@@ -374,9 +371,6 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
         let created = index.get(id).map(|m| m.created).or_else(|| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()));
         (created.unwrap_or(0), id.clone())
     });
-    let assets = root.join("assets");
-    let hide = !(assets.exists() && root.join(LEGACY_ASSETS).exists());
-    if !hide { warnings.push(format!("文档库里已有 {LEGACY_ASSETS} 文件夹，图片仍保留在 assets 中")); }
     // Folders, outermost first, each named after its title in its parent.
     let mut names = Names(HashMap::new());
     let mut rels: HashMap<String, String> = HashMap::new();
@@ -413,22 +407,19 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     let target: HashMap<&str, &str> = written.iter().map(|(id, rel, _, _)| (id.as_str(), rel.as_str())).collect();
     let mut contents = vec![];
     for (id, rel, meta, text) in &written {
-        let out = if meta.markdown { if hide { layout::hide_assets_md(text) } else { text.clone() } } else {
-            let mut out = text.clone();
-            if text.contains("doc-id=") {
-                let before = docxml::parse(text).with_context(|| format!("无法读取文档 {id}"))?;
-                let mut doc = before.clone();
-                let dir = parent_rel(rel);
-                layout::each_inline(&mut doc, &mut |i| {
-                    let Some(l) = i.doc_link().cloned() else { return };
-                    if let Some(to) = target.get(l.id.as_str()) { i.xml = docxml::doc_link_href_xml(&layout::relative(dir, to), &l.title); }
-                });
-                out = docxml::serialize(&doc);
-                let again = docxml::parse(&out)?;
-                anyhow::ensure!(again.plain_text() == before.plain_text() && again.title.text == before.title.text, "文档 {id} 改写链接后内容不一致");
-            }
-            if hide { layout::hide_assets_xml(&out) } else { out }
-        };
+        let out = if !meta.markdown && text.contains("doc-id=") {
+            let before = docxml::parse(text).with_context(|| format!("无法读取文档 {id}"))?;
+            let mut doc = before.clone();
+            let dir = parent_rel(rel);
+            layout::each_inline(&mut doc, &mut |i| {
+                let Some(l) = i.doc_link().cloned() else { return };
+                if let Some(to) = target.get(l.id.as_str()) { i.xml = docxml::doc_link_href_xml(&layout::relative(dir, to), &l.title); }
+            });
+            let out = docxml::serialize(&doc);
+            let again = docxml::parse(&out)?;
+            anyhow::ensure!(again.plain_text() == before.plain_text() && again.title.text == before.title.text, "文档 {id} 改写链接后内容不一致");
+            out
+        } else { text.clone() };
         contents.push((rel.clone(), out));
     }
     // Everything that will be written, recorded before the first write.
@@ -438,7 +429,6 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     plan.files = contents.iter().map(|(r, _)| r.clone()).collect();
     plan.internal = ["index.json", "trash", "settings.json", "preferences.json", "shortcuts.json", "emoji.json", "themes"].iter()
         .filter(|n| !internal.join(n).exists()).map(|n| n.to_string()).collect();
-    plan.assets = hide && assets.is_dir();
     write_atomic(&internal.join(PLAN), &serde_json::to_vec_pretty(plan)?)?;
     let abs = |rel: &str| rel.split('/').fold(root.to_path_buf(), |p, s| p.join(s));
     for d in &dirs { std::fs::create_dir(abs(d)).with_context(|| format!("无法创建文件夹 {d}"))?; }
@@ -457,9 +447,8 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     if let Ok(rd) = std::fs::read_dir(root.join("trash")) {
         for e in rd {
             let p = e?.path();
-            let md = match p.extension().and_then(|s| s.to_str()) { Some("xml") => false, Some("md") => true, _ => continue };
+            if !matches!(p.extension().and_then(|s| s.to_str()), Some("xml" | "md")) { continue }
             let text = std::fs::read_to_string(&p)?;
-            let text = if !hide { text } else if md { layout::hide_assets_md(&text) } else { layout::hide_assets_xml(&text) };
             write_atomic(&trash_dir.join(p.file_name().unwrap()), text.as_bytes())?;
         }
     }
@@ -482,7 +471,6 @@ fn migrate(root: &Path, format: u32, plan: &mut Plan, warnings: &mut Vec<String>
     if let Some(s) = reread::<Settings>(&root.join("settings.json")) { local.window_size = s.window_size; local.quick_note_size = s.quick_note_size; }
     std::fs::create_dir_all(local_path.parent().unwrap())?;
     write_atomic(&local_path, &serde_json::to_vec_pretty(&local)?)?;
-    if plan.assets { std::fs::rename(&assets, root.join(LEGACY_ASSETS))?; }
     write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: 5 })?)?;
     Ok((written.len(), folders.len()))
 }

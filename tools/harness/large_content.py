@@ -9,7 +9,7 @@ here=Path(__file__).resolve().parent
 root=Path(tempfile.mkdtemp(prefix='quiet-large-content-'))
 source=root/'source';(source/'.quiet').mkdir(parents=True,exist_ok=True);(source/'notes').mkdir(exist_ok=True)
 id=str(uuid.uuid5(uuid.NAMESPACE_URL,'quiet-large-content-regression'))
-(source/'.quiet/format.json').write_text('{"format":7}')
+(source/'.quiet/format.json').write_text('{"format":8}')
 (source/'.quiet/preferences.json').write_text(json.dumps({'english':True,'appearance':'light','theme':'craft','quick_hotkey':False}))
 rows=[]
 for r in range(220):

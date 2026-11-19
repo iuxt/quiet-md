@@ -9,7 +9,7 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
 
-文档库采用 FORMAT 8：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。新图片和附件存入库根的 `assets/`，旧 `.assets/` 引用继续有效。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
+文档库采用 FORMAT 8：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。图片和附件存入库根的 `assets/`。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
 
 Git 是可选功能。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。旧 FORMAT 5 的路径索引 Git 历史仍可读取。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行），仓库与网络操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
 

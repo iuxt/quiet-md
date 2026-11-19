@@ -1,4 +1,4 @@
-//! FORMAT 7: virtual folders, one shared manifest, fixed notes/<UUID> files.
+//! FORMAT 8: virtual folders, one shared manifest, fixed notes/<UUID> files.
 use super::*;
 use crate::manifest::{Deleted, Manifest, FILE, NOTES};
 

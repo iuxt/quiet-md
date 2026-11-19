@@ -34,8 +34,7 @@ impl LibraryRepo {
         };
         let title = metadata(&after).or_else(|| before.as_ref().and_then(metadata)).unwrap_or_else(|| path.to_string());
         // LFS blobs are text pointers, but assets are never shown as text documents.
-        let format = self.tree_format(&after)?.max(before.as_ref().map(|t| self.tree_format(t)).transpose()?.unwrap_or_default());
-        let binary = is_asset_path(path, format) || old.contains(&0) || new.contains(&0)
+        let binary = is_asset_path(path) || old.contains(&0) || new.contains(&0)
             || std::str::from_utf8(&old).is_err() || std::str::from_utf8(&new).is_err();
         if binary { return Ok(ChangePreview { title, lines: vec![], source: None, formatted: None, binary, truncated: false, source_truncated: false }); }
         let old = std::str::from_utf8(&old)?; let new = std::str::from_utf8(&new)?;

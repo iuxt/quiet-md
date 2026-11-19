@@ -169,7 +169,9 @@ pub(super) fn rebase_markdown_links(text: &str, dir: &str, to_dir: &str, paths: 
         let suffix = dest.find(['#', '?']).unwrap_or(dest.len());
         let decoded = percent_encoding::percent_decode_str(&dest[..suffix]).decode_utf8_lossy();
         if decoded.contains(':') { continue }
-        let resolved = if moving && decoded.starts_with(".assets/") { Some(decoded.to_string()) } else { layout::resolve(dir, &decoded) };
+        let resolved = if moving && decoded.split_once('/').is_some_and(|(name, _)| name == ASSETS) {
+            layout::resolve("", &decoded)
+        } else { layout::resolve(dir, &decoded) };
         let Some(rel) = resolved else { continue };
         let to = match paths.get(&rel) { Some(to) => to.as_str(), None if moving => &rel, None => continue };
         let Some(at) = text[span.clone()].rfind(&dest) else { continue };

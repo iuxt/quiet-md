@@ -15,7 +15,7 @@ folder = "11111111-1111-4111-8111-111111111111"
 nested = "22222222-2222-4222-8222-222222222222"
 xml = "33333333-3333-4333-8333-333333333333"
 md = "44444444-4444-4444-8444-444444444444"
-(source / ".quiet/format.json").write_text('{"format":7}')
+(source / ".quiet/format.json").write_text('{"format":8}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False,
 }))

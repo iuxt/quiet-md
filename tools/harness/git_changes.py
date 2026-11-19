@@ -27,8 +27,8 @@ new.update(id="bbbbbbbb-0000-4000-8000-000000000002", filename="bbbbbbbb-0000-40
 metadata["notes"].append(new)
 (source / "quiet.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
 (source / "notes" / new["filename"]).write_text("# 发布检查清单\n\n- 检查文档和资源\n- 验证 Git 文件对比\n")
-(source / ".assets").mkdir(exist_ok=True)
-(source / ".assets/attachment.bin").write_bytes(b"\0binary attachment")
+(source / "assets").mkdir(exist_ok=True)
+(source / "assets/attachment.bin").write_bytes(b"\0binary attachment")
 prefs = source / ".quiet/preferences.json"
 preferences = json.loads(prefs.read_text())
 preferences.update(english=False, language="zh")
@@ -146,7 +146,7 @@ shot selected-committed
 files = committed_files(selected / "lib/.git")
 assert files[f"notes/{doc_id}.xml"].decode() == body, "The + button must stage the selected body"
 assert f"notes/{new['filename']}" not in files, "Unstaged Markdown must stay uncommitted"
-assert ".assets/attachment.bin" not in files, "Unstaged attachment must stay uncommitted"
+assert "assets/attachment.bin" not in files, "Unstaged attachment must stay uncommitted"
 assert len(json.loads(files["quiet.json"])["notes"]) == 1, "Unstaged metadata must stay uncommitted"
 print(f"Git staging: +, unstage and selected-file commit verified; screenshots: {selected}")
 

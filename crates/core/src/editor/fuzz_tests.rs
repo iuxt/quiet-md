@@ -230,7 +230,7 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
             format!("move_image_beside({a:?}, {b:?}, {after})")
         }
         24 => {
-            let drawing = Drawing { source: ".assets/new.excalidraw".into(), preview: ".assets/new.png".into(), width: 420, height: 200 };
+            let drawing = Drawing { source: "assets/new.excalidraw".into(), preview: "assets/new.png".into(), width: 420, height: 200 };
             if let Some(id) = us.iter().find(|u| matches!(c.kind_of(u.id), Some(BlockKind::Drawing(_)))).filter(|_| rng.chance(50)).map(|u| u.id) {
                 c.replace_drawing(id, Drawing { width: rng.below(500) as u32 + 1, ..drawing });
             } else if !c.is_code(c.sel.head.block) {

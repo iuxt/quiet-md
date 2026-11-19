@@ -124,8 +124,8 @@ fn stage_all_and_unstage_all_preserve_working_files_and_lfs_snapshots() {
     let original = std::fs::read_to_string(lib.0.join(&path)).unwrap();
     let updated = original.replace("First", "Updated");
     std::fs::write(lib.0.join(&path), &updated).unwrap();
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
-    std::fs::write(lib.0.join(".assets/test.bin"), b"staged asset").unwrap();
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap();
+    std::fs::write(lib.0.join("assets/test.bin"), b"staged asset").unwrap();
     std::fs::write(lib.0.join("unmanaged.txt"), "keep private").unwrap();
     let added = store.create_from(&doc("Added")).unwrap();
     store.git_stage_all(true).unwrap();
@@ -135,24 +135,24 @@ fn stage_all_and_unstage_all_preserve_working_files_and_lfs_snapshots() {
     store.git_stage_all(false).unwrap();
     assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged && c.unstaged));
     assert_eq!(std::fs::read_to_string(lib.0.join(&path)).unwrap(), updated);
-    assert_eq!(std::fs::read(lib.0.join(".assets/test.bin")).unwrap(), b"staged asset");
+    assert_eq!(std::fs::read(lib.0.join("assets/test.bin")).unwrap(), b"staged asset");
     store.git_stage_all(true).unwrap();
     std::fs::write(lib.0.join(&path), original.replace("First", "Later")).unwrap();
-    std::fs::write(lib.0.join(".assets/test.bin"), b"later asset").unwrap();
+    std::fs::write(lib.0.join("assets/test.bin"), b"later asset").unwrap();
     let commit = store.git_commit("all staged").unwrap().unwrap();
     assert_eq!(repo.revision(&commit, &id).unwrap(), updated);
     assert!(repo.revision(&commit, &added).unwrap().contains("Added"));
     let tree = repo.repo.find_commit(Oid::from_str(&commit).unwrap()).unwrap().tree().unwrap();
     assert!(tree.get_name("unmanaged.txt").is_none());
-    let blob = repo.repo.find_blob(tree.get_path(Path::new(".assets/test.bin")).unwrap().id()).unwrap();
+    let blob = repo.repo.find_blob(tree.get_path(Path::new("assets/test.bin")).unwrap().id()).unwrap();
     let pointer = Pointer::parse(blob.content()).unwrap().unwrap();
     assert_eq!(lfs::Lfs::new(repo.repo.path()).read(&pointer).unwrap(), b"staged asset");
-    std::fs::remove_file(lib.0.join(".assets/test.bin")).unwrap();
+    std::fs::remove_file(lib.0.join("assets/test.bin")).unwrap();
     store.git_stage_all(true).unwrap();
-    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == ".assets/test.bin" && c.kind == 'D' && c.staged && !c.unstaged));
+    assert!(repo.status().unwrap().changes.iter().any(|c| c.path == "assets/test.bin" && c.kind == 'D' && c.staged && !c.unstaged));
     store.git_stage_all(false).unwrap();
     assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged && c.unstaged));
-    assert!(!lib.0.join(".assets/test.bin").exists());
+    assert!(!lib.0.join("assets/test.bin").exists());
 }
 
 #[test]
@@ -188,18 +188,18 @@ fn staging_assets_uses_lfs_and_incomplete_staged_libraries_do_not_commit() {
     repo.unstage(&path).unwrap();
     assert!(repo.status().unwrap().changes.iter().all(|c| !c.staged));
     repo.commit("initial").unwrap();
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
-    std::fs::write(lib.0.join(".assets/test.bin"), b"original image").unwrap();
-    repo.stage(".assets/test.bin").unwrap();
-    std::fs::write(lib.0.join(".assets/test.bin"), b"later image").unwrap();
-    store.git_discard(".assets/test.bin").unwrap();
-    assert_eq!(std::fs::read(lib.0.join(".assets/test.bin")).unwrap(), b"original image");
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap();
+    std::fs::write(lib.0.join("assets/test.bin"), b"original image").unwrap();
+    repo.stage("assets/test.bin").unwrap();
+    std::fs::write(lib.0.join("assets/test.bin"), b"later image").unwrap();
+    store.git_discard("assets/test.bin").unwrap();
+    assert_eq!(std::fs::read(lib.0.join("assets/test.bin")).unwrap(), b"original image");
     let commit = store.git_commit("asset").unwrap().unwrap();
     let tree = repo.repo.find_commit(Oid::from_str(&commit).unwrap()).unwrap().tree().unwrap();
-    let blob = repo.repo.find_blob(tree.get_path(Path::new(".assets/test.bin")).unwrap().id()).unwrap();
+    let blob = repo.repo.find_blob(tree.get_path(Path::new("assets/test.bin")).unwrap().id()).unwrap();
     assert!(Pointer::parse(blob.content()).unwrap().is_some());
-    std::fs::write(lib.0.join(".assets/new.bin"), b"new").unwrap();
-    store.git_discard(".assets/new.bin").unwrap(); assert!(!lib.0.join(".assets/new.bin").exists());
+    std::fs::write(lib.0.join("assets/new.bin"), b"new").unwrap();
+    store.git_discard("assets/new.bin").unwrap(); assert!(!lib.0.join("assets/new.bin").exists());
 }
 
 #[test]
@@ -248,17 +248,17 @@ fn uuid_names_metadata_titles_links_and_trash_survive_reopen() {
 fn commits_use_lfs_pointers_and_history_tracks_ids_across_moves() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("First")).unwrap();
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
-    std::fs::write(lib.0.join(".assets/picture.png"), b"picture bytes").unwrap();
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap();
+    std::fs::write(lib.0.join("assets/picture.png"), b"picture bytes").unwrap();
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let first = repo.commit("first").unwrap().unwrap();
     assert!(repo.status().unwrap().changes.is_empty());
     assert!(repo.commit("unchanged").unwrap().is_none());
     let tree = repo.repo.find_commit(Oid::from_str(&first).unwrap()).unwrap().tree().unwrap();
-    let blob = repo.repo.find_blob(tree.get_path(Path::new(".assets/picture.png")).unwrap().id()).unwrap();
+    let blob = repo.repo.find_blob(tree.get_path(Path::new("assets/picture.png")).unwrap().id()).unwrap();
     let pointer = Pointer::parse(blob.content()).unwrap().unwrap();
     assert_eq!(pointer.size, 13);
-    assert_eq!(std::fs::read(lib.0.join(".assets/picture.png")).unwrap(), b"picture bytes");
+    assert_eq!(std::fs::read(lib.0.join("assets/picture.png")).unwrap(), b"picture bytes");
     let folder = store.create_folder("Moved", None).unwrap(); store.set_parent(&id, Some(&folder)).unwrap();
     store.rename(&id, "Renamed").unwrap();
     repo.commit("moved").unwrap();
@@ -274,20 +274,20 @@ fn local_push_clone_pull_and_divergence_keep_text_and_images_safe() {
     let server = Library::new(); Repository::init_bare(&server.0).unwrap();
     let first = Library::new(); let mut a = first.store(); a.enable_git().unwrap();
     let id = a.create_from(&doc("Original")).unwrap();
-    std::fs::create_dir_all(first.0.join(".assets")).unwrap();
-    std::fs::write(first.0.join(".assets/test.png"), b"original image").unwrap();
+    std::fs::create_dir_all(first.0.join("assets")).unwrap();
+    std::fs::write(first.0.join("assets/test.png"), b"original image").unwrap();
     configure(&first.git(), &server.0); first.git().commit("initial").unwrap(); first.git().push(&Auth::default()).unwrap();
     let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
     let mut b = second.store();
     assert_eq!(b.load(&id).unwrap().title.text, "Original");
-    assert_eq!(std::fs::read(second.0.join(".assets/test.png")).unwrap(), b"original image");
+    assert_eq!(std::fs::read(second.0.join("assets/test.png")).unwrap(), b"original image");
     assert!(second.git().status().unwrap().changes.is_empty());
     a.rename(&id, "Remote update").unwrap();
-    std::fs::write(first.0.join(".assets/test.png"), b"changed image").unwrap();
+    std::fs::write(first.0.join("assets/test.png"), b"changed image").unwrap();
     first.git().commit("remote").unwrap(); first.git().push(&Auth::default()).unwrap();
     assert!(b.git_pull(&Auth::default()).unwrap());
     assert_eq!(b.load(&id).unwrap().title.text, "Remote update");
-    assert_eq!(std::fs::read(second.0.join(".assets/test.png")).unwrap(), b"changed image");
+    assert_eq!(std::fs::read(second.0.join("assets/test.png")).unwrap(), b"changed image");
     b.rename(&id, "Local draft").unwrap();
     assert!(b.git_pull(&Auth::default()).is_err());
     assert_eq!(b.load(&id).unwrap().title.text, "Local draft");
@@ -320,8 +320,8 @@ fn git_refuses_symlinks_and_parent_repositories() {
     let child = parent.0.join("child"); std::fs::create_dir(&child).unwrap();
     assert!(LibraryRepo::check_location(&child).is_err());
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
-    std::os::unix::fs::symlink("/etc/hosts", lib.0.join(".assets/leak.png")).unwrap();
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", lib.0.join("assets/leak.png")).unwrap();
     assert!(lib.git().status().is_err());
 }
 
@@ -329,15 +329,15 @@ fn git_refuses_symlinks_and_parent_repositories() {
 fn historical_images_and_markdown_titles_are_independent_of_current_files() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let mut document = doc("Old title");
-    document.blocks = vec![crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "path".into(), src: ".assets/image.png".into(),
+    document.blocks = vec![crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "path".into(), src: "assets/image.png".into(),
         width: None, height: None, caption: None, crop: None }, RichText::default())];
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
-    std::fs::write(lib.0.join(".assets/image.png"), b"old picture").unwrap();
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap();
+    std::fs::write(lib.0.join("assets/image.png"), b"old picture").unwrap();
     let id = store.create_markdown(&document, "").unwrap();
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let commit = repo.commit("old").unwrap().unwrap();
     store.rename(&id, "Current title").unwrap();
-    std::fs::write(lib.0.join(".assets/image.png"), b"current picture").unwrap();
+    std::fs::write(lib.0.join("assets/image.png"), b"current picture").unwrap();
     repo.commit("current").unwrap();
     assert_eq!(store.git_versions(&id).unwrap().len(), 2);
     let version = store.git_versions(&id).unwrap().into_iter().find(|v| v.name.ends_with(&commit)).unwrap();
@@ -346,11 +346,11 @@ fn historical_images_and_markdown_titles_are_independent_of_current_files() {
     let source = &preview.asset_sources()[0];
     assert!(source.starts_with(".quiet/git-preview/"));
     assert_eq!(std::fs::read(lib.0.join(source)).unwrap(), b"old picture");
-    assert_eq!(std::fs::read(lib.0.join(".assets/image.png")).unwrap(), b"current picture");
+    assert_eq!(std::fs::read(lib.0.join("assets/image.png")).unwrap(), b"current picture");
     let restored = store.restore_version(&id, &version.name).unwrap();
     assert!(restored.asset_sources()[0].starts_with("assets/"));
     assert_eq!(std::fs::read(lib.0.join(&restored.asset_sources()[0])).unwrap(), b"old picture");
-    assert_eq!(std::fs::read(lib.0.join(".assets/image.png")).unwrap(), b"current picture");
+    assert_eq!(std::fs::read(lib.0.join("assets/image.png")).unwrap(), b"current picture");
     let copy = store.version_copy_document(&id, &version.name).unwrap();
     assert!(copy.asset_sources()[0].starts_with("assets/"));
 }
@@ -397,10 +397,10 @@ fn drawing_history_reads_assets_without_materializing_previews() {
 #[test]
 fn historical_images_with_windows_paths_use_committed_assets() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    std::fs::create_dir_all(lib.0.join(".assets/nested")).unwrap();
-    std::fs::write(lib.0.join(".assets/nested/image.png"), b"old picture").unwrap();
+    std::fs::create_dir_all(lib.0.join("assets/nested")).unwrap();
+    std::fs::write(lib.0.join("assets/nested/image.png"), b"old picture").unwrap();
     let mut ids = Vec::new();
-    for source in [r".assets\nested\image.png", r"C:\Notes\.assets\nested\image.png"] {
+    for source in [r"assets\nested\image.png", r"C:\Notes\assets\nested\image.png"] {
         let mut document = doc("Windows image");
         document.blocks = vec![crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "path".into(), src: source.into(),
             width: None, height: None, caption: None, crop: None }, RichText::default())];
@@ -408,7 +408,7 @@ fn historical_images_with_windows_paths_use_committed_assets() {
     }
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let commit = repo.commit("old").unwrap().unwrap();
-    std::fs::write(lib.0.join(".assets/nested/image.png"), b"current picture").unwrap();
+    std::fs::write(lib.0.join("assets/nested/image.png"), b"current picture").unwrap();
     for id in ids {
         let version = store.git_versions(&id).unwrap().into_iter().find(|v| v.name.ends_with(&commit)).unwrap();
         let preview = store.version_document(&id, &version.name).unwrap();
@@ -420,7 +420,7 @@ fn historical_images_with_windows_paths_use_committed_assets() {
         assert!(source.starts_with("assets/"), "{source}");
         assert_eq!(std::fs::read(lib.0.join(source)).unwrap(), b"old picture");
     }
-    assert_eq!(std::fs::read(lib.0.join(".assets/nested/image.png")).unwrap(), b"current picture");
+    assert_eq!(std::fs::read(lib.0.join("assets/nested/image.png")).unwrap(), b"current picture");
 }
 
 #[test]
@@ -432,7 +432,7 @@ fn failed_fast_forward_restores_files_head_and_index() {
     let old_index = std::fs::read(repo.repo.path().join("index")).unwrap();
     let old_body = std::fs::read(store.file_path(&id).unwrap()).unwrap();
     let mut content = BTreeMap::new();
-    for path in repo.files(FORMAT).unwrap() { content.insert(path.clone(), std::fs::read(lib.0.join(path)).unwrap()); }
+    for path in repo.files().unwrap() { content.insert(path.clone(), std::fs::read(lib.0.join(path)).unwrap()); }
     let path = store.file_path(&id).unwrap().strip_prefix(&lib.0).unwrap().to_str().unwrap().to_string();
     content.insert(path, b"<title>replacement</title><p>changed</p>".to_vec());
     // A locked ref makes the final atomic HEAD update fail after files were written.
@@ -559,9 +559,9 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     let changed = repo.change_preview(&path).unwrap();
     assert_eq!(counts(&changed.lines), (1, 1));
     assert!(changed.lines.iter().any(|l| l.kind == Kind::Added && l.text == "After"));
-    std::fs::create_dir_all(lib.0.join(".assets")).unwrap();
-    std::fs::write(lib.0.join(".assets/image.png"), b"image content").unwrap();
-    let binary = repo.change_preview(".assets/image.png").unwrap();
+    std::fs::create_dir_all(lib.0.join("assets")).unwrap();
+    std::fs::write(lib.0.join("assets/image.png"), b"image content").unwrap();
+    let binary = repo.change_preview("assets/image.png").unwrap();
     assert!(binary.binary && binary.lines.is_empty());
     let markdown = "cccccccc-0000-4000-8000-000000000003.md";
     let mut meta: serde_json::Value = serde_json::from_slice(&std::fs::read(lib.0.join(MANIFEST)).unwrap()).unwrap();
@@ -618,8 +618,8 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
     let auth = Auth { ssh_passphrase: "test-key-password".into(), ..Default::default() };
     let source = Library::new(); let mut store = source.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("SSH + TLS")).unwrap();
-    std::fs::create_dir_all(source.0.join(".assets")).unwrap();
-    std::fs::write(source.0.join(".assets/photo.png"), b"first picture").unwrap();
+    std::fs::create_dir_all(source.0.join("assets")).unwrap();
+    std::fs::write(source.0.join("assets/photo.png"), b"first picture").unwrap();
     let repo = source.git(); repo.configure(&config).unwrap(); repo.commit("first").unwrap();
     let known_path = PathBuf::from(std::env::var("QUIET_MD_GIT_KNOWN_HOSTS").unwrap());
     let known = std::fs::read(&known_path).unwrap(); std::fs::write(&known_path, "").unwrap();
@@ -639,12 +639,12 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
     let destination = Library::new();
     let cloned = LibraryRepo::clone_configured(&config, &destination.0, &auth).unwrap();
     assert_eq!(destination.store().load(&id).unwrap().title.text, "SSH + TLS");
-    assert_eq!(std::fs::read(destination.0.join(".assets/photo.png")).unwrap(), b"first picture");
+    assert_eq!(std::fs::read(destination.0.join("assets/photo.png")).unwrap(), b"first picture");
     store.rename(&id, "Updated over SSH").unwrap();
-    std::fs::write(source.0.join(".assets/photo.png"), b"second picture").unwrap();
+    std::fs::write(source.0.join("assets/photo.png"), b"second picture").unwrap();
     repo.commit("second").unwrap(); repo.push(&auth).unwrap(); cloned.pull(&auth).unwrap();
     assert_eq!(destination.store().load(&id).unwrap().title.text, "Updated over SSH");
-    assert_eq!(std::fs::read(destination.0.join(".assets/photo.png")).unwrap(), b"second picture");
+    assert_eq!(std::fs::read(destination.0.join("assets/photo.png")).unwrap(), b"second picture");
     let text = std::fs::read_to_string(cloned.repo.path().join("config")).unwrap();
     assert!(!text.contains("test-key-password") && !text.contains("fixture-token"));
 }
@@ -655,8 +655,8 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     let first = Library::new(); let mut a = first.store(); a.enable_git().unwrap();
     let folder = a.create_folder("Folder", None).unwrap(); let nested = a.create_folder("Nested", Some(&folder)).unwrap();
     let xml = a.create_from_in(&doc("XML"), Some(&nested)).unwrap();
-    let md = a.create_markdown_in(&doc("Markdown"), "# Markdown\n\n![image](../.assets/test.png)\n", Some(&nested)).unwrap();
-    std::fs::create_dir_all(first.0.join(".assets")).unwrap(); std::fs::write(first.0.join(".assets/test.png"), b"keep image").unwrap();
+    let md = a.create_markdown_in(&doc("Markdown"), "# Markdown\n\n![image](../assets/test.png)\n", Some(&nested)).unwrap();
+    std::fs::create_dir_all(first.0.join("assets")).unwrap(); std::fs::write(first.0.join("assets/test.png"), b"keep image").unwrap();
     let bodies: Vec<_> = [(&xml, "xml"), (&md, "md")].into_iter().map(|(id, ext)| (id.clone(), ext, std::fs::read(a.file_path(id).unwrap()).unwrap())).collect();
     configure(&first.git(), &server.0); first.git().commit("initial").unwrap(); first.git().push(&Auth::default()).unwrap();
     let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
@@ -682,66 +682,26 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     assert!(!b.restore(&folder).unwrap()); assert!(b.list_trash().is_empty());
     for (id, ext, bytes) in &bodies { assert_eq!(std::fs::read(second.0.join(format!("notes/{id}.{ext}"))).unwrap(), *bytes); }
     assert_eq!(b.list().iter().find(|e| e.id == xml).unwrap().meta.parent.as_deref(), Some(nested.as_str()));
-    assert_eq!(std::fs::read(second.0.join(".assets/test.png")).unwrap(), b"keep image");
+    assert_eq!(std::fs::read(second.0.join("assets/test.png")).unwrap(), b"keep image");
     configure(&second.git(), &server.0); second.git().commit("restore").unwrap(); second.git().push(&Auth::default()).unwrap();
     assert!(a.git_pull(&Auth::default()).unwrap()); assert!(a.list_trash().is_empty());
     for (id, _, bytes) in bodies { assert_eq!(std::fs::read(a.file_path(&id).unwrap()).unwrap(), bytes); }
 }
 
 #[test]
-fn visible_assets_upgrade_a_format_seven_git_library_and_keep_old_images() {
+fn format_seven_is_refused_locally_and_on_clone() {
     let server = Library::new(); Repository::init_bare(&server.0).unwrap();
-    let lib = Library::new(); drop(lib.store());
-    std::fs::write(lib.0.join(FORMAT_PATH), b"{\"format\":7}").unwrap();
-    let mut store = lib.store(); store.enable_git().unwrap();
-    let old_path = ".assets/old.png";
-    let new_path = "assets/new.png";
-    let image = |src: &str| crate::model::Block::new(crate::model::BlockKind::Image {
-        src_kind: "path".into(), src: src.into(), width: None, height: None, caption: None, crop: None,
-    }, RichText::default());
-    std::fs::create_dir(lib.0.join(LEGACY_ASSETS)).unwrap();
-    std::fs::write(lib.0.join(old_path), b"old image").unwrap();
-    let mut document = doc("Images"); document.blocks = vec![image(old_path)];
-    let id = store.create_from(&document).unwrap();
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    store.create_from(&doc("Old library")).unwrap();
+    let marker = lib.0.join(FORMAT_PATH);
+    let old_format = br#"{"format":7}"#;
+    std::fs::write(&marker, old_format).unwrap();
+    assert!(Store::open_at(lib.0.clone()).err().unwrap().to_string().contains("格式 7"));
+    assert_eq!(std::fs::read(marker).unwrap(), old_format);
     let repo = lib.git(); configure(&repo, &server.0);
-    let old = repo.commit("format 7").unwrap().unwrap();
+    repo.commit("format 7").unwrap().unwrap();
     repo.push(&Auth::default()).unwrap();
     let destination = Library::new();
-    let clone = LibraryRepo::clone_into(server.0.to_str().unwrap(), &destination.0, &Auth::default()).unwrap();
-    let mut cloned = destination.store();
-    assert_eq!(Store::format_at(&destination.0), Some(7));
-    assert!(clone.status().unwrap().changes.is_empty());
-
-    let assets = Store::assets_in(&lib.0);
-    assert_eq!(assets, lib.0.join(ASSETS));
-    std::fs::create_dir(&assets).unwrap();
-    std::fs::write(lib.0.join(new_path), b"new image").unwrap();
-    document.blocks.push(image(new_path));
-    store.save(&id, &document).unwrap();
-    assert_eq!(Store::format_at(&lib.0), Some(FORMAT));
-    assert!(repo.change_preview(new_path).unwrap().binary);
-    repo.stage(new_path).unwrap();
-    assert!(repo.commit_staged("incomplete upgrade").is_err());
-    assert!(repo.discard(FORMAT_PATH).is_err());
-    repo.stage(FORMAT_PATH).unwrap();
-    assert!(repo.commit_staged("missing LFS rules").is_err());
-    repo.stage_all().unwrap();
-    let new = repo.commit_staged("format 8").unwrap().unwrap();
-    let tree = repo.repo.find_commit(Oid::from_str(&new).unwrap()).unwrap().tree().unwrap();
-    assert!(repo.repo.find_blob(tree.get_path(Path::new(".gitattributes")).unwrap().id()).unwrap().content()
-        .split(|&byte| byte == b'\n').any(|line| line == VISIBLE_ASSET_ATTRIBUTE.as_bytes()));
-    for path in [old_path, new_path] {
-        let blob = repo.repo.find_blob(tree.get_path(Path::new(path)).unwrap().id()).unwrap();
-        assert!(Pointer::parse(blob.content()).unwrap().is_some());
-    }
-    repo.push(&Auth::default()).unwrap();
-    assert!(cloned.git_pull(&Auth::default()).unwrap());
-    assert_eq!(cloned.load(&id).unwrap().asset_sources(), [old_path, new_path]);
-    assert_eq!(std::fs::read(destination.0.join(old_path)).unwrap(), b"old image");
-    assert_eq!(std::fs::read(destination.0.join(new_path)).unwrap(), b"new image");
-    for (commit, expected) in [(old, vec![b"old image"]), (new, vec![b"old image", b"new image"])] {
-        let historical = cloned.version_document(&id, &format!("git:0-{commit}")).unwrap();
-        let bytes: Vec<_> = historical.asset_sources().iter().map(|path| std::fs::read(destination.0.join(path)).unwrap()).collect();
-        assert_eq!(bytes, expected);
-    }
+    let result = LibraryRepo::clone_into(server.0.to_str().unwrap(), &destination.0, &Auth::default());
+    assert!(result.err().unwrap().to_string().contains("远端文档库格式不兼容"));
 }
