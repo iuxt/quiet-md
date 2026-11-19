@@ -12,7 +12,6 @@ static ALLOC: big_alloc::Alloc = big_alloc::Alloc;
 mod shared_store;
 mod quick_note;
 mod assets;
-mod guides;
 mod clipboard;
 #[cfg(feature = "devtools")]
 mod devtools;
@@ -162,19 +161,14 @@ fn main() {
     let scripted = devtools::scripted();
     // No single-instance guard: copies may share a library (builds tested
     // side by side). `Store` rereads an index another copy rewrote before
-    // writing its own, and `guides` seeds a new library only once.
+    // writing its own.
     // The store asks the system whether a library is in iCloud through this.
     #[cfg(target_os = "macos")]
     store::set_ubiquity_probe(onboarding::ubiquitous);
     let root = store::Store::root_dir();
     logging::write(&format!("library {}", root.display()));
-    // An existing library skips first-launch setup.
-    let existed = guides::seeded(&root).unwrap_or(false);
     // A new library is set up after first launch's pages pick where it goes.
-    let onboard = onboarding::wanted(existed, scripted);
-    if !scripted && !onboard && let Err(err) = guides::initialize(&root) {
-        logging::fatal(&format!("无法初始化文档库 / Could not set up the library at {}", root.display()), &err);
-    }
+    let onboard = onboarding::wanted(&root, scripted);
     let app = Application::new().with_assets(assets::Assets);
     // Markdown files opened from the Finder or the command line are edited in place.
     let incoming = local_files::Incoming::from_args();

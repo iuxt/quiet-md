@@ -72,7 +72,7 @@
 
 Las descargas actuales son **versiones estables** de [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS usa firma ad-hoc sin notarización; el instalador de Windows no está firmado. Descarga e instala manualmente. Cada paquete incluye una suma SHA-256. Consulta la [guía de publicación](docs/RELEASES.md).
 
-En el primer arranque eliges el idioma, dónde guardar la biblioteca y el atajo de notas rápidas, y puedes copiar tus notas de Obsidian, Logseq, iA Writer o Typora. Una biblioteca vacía recibe la guía **Getting started**: un recorrido de diez minutos por las funciones principales. Nunca sobrescribe las notas que ya tengas.
+En el primer arranque eliges el idioma, dónde guardar la biblioteca y el atajo de notas rápidas, y puedes copiar tus notas de Obsidian, Logseq, iA Writer o Typora. Nunca sobrescribe las notas que ya tengas.
 
 La interfaz está disponible en inglés, chino simplificado, japonés, coreano, español, francés y árabe.
 
@@ -101,7 +101,7 @@ Una pantalla de 120 Hz da 8.3 ms a cada fotograma. Incluso en el P95 de un docum
 - **Edición**: títulos, listas numeradas y con viñetas, tareas, citas, bloques de código con resaltado de sintaxis, ecuaciones LaTeX, tablas (con celdas combinadas), destacados, columnas, imágenes, adjuntos y portadas. Atajos de Markdown como `#`, `-`, `[]` y `>`, y un menú `/`.
 - **Organización**: árbol de documentos, fijados, favoritos, búsqueda en todo el texto y papelera.
 - **Importar y exportar**: importa carpetas de Markdown (con las imágenes incrustadas y los callouts de Obsidian) y DocxXML de Feishu (Lark); exporta a Markdown y PDF, o imprime directamente. Arrastra archivos desde el Finder a Inicio o directamente a una carpeta de la barra lateral. Al pegar desde Feishu o una página web se conserva la estructura.
-- **Atajos**: pulsa `⌘ /` (`Ctrl+/` en Windows) para verlos todos. Todos se pueden reasignar. En Windows, Ctrl sustituye a ⌘ y Alt a ⌥; la app y las guías Getting started muestran las teclas de tu sistema.
+- **Atajos**: pulsa `⌘ /` (`Ctrl+/` en Windows) para verlos todos. Todos se pueden reasignar. En Windows, Ctrl sustituye a ⌘ y Alt a ⌥. La app muestra las teclas de tu sistema.
 - **Temas**: cuatro estilos integrados (Craft, Feishu, Notion y Obsidian), cada uno con su variante oscura, o escribe el tuyo en CSS; consulta [docs/THEMES.md](docs/THEMES.md).
 
 ## Colaboradores

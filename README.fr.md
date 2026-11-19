@@ -72,7 +72,7 @@
 
 Les téléchargements actuels sont des **versions stables** sur [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS utilise une signature ad-hoc sans notarisation ; l’installateur Windows n’est pas signé. Téléchargez et installez manuellement. Chaque paquet inclut une somme SHA-256. Voir le [guide de publication](docs/RELEASES.md).
 
-Au premier lancement, Quiet.md demande la langue de l'interface, l'emplacement de votre bibliothèque et le raccourci de note rapide, et propose de copier vos notes depuis Obsidian, Logseq, iA Writer ou Typora. Une bibliothèque vide reçoit le guide **Getting started** : une visite de dix minutes des principales fonctionnalités. Les notes existantes ne sont jamais écrasées.
+Au premier lancement, Quiet.md demande la langue de l'interface, l'emplacement de votre bibliothèque et le raccourci de note rapide, et propose de copier vos notes depuis Obsidian, Logseq, iA Writer ou Typora. Les notes existantes ne sont jamais écrasées.
 
 L'interface est disponible en anglais, chinois simplifié, japonais, coréen, espagnol, français et arabe.
 
@@ -101,7 +101,7 @@ Un écran 120 Hz laisse 8,3 ms par image. Même à P95 sur un document d'un mill
 - **Édition** : titres, listes numérotées et à puces, tâches, citations, blocs de code avec coloration syntaxique, math LaTeX, tableaux (avec cellules fusionnées), encadrés, colonnes, images, pièces jointes et couvertures. Raccourcis Markdown comme `#`, `-`, `[]` et `>`, plus un menu barre oblique `/`.
 - **Organisation** : arborescence de documents, épinglage, favoris, recherche plein texte et corbeille.
 - **Import et export** : importez des dossiers Markdown (images intégrées et encadrés Obsidian inclus) et du DocxXML Feishu (Lark). Exportez en Markdown et PDF, ou imprimez directement. Glissez des fichiers depuis le Finder vers l'accueil ou directement dans un dossier de la barre latérale. Un collage depuis Feishu ou une page web conserve la structure.
-- **Raccourcis** : appuyez sur `⌘ /` (`Ctrl+/` sous Windows) pour tous les voir. Chacun est reconfigurable. Sous Windows, Ctrl remplace ⌘ et Alt remplace ⌥. L'app et les guides de prise en main affichent les touches de votre système.
+- **Raccourcis** : appuyez sur `⌘ /` (`Ctrl+/` sous Windows) pour tous les voir. Chacun est reconfigurable. Sous Windows, Ctrl remplace ⌘ et Alt remplace ⌥. L'app affiche les touches de votre système.
 - **Thèmes** : quatre styles intégrés, Craft, Feishu, Notion et Obsidian, chacun avec une variante sombre, ou écrivez le vôtre en CSS (voir [docs/THEMES.md](docs/THEMES.md)).
 
 ## Contributeurs

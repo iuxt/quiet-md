@@ -1,8 +1,7 @@
 #!/bin/zsh
 # Replace the running hand-test build (dist-preview) with target/release. It
 # runs as dist-preview/Quiet.md Preview.app (so it is never mistaken for the installed app) on the
-# saved preview library, or ~/Documents/Quiet.md. The app initializes the
-# bundled 开始指南 on first launch, just like an installed build.
+# saved preview library, or ~/Documents/Quiet.md.
 # Only this checkout's own binaries are stopped:
 # pkill matches this checkout's absolute path. Log: /tmp/quiet-md-preview.log
 set -e

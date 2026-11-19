@@ -40,7 +40,7 @@ Windows（任务管理器「内存」列，即私有工作集；同一照片库�
 - 脚本：[mem_probe.py](../tools/perf/mem_probe.py) 回放 harness 脚本，每到一个 `shot` 用 `footprint` 量一次进程（macOS）。只用临时文档库。
 - 场景：
   - `photos`：[gen_photo_library.py](../tools/perf/gen_photo_library.py) 生成 8 篇各带一张 4032×3024 照片（手机照片尺寸）的文档，加一篇纯文字的 Notes。脚本 [photos.txt](../tools/perf/mem/photos.txt)：启动 → 主页（8 张照片卡片）→ 打开 Photo 1 → 打开 Notes → 等 35 秒（缓存过期）。
-  - `guides`：内置指南（`shared-mock/guides/build.py`）。脚本 [guides.txt](../tools/perf/mem/guides.txt)：启动 → 主页 → 依次打开欢迎页和「写作与格式」下的 5 篇 → 打开一篇纯文字指南 → 等 35 秒。
+  - `guides`：示例库（`shared-mock/guides/build.py`）。脚本 [guides.txt](../tools/perf/mem/guides.txt)：启动 → 主页 → 依次打开欢迎页和「写作与格式」下的 5 篇 → 打开一篇纯文字指南 → 等 35 秒。
 - 列（MB）：
   - `total`：footprint 总数。
   - `pixels`：MALLOC_LARGE 加 untagged VM，即解码后的图片和其他大缓冲。改前还包括已释放、但 malloc 还没还给系统的块；改后大块直接 mmap，所以记在 untagged 里。

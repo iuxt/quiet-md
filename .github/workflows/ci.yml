@@ -54,7 +54,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         run: cargo build --release --locked
 
-      - name: Tests, bundled guides and clippy
+      - name: Tests, sample library and clippy
         if: steps.filter.outputs.skip != 'true'
         run: scripts/check.sh
 
@@ -182,7 +182,7 @@ jobs:
         if: steps.filter.outputs.skip != 'true'
         run: rustup component add clippy
 
-      - name: Tests, bundled guides and clippy
+      - name: Tests, sample library and clippy
         if: steps.filter.outputs.skip != 'true'
         run: python3 scripts/check.py
 

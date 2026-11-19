@@ -72,7 +72,7 @@
 
 Current downloads are **stable releases** from [iuxt/quiet-md Releases](https://github.com/iuxt/quiet-md/releases). macOS packages are ad-hoc signed and unnotarized; the Windows installer is unsigned. Download and install manually. Each package includes a SHA-256 checksum. See [the release guide](docs/RELEASES.md).
 
-On first launch, Quiet.md asks for the interface language, where to keep your library and the quick-note shortcut, and offers to copy in notes from Obsidian, Logseq, iA Writer or Typora. An empty library gets a **Getting started** guide — a ten-minute tour of the main features. Existing notes are never overwritten.
+On first launch, Quiet.md asks for the interface language, where to keep your library and the quick-note shortcut, and offers to copy in notes from Obsidian, Logseq, iA Writer or Typora. Existing notes are never overwritten.
 
 The interface is available in English, Simplified Chinese, Japanese, Korean, Spanish, French and Arabic.
 
@@ -104,7 +104,7 @@ A 120 Hz display gives each frame 8.3 ms. Even at P95 on a million-character doc
 - **Optional Git backup**: enable Git under Settings › Git backup and sync for shared JSON metadata, local commits and HTTPS / SSH push and fast-forward pull. Images and attachments use Git LFS, implemented inside the app; no Git or Git LFS installation is required. Clone a library into an empty folder and browse commits from version history. See [the Git guide](docs/GIT.md).
 - **Organizing**: a document tree, pinning, favorites, full-text search and a trash. Browse deleted folders, open documents read-only and view their version history; restore a document to edit it again. Deleted files stay in Trash until restored; Trash is included in Git backup, with no automatic expiry or permanent-delete action.
 - **Import and export**: import Markdown folders (Obsidian picture embeds and callouts included) and Feishu (Lark) DocxXML; export Markdown and PDF, or print directly. Drag files from Finder onto Home or straight into a sidebar folder. Pasting from Feishu or a web page keeps the structure.
-- **Shortcuts**: press `⌘ /` (`Ctrl+/` on Windows) to see them all. Every one can be rebound. On Windows, Ctrl stands in for ⌘ and Alt for ⌥; the app and the Getting started guides show the keys for your system.
+- **Shortcuts**: press `⌘ /` (`Ctrl+/` on Windows) to see them all. Every one can be rebound. On Windows, Ctrl stands in for ⌘ and Alt for ⌥. The app shows the keys for your system.
 - **Themes**: four built-in styles — Craft, Feishu, Notion and Obsidian — each with a dark variant, or write your own in CSS; see [docs/THEMES.md](docs/THEMES.md).
 
 ## Contributors

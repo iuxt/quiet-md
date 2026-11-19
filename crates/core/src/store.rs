@@ -674,9 +674,10 @@ impl Store {
         dirs::data_local_dir().unwrap_or_else(std::env::temp_dir).join("quiet-md").join("library.json")
     }
 
-    /// Use `root` for the rest of this run, and from now on unless
+    /// Prepare a new library if needed and use `root` for the rest of this run, and from now on unless
     /// `QUIET_MD_HOME` says otherwise. The default location needs no pointer.
     pub fn set_root_dir(root: PathBuf) -> Result<()> {
+        if !Self::is_library(&root) { Self::initialize_layout(&root)?; }
         let file = Self::location_file();
         // Test runs (`QUIET_MD_HOME`) never move the real library.
         if std::env::var_os("QUIET_MD_HOME").is_some() {}
@@ -732,6 +733,23 @@ impl Store {
     /// days old and three launches have passed.
     pub fn prune_backups(root: &Path) { migrate::prune(root) }
 
+    /// Write the manifest and format marker when a library is first set up.
+    fn initialize_layout(root: &Path) -> Result<()> {
+        let internal = root.join(INTERNAL);
+        std::fs::create_dir_all(&internal)?;
+        // Another copy can open the same new library and start importing into it.
+        let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(internal.join(".lock"))?;
+        file.lock()?;
+        let _lock = WriteLock(Some(file));
+        if Self::format_at(root).is_some() { return Ok(()); }
+        let existing = layout::scan(root);
+        let manifest = root.join(crate::manifest::FILE);
+        let format = if std::fs::read(&manifest).is_ok_and(|b| crate::manifest::Manifest::parse(&b).is_ok())
+            || (existing.docs.is_empty() && existing.dirs.is_empty() && !manifest.exists()) { FORMAT } else { 5 };
+        if format == FORMAT && !manifest.exists() { save_json(&manifest, &crate::manifest::Manifest::default())?; }
+        write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format })?)
+    }
+
     /// The backup of the old layout, while there is one.
     pub fn backup_dir(root: &Path) -> Option<PathBuf> { Some(root.join(INTERNAL).join(migrate::BACKUP)).filter(|p| p.is_dir()) }
 
@@ -758,16 +776,7 @@ impl Store {
                 Some(m) if m.format > FORMAT => anyhow::bail!("这个文档库由更新版本的 Quiet.md 创建，请升级后再打开"),
                 // Moved to the new layout; what was left of the old one is set aside.
                 Some(_) => if migrate::legacy(&root) { migrate::finish(&root, &mut warnings); },
-                None => {
-                    std::fs::create_dir_all(&internal)?;
-                    let existing = layout::scan(&root);
-                    let format = if std::fs::read(root.join(crate::manifest::FILE)).is_ok_and(|b| crate::manifest::Manifest::parse(&b).is_ok())
-                        || (existing.docs.is_empty() && existing.dirs.is_empty() && !root.join(crate::manifest::FILE).exists()) { FORMAT } else { 5 };
-                    if format == FORMAT && !root.join(crate::manifest::FILE).exists() {
-                        save_json(&root.join(crate::manifest::FILE), &crate::manifest::Manifest::default())?;
-                    }
-                    write_atomic(&marker, &serde_json::to_vec_pretty(&FormatMarker { format })?)?;
-                }
+                None => Self::initialize_layout(&root)?,
             }
         }
         let base = if flat { root.clone() } else { internal.clone() };

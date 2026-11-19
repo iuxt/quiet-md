@@ -17,13 +17,13 @@ cargo("test", "--release", "--workspace", "--locked")
 cargo("test", "--release", "--locked", "-p", "fdl_core", "library_round_trips", "--", "--ignored",
       env={**os.environ, "FDL_ROUNDTRIP_DIR": str(Path("shared-mock/library").resolve())})
 source = Path("shared-mock/guides/assets")
-bundled = Path("shared-mock/library")
+sample_library = Path("shared-mock/library")
 for asset in source.rglob("*"):
     if asset.is_file() and not asset.name.startswith("."):
-        targets = [bundled / folder / "guides" / asset.relative_to(source) for folder in ("Image", "Files", "Drawing")]
+        targets = [sample_library / folder / "guides" / asset.relative_to(source) for folder in ("Image", "Files", "Drawing")]
         found = [path for path in targets if path.is_file()]
-        assert len(found) == 1 and found[0].read_bytes() == asset.read_bytes(), f"Bundled guide asset is stale: {asset}"
-print("Bundled guide assets match their sources")
+        assert len(found) == 1 and found[0].read_bytes() == asset.read_bytes(), f"Sample library asset is stale: {asset}"
+print("Sample library assets match their sources")
 cargo("clippy", "--release", "--workspace", "--locked", "--all-targets", "--", "-D", "warnings")
 # The harness build (script driver compiled in) must stay clean too.
 cargo("clippy", "--release", "--workspace", "--locked", "--all-targets", "--features", "devtools", "--", "-D", "warnings")

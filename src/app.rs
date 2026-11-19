@@ -166,8 +166,7 @@ pub fn switch_library(root: std::path::PathBuf, cx: &mut App) {
         .fold(true, |ready, saved| ready & saved);
     if !ready { return }
     let prefs = crate::store::Store::internal_dir().join("preferences.json");
-    let set = crate::guides::initialize(&root).and_then(|_| crate::store::Store::set_root_dir(root.clone()));
-    if let Err(e) = set {
+    if let Err(e) = crate::store::Store::set_root_dir(root) {
         let msg = format!("{}{e}", crate::settings::tr("无法在这里创建文档库：", "Couldn't create the library here: "));
         if let Some(ws) = cx.windows().into_iter().find_map(|w| w.downcast::<Workspace>()) { let _ = ws.update(cx, |w, _, cx| w.show_toast(&msg, cx)); }
         return;

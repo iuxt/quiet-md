@@ -47,6 +47,6 @@ python3 scripts/publish-github-release.py --prepare dist/test-assets <arm64-unsi
 
 ## 验证
 
-`scripts/check.sh` 覆盖版本一致性、发布脚本、核心与应用测试、内置指南往返，以及普通和 devtools 构建的 Clippy。发布脚本测试使用临时安装包并模拟上传；不发布真实 Release。各平台安装与卸载仍需在对应系统验证。
+`scripts/check.sh` 覆盖版本一致性、发布脚本、核心与应用测试、示例库往返，以及普通和 devtools 构建的 Clippy。发布脚本测试使用临时安装包并模拟上传；不发布真实 Release。各平台安装与卸载仍需在对应系统验证。
 
 所有测试文档库放临时目录，通过 `QUIET_MD_HOME` 指定；不读取或修改使用者的真实文档库。

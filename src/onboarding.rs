@@ -19,8 +19,16 @@ static PENDING: AtomicBool = AtomicBool::new(false);
 pub fn pending() -> bool { PENDING.load(Ordering::Relaxed) }
 
 /// A new library gets the pages; `QUIET_MD_ONBOARDING` shows them anyway (previews, screenshots).
-pub fn wanted(existed: bool, scripted: bool) -> bool {
-    std::env::var_os("QUIET_MD_ONBOARDING").is_some() || (!existed && !scripted)
+pub fn wanted(root: &Path, scripted: bool) -> bool {
+    std::env::var_os("QUIET_MD_ONBOARDING").is_some() || (!scripted && !library_exists(root).unwrap_or(false))
+}
+
+/// A library with all notes removed still has its metadata. Ignore incidental
+/// hidden files at the root and the lock left by an interrupted setup.
+fn library_exists(root: &Path) -> std::io::Result<bool> {
+    let quiet = root.join(crate::store::INTERNAL);
+    let internal = quiet.is_dir() && std::fs::read_dir(&quiet)?.any(|e| e.map_or(true, |e| e.file_name() != ".lock"));
+    Ok(internal || std::fs::read_dir(root)?.any(|e| e.map_or(true, |e| !e.file_name().to_string_lossy().starts_with('.'))))
 }
 
 // ---- the film
@@ -538,9 +546,7 @@ impl Onboarding {
             if let Some((_, t)) = self.film_tex.take() { let _ = window.drop_image(t); }
             return cx.emit(Done);
         }
-        let root = self.root.clone();
-        let set = crate::store::Store::set_root_dir(root.clone()).and_then(|_| if self.scripted { Ok(()) } else { crate::guides::initialize(&root) });
-        if let Err(e) = set {
+        if let Err(e) = crate::store::Store::set_root_dir(self.root.clone()) {
             self.error = Some(format!("{}{e}", tr("无法在这里创建文档库：", "Couldn't create the library here: ")));
             return cx.notify();
         }

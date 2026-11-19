@@ -1,4 +1,4 @@
-# The built-in guides (shared-mock/guides/build.py): Home, every guide with
+# The sample guides (shared-mock/guides/build.py): Home, every guide with
 # pictures, then a text-only guide; `idle` is after the image cache's sweep.
 resize 1280 800
 move 700 790

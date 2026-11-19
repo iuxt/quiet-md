@@ -6,7 +6,6 @@ use std::path::Path;
 
 fn main() {
     embed("assets", "assets.rs", SKIP);
-    embed("shared-mock/library", "guides.rs", &[]);
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") { windows_resources(); }
 }
 
