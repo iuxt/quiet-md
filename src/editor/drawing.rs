@@ -129,6 +129,7 @@ enum LayerMove { Bottom, Back, Forward, Top }
 enum ExportKind { Source, Png, Svg }
 
 enum Gesture {
+    Endpoint { pointer: World, start: World, end: World, endpoint: usize, index: usize },
     Resize { pointer: World, corner: usize, start: scene::bounds::Bounds, rect: scene::bounds::Bounds, index: usize },
     Rotate { start: f64, angle: f64, index: usize },
     Erase { indices: Vec<usize>, last: World },
@@ -430,6 +431,10 @@ impl DrawingEditor {
         } else if self.tool == Tool::Select {
             if let Some(index) = self.selected {
                 let e = &self.doc.scene.elements[index];
+                if let Some((endpoint, start)) = endpoint_at(e, p, self.zoom) {
+                    self.gesture = Some(Gesture::Endpoint { pointer: p, start, end: start, endpoint, index });
+                    cx.notify(); return;
+                }
                 if can_resize(e) {
                     let b = element_bounds(e);
                     let corners = rect_corners(b);
@@ -478,6 +483,15 @@ impl DrawingEditor {
         match &mut self.gesture {
             Some(Gesture::Pan { start, offset }) => self.offset = *offset + event.position - *start,
             Some(Gesture::Move { start, delta, .. }) => *delta = p - *start,
+            Some(Gesture::Endpoint { pointer, start, end, endpoint, index }) => {
+                let mut q = *start + p - *pointer;
+                if event.modifiers.shift && let Some(points) = linear_points(&self.doc.scene.elements[*index]) {
+                    let anchor = if *endpoint == 0 { points[1] } else { points[points.len() - 2] };
+                    let e = &self.doc.scene.elements[*index];
+                    q = scene::binding::constrain_angle(anchor.rotate(e.base().angle, element_center(e)), q, 45.);
+                }
+                *end = World::new(q.x.clamp(-MAX_COORD, MAX_COORD), q.y.clamp(-MAX_COORD, MAX_COORD));
+            }
             Some(Gesture::Resize { pointer, corner, start, rect, .. }) => {
                 let delta = p - *pointer;
                 let q = rect_corners(*start)[*corner] + delta;
@@ -512,6 +526,12 @@ impl DrawingEditor {
 
     fn up(&mut self, cx: &mut Context<Self>) {
         match self.gesture.take() {
+            Some(Gesture::Endpoint { start, end, endpoint, index, .. }) if start.distance(end) > 0.5 => {
+                self.checkpoint();
+                move_endpoint(&mut self.doc.scene, index, endpoint, end);
+                touch(&mut self.doc.scene.elements[index]);
+                self.rebuild();
+            }
             Some(Gesture::Move { delta, index, .. }) if delta.length() > 0.5 => {
                 self.checkpoint();
                 let element = &mut self.doc.scene.elements[index];
@@ -966,6 +986,47 @@ impl DrawingEditor {
     }
 }
 
+fn linear_points(e: &Element) -> Option<&[World]> {
+    match e { Element::Arrow(a) => Some(a.linear.points.as_slice()), Element::Line(l) => Some(l.linear.points.as_slice()), _ => None }
+        .filter(|points| points.len() >= 2)
+}
+
+fn endpoints(e: &Element) -> Option<[World; 2]> {
+    let points = linear_points(e)?;
+    let pivot = element_center(e);
+    Some([points[0].rotate(e.base().angle, pivot), points[points.len() - 1].rotate(e.base().angle, pivot)])
+}
+
+fn endpoint_at(e: &Element, p: World, zoom: f64) -> Option<(usize, World)> {
+    endpoints(e)?.into_iter().enumerate().filter(|(_, q)| p.distance(*q) <= 9. / zoom)
+        .min_by(|(_, a), (_, b)| p.distance(*a).total_cmp(&p.distance(*b)))
+}
+
+fn move_endpoint(doc: &mut Scene, index: usize, endpoint: usize, p: World) {
+    let binding = arrow_binding(doc, p);
+    let e = &mut doc.elements[index];
+    let (angle, pivot) = (e.base().angle, element_center(e));
+    let linear = match e { Element::Arrow(a) => &mut a.linear, Element::Line(l) => &mut l.linear, _ => return };
+    if linear.points.len() < 2 { return; }
+    for q in &mut linear.points { *q = q.rotate(angle, pivot); }
+    let point = if endpoint == 0 { 0 } else { linear.points.len() - 1 };
+    let old = linear.points[point];
+    linear.points[point] = p;
+    if endpoint == 0 { linear.start_binding = binding; } else { linear.end_binding = binding; }
+    let bounds = scene::bounds::Bounds::from_points(&linear.points);
+    let b = &mut linear.base;
+    (b.x, b.y, b.width, b.height, b.angle) = (bounds.min_x, bounds.min_y, bounds.width(), bounds.height(), 0.);
+    if let Element::Arrow(a) = e && let Some(segments) = &mut a.fixed_segments {
+        for segment in segments {
+            segment.start = segment.start.rotate(angle, pivot);
+            segment.end = segment.end.rotate(angle, pivot);
+            if segment.start == old { segment.start = p; }
+            if segment.end == old { segment.end = p; }
+        }
+    }
+    scene::binding::refresh_derived(doc);
+}
+
 fn can_resize(e: &Element) -> bool {
     e.base().angle.abs() < 0.001 && matches!(e, Element::Rectangle { .. } | Element::Ellipse { .. } | Element::Diamond { .. } | Element::StickyNote(_) | Element::Frame(_) | Element::Image(_))
 }
@@ -1056,7 +1117,7 @@ fn paint_grid(bounds: Bounds<Pixels>, origin: Point<Pixels>, zoom: f64, window: 
     if let Ok(path) = grid.build() { window.paint_path(path, Theme::text_caption().opacity(0.16)); }
 }
 
-fn paint_selection(bounds: Bounds<Pixels>, resize: bool, rotate: Option<Point<Pixels>>, paper: Hsla, window: &mut Window) {
+fn paint_selection(bounds: Bounds<Pixels>, resize: bool, rotate: Option<Point<Pixels>>, endpoints: Option<[Point<Pixels>; 2]>, paper: Hsla, window: &mut Window) {
     let ink = Theme::text_caption();
     window.paint_quad(outline(bounds, ink, BorderStyle::Solid));
     let mut handle = |center, radius| {
@@ -1067,6 +1128,7 @@ fn paint_selection(bounds: Bounds<Pixels>, resize: bool, rotate: Option<Point<Pi
         for p in [bounds.origin, bounds.top_right(), bounds.bottom_right(), bounds.bottom_left()] { handle(p, 2.); }
     }
     if let Some(p) = rotate { handle(p, 4.); }
+    if let Some(points) = endpoints { for p in points { handle(p, 4.); } }
 }
 
 fn arrow_binding(scene: &Scene, p: World) -> Option<scene::element::FixedPointBinding> {
@@ -1082,14 +1144,21 @@ fn touch(element: &mut Element) {
 
 impl Render for DrawingEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let mut preview = None;
+        if let Some(Gesture::Endpoint { index, endpoint, start, end, .. }) = self.gesture && start.distance(end) > 0.5 {
+            let mut scene = self.doc.scene.clone();
+            move_endpoint(&mut scene, index, endpoint, end);
+            preview = Some(scene);
+        }
+        let scene = preview.as_ref().unwrap_or(&self.doc.scene);
         let transform = match self.gesture {
             Some(Gesture::Resize { rect, index, .. }) => { let mut e = self.doc.scene.elements[index].clone(); apply_rect(&mut e, rect); Some((index, e)) }
             Some(Gesture::Rotate { angle, index, .. }) => { let mut e = self.doc.scene.elements[index].clone(); e.base_mut().angle = angle; Some((index, e)) }
             _ => None,
         };
         let handles = self.selected.map(|i| {
-            let e = transform.as_ref().filter(|(index, _)| *index == i).map_or(&self.doc.scene.elements[i], |(_, e)| e);
-            (can_resize(e), can_rotate(e), rotation_handle(e, self.zoom))
+            let e = transform.as_ref().filter(|(index, _)| *index == i).map_or(&scene.elements[i], |(_, e)| e);
+            (can_resize(e), can_rotate(e), rotation_handle(e, self.zoom), endpoints(e))
         });
         let erasing = match &self.gesture { Some(Gesture::Erase { indices, .. }) => indices.clone(), _ => Vec::new() };
         let viewport = self.viewport.clone();
@@ -1100,12 +1169,19 @@ impl Render for DrawingEditor {
             Some(Gesture::Shape { start, end, ink, .. }) => self.shape(*start, *end, ink).map(|el| render_element(&el)),
             _ => None,
         };
-        let geometry: Vec<_> = self.doc.scene.elements.iter().enumerate().map(|(i, e)| {
+        let geometry: Vec<_> = scene.elements.iter().enumerate().map(|(i, e)| {
             let e = transform.as_ref().filter(|(index, _)| *index == i).map_or(e, |(_, e)| e);
             let b = e.base();
             (element_bounds(e), World::new(b.x + b.width / 2., b.y + b.height / 2.), b.angle)
         }).collect();
-        let transformed = transform.map(|(i, e)| (i, render_element(&e)));
+        let mut transformed = HashMap::new();
+        if preview.is_some() {
+            let lookup = scene.non_deleted().map(|e| (e.id(), e)).collect();
+            for (i, e) in scene.elements.iter().enumerate() {
+                if !e.is_deleted() && *e != self.doc.scene.elements[i] { transformed.insert(i, render_element_with_lookup(e, &lookup)); }
+            }
+        }
+        if let Some((i, e)) = transform { transformed.insert(i, render_element(&e)); }
         let fit = self.fit;
         let weak = cx.weak_entity();
         let offset = self.offset;
@@ -1126,10 +1202,10 @@ impl Render for DrawingEditor {
                 let screen = |p: World| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32));
                 let box_bounds = Bounds::from_corners(screen(World::new(extent.min_x + delta.x, extent.min_y + delta.y)), screen(World::new(extent.max_x + delta.x, extent.max_y + delta.y)));
                 if !bounds.intersects(&box_bounds.dilate(px(96.))) { continue; }
-                let drawables = transformed.as_ref().filter(|(index, _)| *index == i).map_or(drawables, |(_, art)| art);
+                let drawables = transformed.get(&i).unwrap_or(drawables);
                 for d in drawables { paint(d, |p| screen(p.rotate(angle, pivot) + delta), zoom, dark, &images, window, cx); }
-                if selection == Some(i) && let Some((resize, rotate, knob)) = handles {
-                    paint_selection(box_bounds, resize, rotate.then(|| screen(knob + delta)), paper, window);
+                if selection == Some(i) && let Some((resize, rotate, knob, endpoints)) = handles {
+                    paint_selection(box_bounds, resize, rotate.then(|| screen(knob + delta)), endpoints.map(|points| points.map(|p| screen(p + delta))), paper, window);
                 }
             }
             if let Some(pending) = pending {
@@ -1243,5 +1319,64 @@ fn paint(d: &Drawable, map: impl Fn(World) -> Point<Pixels>, zoom: f64, dark: bo
             path(&mut hatching.iter().flatten(), PathBuilder::stroke(width), color);
         }
         if !outline.is_empty() { path(&mut outline.iter(), PathBuilder::stroke(width), stroke); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DrawingScene, Scene, Element, ElementOptions, Arrowhead, World, scene, factory, linear_points, endpoints, endpoint_at, move_endpoint, arrow_binding};
+
+    #[test]
+    fn drawing_endpoints_move_independently_and_round_trip() {
+        let mut doc = DrawingScene::new();
+        doc.scene.elements.push(factory::new_arrow(vec![World::new(190., 85.), World::new(100., 60.), World::new(25., 95.)], None, Some(Arrowhead::Arrow), &ElementOptions::default()));
+        assert_eq!(endpoint_at(&doc.scene.elements[0], World::new(194., 85.), 2.), Some((0, World::new(190., 85.))));
+        assert!(endpoint_at(&doc.scene.elements[0], World::new(194., 85.), 4.).is_none());
+        assert!(endpoint_at(&doc.scene.elements[0], World::new(100., 60.), 1.).is_none());
+        move_endpoint(&mut doc.scene, 0, 0, World::new(220., 120.));
+        move_endpoint(&mut doc.scene, 0, 1, World::new(-30., -10.));
+        let points = [World::new(220., 120.), World::new(100., 60.), World::new(-30., -10.)];
+        assert_eq!(linear_points(&doc.scene.elements[0]).unwrap(), points);
+        let reopened = DrawingScene::load(&doc.json().unwrap()).unwrap();
+        assert_eq!(linear_points(&reopened.scene.elements[0]).unwrap(), points);
+        let b = reopened.scene.elements[0].base();
+        assert_eq!((b.x, b.y, b.width, b.height), (-30., -10., 250., 130.));
+    }
+
+    #[test]
+    fn drawing_rotated_line_keeps_other_points_in_place() {
+        let mut doc = Scene::new();
+        let mut line = factory::new_line(vec![World::new(10., 20.), World::new(110., 20.)], &ElementOptions::default());
+        line.base_mut().angle = std::f64::consts::FRAC_PI_2;
+        let before = endpoints(&line).unwrap();
+        assert_eq!(endpoint_at(&line, before[1], 0.5), Some((1, before[1])));
+        doc.elements.push(line);
+        let target = World::new(150., -20.);
+        move_endpoint(&mut doc, 0, 1, target);
+        let after = endpoints(&doc.elements[0]).unwrap();
+        assert!(after[0].distance(before[0]) < 0.000001);
+        assert_eq!(after[1], target);
+        assert_eq!(doc.elements[0].base().angle, 0.);
+    }
+
+    #[test]
+    fn drawing_endpoint_rebinds_and_detaches_preserving_other_binding() {
+        let mut doc = Scene::new();
+        doc.elements.push(factory::new_rectangle(0., 0., 100., 100., &ElementOptions::default()));
+        doc.elements.push(factory::new_rectangle(300., 0., 100., 100., &ElementOptions::default()));
+        let mut arrow = factory::new_arrow(vec![World::new(100., 50.), World::new(200., 50.)], None, Some(Arrowhead::Arrow), &ElementOptions::default());
+        if let Element::Arrow(a) = &mut arrow { a.linear.start_binding = arrow_binding(&doc, World::new(100., 50.)); }
+        doc.elements.push(arrow);
+        move_endpoint(&mut doc, 2, 1, World::new(305., 50.));
+        let Element::Arrow(a) = &doc.elements[2] else { unreachable!() };
+        assert_eq!(a.linear.end_binding.as_ref().unwrap().element_id, doc.elements[1].id());
+        assert_eq!(a.linear.points, [World::new(100., 50.), World::new(300., 50.)]);
+        let start_binding = a.linear.start_binding.clone();
+        move_endpoint(&mut doc, 2, 1, World::new(200., 180.));
+        let Element::Arrow(a) = &doc.elements[2] else { unreachable!() };
+        assert!(a.linear.end_binding.is_none());
+        assert_eq!(a.linear.start_binding, start_binding);
+        assert_eq!(a.linear.points[0], scene::binding::focus_point(&doc.elements[0], World::new(200., 180.)));
+        assert_eq!(a.linear.points[1], World::new(200., 180.));
     }
 }
