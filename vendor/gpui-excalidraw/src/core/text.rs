@@ -1,4 +1,18 @@
-pub fn char_advance(ch: char, font_size: f64) -> f64 {
+use crate::types::FontFamily;
+use std::sync::OnceLock;
+
+fn font_face(family: FontFamily) -> Option<&'static ttf_parser::Face<'static>> {
+    static FACES: OnceLock<Vec<(FontFamily, ttf_parser::Face<'static>)>> = OnceLock::new();
+    FACES.get_or_init(|| crate::fonts::BUNDLED.iter().filter_map(|&(family, bytes)|
+        Some((family, ttf_parser::Face::parse(bytes, 0).ok()?))).collect())
+        .iter().find(|(f, _)| *f == family).map(|(_, face)| face)
+}
+
+fn char_advance(ch: char, font_size: f64, face: Option<&ttf_parser::Face<'_>>) -> f64 {
+    if let Some(f) = face && let Some(glyph) = f.glyph_index(ch) && let Some(advance) = f.glyph_hor_advance(glyph) {
+        return font_size * f64::from(advance) / f64::from(f.units_per_em());
+    }
+
     if is_wide(ch) {
         font_size
     } else {
@@ -23,14 +37,19 @@ fn is_wide(ch: char) -> bool {
     )
 }
 
-fn measure(text: &str, font_size: f64) -> f64 {
-    text.chars().map(|c| char_advance(c, font_size)).sum()
+fn measure(text: &str, font_size: f64, face: Option<&ttf_parser::Face<'_>>) -> f64 {
+    text.chars().map(|c| char_advance(c, font_size, face)).sum()
 }
 
 /// Width of the widest line, used to size labels without a text layout pass.
 pub fn text_width(text: &str, font_size: f64) -> f64 {
+    text_width_in(text, font_size, FontFamily::Excalifont)
+}
+
+pub fn text_width_in(text: &str, font_size: f64, family: FontFamily) -> f64 {
+    let face = font_face(family);
     text.split('\n')
-        .map(|line| measure(line, font_size))
+        .map(|line| measure(line, font_size, face))
         .fold(0.0, f64::max)
 }
 
@@ -40,24 +59,29 @@ pub fn text_height(text: &str, font_size: f64, line_height: f64) -> f64 {
 }
 
 pub fn wrap_text(text: &str, max_width: f64, font_size: f64) -> String {
+    wrap_text_in(text, max_width, font_size, FontFamily::Excalifont)
+}
+
+pub fn wrap_text_in(text: &str, max_width: f64, font_size: f64, family: FontFamily) -> String {
+    let face = font_face(family);
     if !max_width.is_finite() || max_width <= 0.0 || font_size <= 0.0 {
         return text.to_string();
     }
     let mut lines: Vec<String> = Vec::new();
     for hard_line in text.split('\n') {
-        lines.extend(wrap_line(hard_line, max_width, font_size));
+        lines.extend(wrap_line(hard_line, max_width, font_size, face));
     }
     lines.join("\n")
 }
 
-fn wrap_line(line: &str, max_width: f64, font_size: f64) -> Vec<String> {
+fn wrap_line(line: &str, max_width: f64, font_size: f64, face: Option<&ttf_parser::Face<'_>>) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut current: Vec<char> = Vec::new();
     let mut current_width = 0.0;
     let mut last_space: Option<usize> = None;
 
     for ch in line.chars() {
-        let advance = char_advance(ch, font_size);
+        let advance = char_advance(ch, font_size, face);
 
         if !ch.is_whitespace() && !current.is_empty() && current_width + advance > max_width {
             if let Some(space) = last_space.filter(|space| *space > 0) {
@@ -65,7 +89,7 @@ fn wrap_line(line: &str, max_width: f64, font_size: f64) -> Vec<String> {
                 let tail: String = current[space + 1..].iter().collect();
                 lines.push(head.trim_end().to_string());
                 current = tail.chars().collect();
-                current_width = measure(&tail, font_size);
+                current_width = measure(&tail, font_size, face);
                 last_space = None;
             } else {
                 lines.push(current.iter().collect());

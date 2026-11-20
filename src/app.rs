@@ -1686,13 +1686,15 @@ impl Render for Workspace {
             .on_action(cx.listener(|w, _: &GoHome, _, cx| w.show_view(View::Home, cx)))
             .on_action(cx.listener(|w, _: &NewDoc, window, cx| { if !w.drawing_open(cx) { w.new_doc(window, cx); } }))
             .on_action(cx.listener(|w, _: &ImportDoc, window, cx| { if !w.drawing_open(cx) { w.open_import(window, cx); } }))
-            .on_action(cx.listener(|w, _: &OpenFile, window, cx| { if !w.drawing_open(cx) { w.open_file_dialog(window, cx); } }))
+            .on_action(cx.listener(|w, _: &OpenFile, window, cx| { if w.drawing_open(cx) { window.dispatch_action(Box::new(crate::editor::drawing::OpenDrawing), cx); } else { w.open_file_dialog(window, cx); } }))
             .on_action(cx.listener(|w, _: &ImportFolder, window, cx| { if !w.drawing_open(cx) { w.open_import_folder(window, cx); } }))
             .on_action(cx.listener(|w, _: &ToggleSidebar, _, cx| {
                 w.sidebar_open = !w.sidebar_open;
                 cx.notify();
             }))
-            .on_action(cx.listener(|w, _: &FindInDoc, window, cx| { if !w.drawing_open(cx) { w.find_in_doc(false, window, cx); } }))
+            .on_action(cx.listener(|w, _: &FindInDoc, window, cx| {
+                if w.drawing_open(cx) { cx.propagate(); } else { w.find_in_doc(false, window, cx); }
+            }))
             .on_action(cx.listener(|w, _: &ReplaceInDoc, window, cx| {
                 if !w.drawing_open(cx) { w.find_in_doc(!w.reading(), window, cx); }
             }))

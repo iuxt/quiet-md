@@ -28,16 +28,6 @@ fn can_contain_text(e: &Element) -> bool {
     matches!(e, Element::Rectangle { .. } | Element::Diamond { .. } | Element::Ellipse { .. } | Element::StickyNote(_) | Element::Arrow(_) | Element::Line(_))
 }
 
-fn inside_polygon(points: &[World], p: World) -> bool {
-    if points.len() < 3 { return false; }
-    let mut inside = false; let mut previous = points[points.len() - 1];
-    for &q in points {
-        if (q.y > p.y) != (previous.y > p.y) && p.x < q.x + (p.y - q.y) / (previous.y - q.y) * (previous.x - q.x) { inside = !inside; }
-        previous = q;
-    }
-    inside
-}
-
 pub(super) fn snap_delta(doc: &Scene, selected: &[usize], delta: World, threshold: f64) -> (World, Vec<(World, World)>) {
     let Some(from) = selection_bounds(doc, selected) else { return (delta, Vec::new()) };
     let excluded = selection_indices(doc, selected);
@@ -93,9 +83,9 @@ impl DrawingEditor {
                         }
                         if to != b || angle.abs() > 0.000001 {
                             self.checkpoint();
-                            if matches!(property, Property::Width | Property::Height) { edit::resize_selection(&mut self.doc.scene, &self.selection, b, to); }
+                            if matches!(property, Property::Width | Property::Height) { edit::resize_selection(&mut self.doc.scene, &self.selection, b, to, None); }
                             else { transform_selection(&mut self.doc.scene, &self.selection, b, to, angle); }
-                            self.touch_selection(); self.sync_frames(); self.rebuild();
+                            self.touch_selection(); self.sync_selection_frames(); self.rebuild();
                         }
                     }
                 }
@@ -126,45 +116,62 @@ impl DrawingEditor {
     }
 
     pub(super) fn pick_color(&mut self, p: World, cx: &mut Context<Self>) {
-        let color = self.doc.scene.elements.iter().rev().filter(|e| !e.is_deleted()).find_map(|e| {
-            let b = e.base();
-            let at = if matches!(e, Element::Line(_) | Element::Arrow(_) | Element::Freedraw(_)) { p.rotate(-b.angle, element_center(e)) } else { p };
-            scene::collision::hit_test_element(e, at, 7. / self.zoom).then(|| {
-                if matches!(self.eyedropper, chrome::Colors::Fill | chrome::Colors::Paper) && b.background_color != "transparent" { b.background_color.clone() } else { b.stroke_color.clone() }
-            })
-        }).unwrap_or_else(|| self.doc.background.clone());
+        let color = self.doc.sample_color(p, self.dark_canvas, self.export_options.show_frames).unwrap_or_else(|| self.doc.background.clone());
         self.apply_color(self.eyedropper, &color, cx); self.tool = Tool::Select; cx.notify();
     }
 
     pub(super) fn fill_at(&mut self, p: World, cx: &mut Context<Self>) {
-        let hit = self.doc.scene.elements.iter().enumerate().rev().find_map(|(i, e)| {
-            if e.is_deleted() || e.base().locked || !matches!(e, Element::Rectangle { .. } | Element::Diamond { .. } | Element::Ellipse { .. } | Element::Line(_) | Element::StickyNote(_)) { return None; }
-            let hit = if let Element::Line(l) = e { inside_polygon(&l.linear.points, p.rotate(-e.base().angle, element_center(e))) } else { scene::collision::hit_test_element(e, p, 7. / self.zoom) };
-            hit.then_some(i)
-        });
-        if let Some(i) = hit {
-            self.checkpoint(); let e = &mut self.doc.scene.elements[i];
-            e.base_mut().background_color = if self.style.background_color == "transparent" { self.style.stroke_color.clone() } else { self.style.background_color.clone() };
-            if let Element::Line(l) = e { l.polygon = true; }
-            touch(e); self.rebuild(); cx.notify();
+        use quiet_excalidraw::render::bucket_fill::{compute_bucket_fill, find_fill_at};
+        let color = if self.style.background_color == "transparent" { "#b2f2bb".to_owned() } else { self.style.background_color.clone() }; // Excalidraw bucket default
+        if let Some(i) = find_fill_at(&self.doc.scene.elements, p) {
+            if self.doc.scene.elements[i].base().locked { return; }
+            self.checkpoint();
+            let e = &mut self.doc.scene.elements[i]; e.base_mut().background_color = color; e.base_mut().fill_style = self.style.fill_style;
+            touch(e);
+        } else {
+            let Ok(region) = compute_bucket_fill(p, &self.doc.scene.elements) else { return };
+            if region.points.len() > self.doc.remaining_points() || self.doc.scene.non_deleted().count() >= MAX_ELEMENTS { return; }
+            let style = ElementOptions { background_color: color, stroke_color: "transparent".into(), roughness: 0., stroke_width: 1., fill_style: self.style.fill_style, opacity: self.style.opacity, ..Default::default() };
+            let mut e = factory::new_line(region.points, &style);
+            if let Element::Line(l) = &mut e { l.polygon = true; }
+            let at = region.owner_id.as_ref().and_then(|id| self.doc.scene.elements.iter().position(|e| e.id() == id))
+                .or_else(|| self.doc.scene.elements.iter().rposition(|e| region.boundary_ids.iter().any(|id| id == e.id())));
+            let index = at.map_or(self.doc.scene.elements.len(), |i| i + 1);
+            self.checkpoint(); self.doc.scene.elements.insert(index, e);
+            self.selection.clear(); self.sync_frames(&[index]);
         }
+        self.rebuild(); cx.notify();
+    }
+
+    pub(super) fn shared_conversion_targets(&self) -> &'static [scene::element::ConvertTarget] {
+        let Some(&first) = self.selection.first() else { return &[] };
+        let targets = self.doc.scene.elements[first].convertible_targets();
+        if self.selection.iter().all(|&i| {
+            let e = &self.doc.scene.elements[i]; !e.base().locked && e.convertible_targets() == targets
+        }) { targets } else { &[] }
     }
 
     pub(super) fn convert_selection(&mut self, backwards: bool, cx: &mut Context<Self>) {
-        let mut changes = Vec::new();
-        for &i in &self.selection {
-            let e = &self.doc.scene.elements[i]; let targets = e.convertible_targets();
-            if let Some(n) = targets.iter().position(|t| Some(*t) == e.convert_target()) {
-                let n = (n + if backwards { targets.len() - 1 } else { 1 }) % targets.len();
-                if let Some(mut e) = e.convert_to(targets[n]) {
-                    if let Element::Arrow(a) = &mut e && a.elbowed { edit::elbow_points(a); }
-                    changes.push((i, e));
-                }
-            }
+        let targets = self.shared_conversion_targets();
+        let current = self.selection.first().and_then(|&i| self.doc.scene.elements[i].convert_target());
+        if let Some(n) = targets.iter().position(|t| Some(*t) == current) {
+            let n = (n + if backwards { targets.len() - 1 } else { 1 }) % targets.len();
+            self.convert_selection_to(targets[n], cx);
         }
+    }
+
+    pub(super) fn convert_selection_to(&mut self, target: scene::element::ConvertTarget, cx: &mut Context<Self>) {
+        if !self.editable() || !self.shared_conversion_targets().contains(&target) { return; }
+        let changes: Vec<_> = self.selection.iter().filter_map(|&i| Some((i, self.doc.scene.elements[i].convert_to(target)?))).collect();
         if changes.is_empty() { return; }
-        self.checkpoint(); for (i, e) in changes { self.doc.scene.elements[i] = e; }
-        edit::refresh_scene(&mut self.doc.scene); self.line_edit = None; self.rebuild(); cx.notify();
+        self.checkpoint();
+        for (i, mut e) in changes {
+            if let Element::Arrow(a) = &mut e && a.elbowed { edit::elbow_points(a); }
+            touch(&mut e); self.doc.scene.elements[i] = e;
+        }
+        edit::refresh_scene(&mut self.doc.scene);
+        self.line_edit = None; self.crop = None; self.selected_points.clear();
+        self.panel = Some(Panel::Properties); self.rebuild(); cx.notify();
     }
 
     pub(super) fn toggle_text_wrap(&mut self, window: &Window, cx: &mut Context<Self>) {
@@ -175,7 +182,7 @@ impl DrawingEditor {
             if let Element::Text(t) = &mut self.doc.scene.elements[i] {
                 t.auto_resize = !t.auto_resize;
                 t.text = text_to_edit(t).to_string();
-                if !t.auto_resize { t.text = scene::text::wrap_text(&t.text, t.base.width, t.font_size); }
+                if !t.auto_resize { t.text = scene::text::wrap_text_in(&t.text, t.base.width, t.font_size, t.font_family); }
                 resize_text(t, window);
             }
             touch(&mut self.doc.scene.elements[i]);
@@ -184,32 +191,100 @@ impl DrawingEditor {
     }
 
     pub(super) fn toggle_text_binding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.selection.iter().copied().find(|i| matches!(self.doc.scene.elements[*i], Element::Text(_)))
-            .or_else(|| self.selected().and_then(|i| self.bound_text_index(&self.doc.scene.elements[i])));
-        if let Some(text) = text {
-            let Element::Text(t) = &self.doc.scene.elements[text] else { return };
-            let old = t.container_id.clone();
-            let container = if old.is_some() { None } else {
-                self.selection.iter().copied().find(|i| can_contain_text(&self.doc.scene.elements[*i]) && self.bound_text_index(&self.doc.scene.elements[*i]).is_none())
-                    .or_else(|| self.doc.scene.elements.iter().enumerate().rev().find_map(|(i, e)| {
-                        (!e.is_deleted() && !e.base().locked && can_contain_text(e) && self.bound_text_index(e).is_none() && element_bounds(e).contains(element_center(&self.doc.scene.elements[text]))).then_some(i)
-                    }))
-            };
-            if old.is_none() && container.is_none() { return; }
-            let text_id = self.doc.scene.elements[text].id().to_string();
+        if !self.editable() || self.selection.is_empty() { return; }
+        let before = self.selection.clone();
+        if let Some((after, prior)) = self.last_wrap.take() && before == after && let Some(state) = self.undo.back() {
+            let scene = state.scene.clone();
+            self.checkpoint(); self.doc.scene = scene; self.selection = prior;
+            self.line_edit = None; self.rebuild(); cx.notify(); return;
+        }
+        let roots: Vec<_> = before.iter().copied().filter(|&i| {
+            let e = &self.doc.scene.elements[i];
+            !e.is_deleted() && !e.base().locked && !matches!(e, Element::Text(t) if t.container_id.is_some())
+        }).collect();
+        if roots.is_empty() { return; }
+        let mut texts: Vec<_> = roots.iter().copied().filter(|&i| matches!(self.doc.scene.elements[i], Element::Text(_))).collect();
+        texts.sort_unstable();
+        let labels: Vec<_> = roots.iter().filter_map(|&i| self.bound_text_index(&self.doc.scene.elements[i]).map(|text| (i, text))).collect();
+        let container = roots.iter().copied().find(|&i| can_contain_text(&self.doc.scene.elements[i]) && self.bound_text_index(&self.doc.scene.elements[i]).is_none());
+        if roots.len() == 2 && texts.len() == 1 && let Some(container) = container {
+            self.checkpoint(); self.bind_label(texts[0], container); self.selection = vec![container];
+        } else if !texts.is_empty() && texts.len() + labels.len() == roots.len() {
+            if self.doc.scene.non_deleted().count() + texts.len() > MAX_ELEMENTS { return; }
             self.checkpoint();
-            if let Some(old) = old && let Some(e) = self.doc.scene.get_mut(&old)
-                && let Some(bound) = &mut e.base_mut().bound_elements { bound.retain(|b| b.id != text_id); touch(e); }
-            let id = text_id;
-            let new_container = container.map(|i| {
-                let e = &mut self.doc.scene.elements[i];
-                e.base_mut().bound_elements.get_or_insert_with(Vec::new).push(scene::element::BoundElement { id, kind: scene::element::BoundElementType::Text });
-                touch(e); e.id().to_string()
+            let mut selected: Vec<String> = labels.iter().map(|&(i, _)| self.doc.scene.elements[i].id().into()).collect();
+            for &i in texts.iter().rev() {
+                let b = self.doc.scene.elements[i].base();
+                let mut rect = factory::new_rectangle(b.x - 5., b.y - 5., b.width + 10., b.height + 10., &ElementOptions::default());
+                let r = rect.base_mut(); r.stroke_color.clone_from(&b.stroke_color); r.angle = b.angle;
+                r.frame_id.clone_from(&b.frame_id); r.group_ids.clone_from(&b.group_ids);
+                r.roundness = Some(Roundness { kind: RoundnessType::AdaptiveRadius, value: None });
+                let text_id = b.id.clone(); let rect_id = rect.id().to_string(); selected.push(rect_id.clone());
+                for e in &mut self.doc.scene.elements {
+                    if let Element::Arrow(a) = e {
+                        for end in [&mut a.linear.start_binding, &mut a.linear.end_binding].into_iter().flatten() {
+                            if end.element_id == text_id { end.element_id.clone_from(&rect_id); }
+                        }
+                    }
+                }
+                self.doc.scene.elements.insert(i, rect); self.bind_label(i + 1, i);
+            }
+            self.selection = self.doc.scene.elements.iter().enumerate().filter_map(|(i, e)| selected.iter().any(|id| id == e.id()).then_some(i)).collect();
+        } else if labels.len() == roots.len() {
+            self.checkpoint(); self.selection.clear();
+            for (i, text) in labels {
+                let id = self.doc.scene.elements[text].id().to_owned();
+                if let Some(bound) = &mut self.doc.scene.elements[i].base_mut().bound_elements { bound.retain(|b| b.id != id); }
+                if let Element::Text(t) = &mut self.doc.scene.elements[text] {
+                    t.container_id = None; t.text = text_to_edit(t).to_owned(); resize_text(t, window);
+                }
+                touch(&mut self.doc.scene.elements[i]); touch(&mut self.doc.scene.elements[text]); self.selection.extend([i, text]);
+            }
+        } else {
+            let frame_id = roots.iter().find_map(|&i| {
+                let e = &self.doc.scene.elements[i];
+                matches!(e, Element::Frame(_) | Element::MagicFrame(_)).then(|| e.id().to_owned())
             });
-            if let Element::Text(t) = &mut self.doc.scene.elements[text] { t.container_id = new_container; t.auto_resize = true; t.text = text_to_edit(t).to_owned(); resize_text(t, window); }
-            touch(&mut self.doc.scene.elements[text]);
-            edit::refresh_scene(&mut self.doc.scene); self.selection = vec![container.unwrap_or(text)]; self.rebuild(); cx.notify();
-        } else if self.selected().is_some() { self.edit_selection_text(window, cx); }
+            let parent = self.doc.scene.elements[roots[0]].base().frame_id.clone();
+            let frame = frame_id.filter(|id| roots.iter().all(|&i| {
+                let e = &self.doc.scene.elements[i]; e.id() == id || e.base().frame_id.as_ref() == Some(id)
+            })).or_else(|| parent.filter(|id| roots.iter().all(|&i| self.doc.scene.elements[i].base().frame_id.as_ref() == Some(id))
+                && self.doc.scene.elements.iter().enumerate().all(|(i,e)| e.is_deleted() || e.base().frame_id.as_ref() != Some(id)
+                    || matches!(e, Element::Text(t) if t.container_id.is_some()) || roots.contains(&i))));
+            if let Some(id) = frame {
+                let Some(i) = self.doc.scene.elements.iter().position(|e| e.id() == id) else { return };
+                self.checkpoint();
+                self.selection = self.doc.scene.elements.iter().enumerate().filter_map(|(i,e)|
+                    (!e.is_deleted() && e.base().frame_id.as_ref() == Some(&id) && !matches!(e, Element::Text(t) if t.container_id.is_some())).then_some(i)).collect();
+                self.erase_element(i);
+            } else {
+                if self.doc.scene.non_deleted().count() >= MAX_ELEMENTS || roots.iter().any(|&i| matches!(self.doc.scene.elements[i], Element::Frame(_) | Element::MagicFrame(_))) { return; }
+                let mut children = selection_indices(&self.doc.scene, &roots);
+                let Some(bounds) = selection_bounds(&self.doc.scene, &children) else { return };
+                let covers = |b: Rect| bounds.contains(World::new(b.min_x, b.min_y)) && bounds.contains(World::new(b.max_x, b.max_y));
+                for (i, e) in self.doc.scene.elements.iter().enumerate() {
+                    if !e.is_deleted() && !matches!(e, Element::Frame(_) | Element::MagicFrame(_)) && e.base().frame_id.is_none() && covers(element_bounds(e)) && !children.contains(&i) { children.push(i); }
+                }
+                let pad = if roots.iter().any(|&i| matches!(self.doc.scene.elements[i], Element::Image(_)) && element_bounds(&self.doc.scene.elements[i]) == bounds) { 0. } else { 16. };
+                let b = bounds.expand(pad); let frame = factory::new_frame(b.min_x, b.min_y, b.width(), b.height(), None, &ElementOptions::default());
+                let i = *children.iter().min().unwrap(); self.checkpoint();
+                for child in children { let e = &mut self.doc.scene.elements[child]; e.base_mut().frame_id = Some(frame.id().into()); touch(e); }
+                self.doc.scene.elements.insert(i, frame); self.selection = vec![i];
+            }
+        }
+        self.last_wrap = Some((self.selection.clone(), before)); self.line_edit = None;
+        edit::refresh_scene(&mut self.doc.scene); self.rebuild(); cx.notify();
+    }
+
+    fn bind_label(&mut self, text: usize, container: usize) {
+        let id = self.doc.scene.elements[text].id().to_owned();
+        let e = &mut self.doc.scene.elements[container];
+        e.base_mut().bound_elements.get_or_insert_with(Vec::new).push(scene::element::BoundElement { id, kind: scene::element::BoundElementType::Text });
+        touch(e); let container_id = e.id().to_owned();
+        if let Element::Text(t) = &mut self.doc.scene.elements[text] {
+            t.container_id = Some(container_id); t.auto_resize = true; t.vertical_align = VerticalAlign::Middle;
+        }
+        touch(&mut self.doc.scene.elements[text]);
     }
 
     pub(super) fn flowchart(&mut self, direction: World, create: bool, cx: &mut Context<Self>) {
@@ -228,7 +303,7 @@ impl DrawingEditor {
             }).min_by(|a, b| a.1.total_cmp(&b.1));
             if let Some((n, _)) = next { self.selection = vec![n]; cx.notify(); } return;
         }
-        if self.doc.scene.elements.len() + 2 > MAX_ELEMENTS { return; }
+        if self.doc.scene.non_deleted().count() + 2 > MAX_ELEMENTS { return; }
         let from = element_bounds(e); let delta = World::new(direction.x * (from.width() + 100.), direction.y * (from.height() + 100.));
         let delta = edit::bounded_delta(from, delta);
         if delta.dot(direction) < 1. { return; }
@@ -243,18 +318,20 @@ impl DrawingEditor {
         let mut arrow = factory::new_arrow(vec![start, end], None, Some(Arrowhead::Arrow), &self.style);
         self.checkpoint(); let n = self.doc.scene.elements.len(); self.doc.scene.elements.extend(draft.elements);
         if let Element::Arrow(arrow) = &mut arrow {
+            arrow.elbowed = true;
             arrow.linear.start_binding = self.doc.scene.get(&source_id).map(|e| scene::binding::make_binding(e, start));
             arrow.linear.end_binding = self.doc.scene.get(&new_id).map(|e| scene::binding::make_binding(e, end));
         }
         self.doc.scene.elements.push(arrow); self.selection = vec![n];
-        edit::refresh_scene(&mut self.doc.scene); self.sync_frames(); self.rebuild(); cx.notify();
+        edit::refresh_scene(&mut self.doc.scene); self.sync_frames(&[n,n+1]); self.rebuild(); cx.notify();
     }
 
     pub(super) fn copy_png(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let doc = if self.selection.is_empty() { self.doc.clone() } else { self.selection_document() };
+        let doc = if self.selection.is_empty() { self.doc.clone() } else { self.selection_export_document() };
+        let options = self.export_options;
         self.busy = true; cx.notify();
         cx.spawn_in(window, async move |this, cx| {
-            let png = cx.background_executor().spawn(async move { doc.png() }).await;
+            let png = cx.background_executor().spawn(async move { doc.export_png(options) }).await;
             let _ = this.update_in(cx, |d, _, cx| {
                 d.busy = false;
                 if let Ok(png) = png {
@@ -274,6 +351,21 @@ impl DrawingEditor {
         if let Some(text) = text && !text.is_empty() { self.start_text(self.pointer, None, text, window, cx); cx.notify(); }
     }
 
+    pub(super) fn element_link_target(&self) -> Option<&str> {
+        if let Some(i) = self.selected() { return Some(self.doc.scene.elements[i].id()); }
+        let first = self.doc.scene.elements.get(*self.selection.first()?)?;
+        first.base().group_ids.iter().rev().find(|g| self.selection.iter().all(|&i| self.doc.scene.elements[i].base().group_ids.contains(g))).map(String::as_str)
+    }
+
+    pub(super) fn follow_link(&mut self, cx: &mut Context<Self>) {
+        let Some(link) = self.selected().and_then(|i| self.doc.scene.elements[i].base().link.as_deref()) else { return };
+        let Ok(url) = url::Url::parse(link) else { return };
+        if matches!(url.host_str(),Some("excalidraw.com"|"www.excalidraw.com"|"quiet.md")) && let Some((_,id)) = url.query_pairs().find(|(k,_)| k=="element") {
+            let items: Vec<_> = self.doc.scene.elements.iter().enumerate().filter_map(|(i,e)| (!e.is_deleted() && (e.id()==id || e.base().group_ids.iter().any(|g| g==&*id))).then_some(i)).collect();
+            if !items.is_empty() { self.selection = items; self.zoom_selection(cx); }
+        } else if matches!(url.scheme(),"https"|"http"|"mailto") { crate::editor::link::open(cx,url.as_str()); }
+    }
+
     pub(super) fn command_key(&mut self, key: &str, m: Modifiers, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if matches!(key, "left" | "right" | "up" | "down") && (m.alt || m.secondary() && !m.shift) && !self.view_only {
             let direction = match key { "left" => World::new(-1., 0.), "right" => World::new(1., 0.), "up" => World::new(0., -1.), _ => World::new(0., 1.) };
@@ -281,11 +373,12 @@ impl DrawingEditor {
         }
         if !m.secondary() && m.alt {
             match key {
+                "/" => self.stats = !self.stats,
                 "z" => { self.zen = !self.zen; self.panel = None; }
                 "r" => { self.view_only = !self.view_only; self.selection.clear(); self.panel = None; }
                 "s" => self.objects_snap = !self.objects_snap,
                 "d" if m.shift => self.dark_canvas = !self.dark_canvas,
-                "w" => { self.toggle_text_wrap(window, cx); return true; }
+                "w" if !self.view_only => { self.toggle_text_wrap(window, cx); return true; }
                 _ => return false,
             }
             cx.notify(); return true;

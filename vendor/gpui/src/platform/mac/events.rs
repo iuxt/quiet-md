@@ -17,6 +17,15 @@ use core_graphics::event::CGKeyCode;
 use objc::{msg_send, sel, sel_impl};
 use std::{borrow::Cow, ffi::c_void};
 
+// quiet.md: an AppKit mouse event with the tablet point subtype carries pen pressure.
+fn tablet_pressure(event: id) -> Option<f32> {
+    // NSEventSubtypeTabletPoint (NX_SUBTYPE_TABLET_POINT in the macOS SDK).
+    let subtype: i16 = unsafe { msg_send![event, subtype] };
+    if subtype != 1 { return None; }
+    let pressure: f32 = unsafe { msg_send![event, pressure] };
+    pressure.is_finite().then(|| pressure.clamp(0., 1.))
+}
+
 const BACKSPACE_KEY: u16 = 0x7f;
 const SPACE_KEY: u16 = b' ' as u16;
 const ENTER_KEY: u16 = 0x0d;
@@ -149,6 +158,7 @@ impl PlatformInput {
                     };
                     window_height.map(|window_height| {
                         Self::MouseDown(MouseDownEvent {
+                            pressure: tablet_pressure(native_event),
                             button,
                             position: point(
                                 px(native_event.locationInWindow().x as f32),
@@ -176,6 +186,7 @@ impl PlatformInput {
 
                     window_height.map(|window_height| {
                         Self::MouseUp(MouseUpEvent {
+                            pressure: tablet_pressure(native_event),
                             button,
                             position: point(
                                 px(native_event.locationInWindow().x as f32),
@@ -200,6 +211,7 @@ impl PlatformInput {
                     match navigation_direction {
                         Some(direction) => window_height.map(|window_height| {
                             Self::MouseDown(MouseDownEvent {
+                                pressure: None,
                                 button: MouseButton::Navigate(direction),
                                 position: point(
                                     px(native_event.locationInWindow().x as f32),
@@ -258,6 +270,7 @@ impl PlatformInput {
 
                     window_height.map(|window_height| {
                         Self::MouseMove(MouseMoveEvent {
+                            pressure: tablet_pressure(native_event),
                             pressed_button: Some(pressed_button),
                             position: point(
                                 px(native_event.locationInWindow().x as f32),
@@ -269,6 +282,7 @@ impl PlatformInput {
                 }
                 NSEventType::NSMouseMoved => window_height.map(|window_height| {
                     Self::MouseMove(MouseMoveEvent {
+                        pressure: None,
                         position: point(
                             px(native_event.locationInWindow().x as f32),
                             window_height - px(native_event.locationInWindow().y as f32),

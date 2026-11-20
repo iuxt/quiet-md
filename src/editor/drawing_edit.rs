@@ -13,10 +13,109 @@ pub(super) fn elbow_points(a: &mut scene::element::ArrowElement) {
     (a.linear.base.x, a.linear.base.y, a.linear.base.width, a.linear.base.height) = (b.min_x, b.min_y, b.width(), b.height());
 }
 
+pub(super) fn sync_arrow_references(doc: &mut Scene) {
+    use scene::element::{BoundElement, BoundElementType};
+    let mut targets: HashMap<String, Vec<String>> = HashMap::new();
+    for e in doc.non_deleted() {
+        let Element::Arrow(a) = e else { continue };
+        for b in [&a.linear.start_binding, &a.linear.end_binding].into_iter().flatten() {
+            let arrows = targets.entry(b.element_id.clone()).or_default();
+            if arrows.last().is_none_or(|id| id != e.id()) { arrows.push(e.id().into()); }
+        }
+    }
+    for e in &mut doc.elements {
+        let arrows = targets.remove(e.id()).unwrap_or_default();
+        if let Some(bound) = &mut e.base_mut().bound_elements {
+            bound.retain(|b| b.kind != BoundElementType::Arrow || arrows.contains(&b.id));
+        }
+        for id in arrows {
+            let bound = e.base_mut().bound_elements.get_or_insert_with(Vec::new);
+            if !bound.iter().any(|b| b.id == id) { bound.push(BoundElement { id, kind: BoundElementType::Arrow }); }
+        }
+    }
+}
+
 pub(super) fn refresh_scene(doc: &mut Scene) {
+    sync_arrow_references(doc);
     scene::binding::update_bindings(doc);
-    for e in &mut doc.elements { if let Element::Arrow(a) = e && a.elbowed && a.fixed_segments.is_none() { elbow_points(a); } }
+    let targets: std::collections::HashMap<_,_> = doc.non_deleted().map(|e| (e.id(),e)).collect();
+    let routes: Vec<_> = doc.elements.iter().enumerate().filter_map(|(index, e)| {
+        let Element::Arrow(arrow) = e else { return None };
+        if !arrow.elbowed || e.is_deleted() { return None; }
+        let (&start, &end) = arrow.linear.points.first().zip(arrow.linear.points.last())?;
+        let route = if arrow.fixed_segments.as_ref().is_some_and(|s| !s.is_empty()) { None }
+            else { elbow::bound_route(start, end, arrow, &targets) };
+        Some((index, route))
+    }).collect();
+    for (index, route) in routes {
+        let Element::Arrow(arrow) = &mut doc.elements[index] else { continue };
+        if let Some(points) = route.filter(|p| p.len() >= 2) {
+            arrow.linear.points = points;
+            let b = Rect::from_points(&arrow.linear.points);
+            (arrow.linear.base.x, arrow.linear.base.y, arrow.linear.base.width, arrow.linear.base.height) = (b.min_x,b.min_y,b.width(),b.height());
+        } else if arrow.fixed_segments.as_ref().is_some_and(|s| !s.is_empty()) {
+            elbow::maintain_fixed_route(arrow);
+        } else { elbow_points(arrow); }
+    }
     scene::binding::sync_container_text(doc);
+}
+
+pub(super) fn project_label(path: &[World], p: World) -> f64 {
+    let mut total = 0.; let mut nearest = (f64::INFINITY, 0.);
+    for pair in path.windows(2) {
+        let vector = pair[1]-pair[0]; let length = vector.length(); if length==0. { continue; }
+        let t = ((p-pair[0]).dot(vector)/(length*length)).clamp(0.,1.);
+        let distance = p.distance(pair[0]+vector*t);
+        if distance < nearest.0 { nearest = (distance,total+t*length); }
+        total += length;
+    }
+    if total>0. { nearest.1/total } else { 0.5 }
+}
+
+pub(super) fn place_label(scene: &mut Scene, index: usize, position: f64) {
+    if let Element::Text(t) = &mut scene.elements[index] { t.label_position = Some(position); }
+    scene::binding::sync_container_text(scene);
+}
+
+pub(super) fn pan_crop(element: &mut Element, delta: World) {
+    if let Element::Image(i) = element && let Some(c) = &mut i.crop {
+        c.x = (c.x - delta.x*c.width/i.base.width*i.scale[0]).clamp(0., (c.natural_width-c.width).max(0.));
+        c.y = (c.y - delta.y*c.height/i.base.height*i.scale[1]).clamp(0., (c.natural_height-c.height).max(0.));
+    }
+}
+
+// Keep the opposite edge or center anchored as the visible rectangle changes.
+pub(super) fn crop_bounds(e: &Element, start: Rect, handle: usize, pointer: World, ratio: bool, center: bool) -> Rect {
+    let (w,h) = (start.width(),start.height());
+    if w <= 0. || h <= 0. { return start; }
+    let west = matches!(handle,0|3|7); let east = matches!(handle,1|2|5);
+    let north = matches!(handle,0|1|4); let south = matches!(handle,2|3|6);
+    let anchor_x = if center { 0.5 } else if west { 1. } else if east { 0. } else { 0.5 };
+    let anchor_y = if center { 0.5 } else if north { 1. } else if south { 0. } else { 0.5 };
+    let fixed_x = start.min_x + anchor_x*w; let fixed_y = start.min_y + anchor_y*h;
+    let factor = if center { 2. } else { 1. };
+    let new_w = if west { (fixed_x-pointer.x)*factor } else if east { (pointer.x-fixed_x)*factor } else { w };
+    let new_h = if north { (fixed_y-pointer.y)*factor } else if south { (pointer.y-fixed_y)*factor } else { h };
+    let mut allowed = start;
+    if let Element::Image(image) = e && let Some(c) = image.crop {
+        let sx = w/c.width; let sy = h/c.height;
+        allowed.min_x -= (if image.scale[0]<0. { c.natural_width-c.x-c.width } else { c.x })*sx;
+        allowed.min_y -= (if image.scale[1]<0. { c.natural_height-c.y-c.height } else { c.y })*sy;
+        allowed.max_x = allowed.min_x + c.natural_width*sx; allowed.max_y = allowed.min_y + c.natural_height*sy;
+    }
+    let limit = |anchor,fixed,low,high| if anchor==0. { high-fixed } else if anchor==1. { fixed-low }
+        else { f64::min(fixed-low,high-fixed)*2. };
+    let max_w = limit(anchor_x,fixed_x,allowed.min_x,allowed.max_x).max(w);
+    let max_h = limit(anchor_y,fixed_y,allowed.min_y,allowed.max_y).max(h);
+    let min_w = w.min(10.); let min_h = h.min(10.);
+    let (width,height) = if ratio {
+        let aspect = w/h;
+        let width = if !west && !east { new_h*aspect } else if !north && !south { new_w } else { new_w.max(new_h*aspect) };
+        let width = width.clamp(min_w.max(min_h*aspect).min(w), max_w.min(max_h*aspect).max(w));
+        (width,width/aspect)
+    } else { (new_w.clamp(min_w,max_w),new_h.clamp(min_h,max_h)) };
+    let x = fixed_x-anchor_x*width; let y = fixed_y-anchor_y*height;
+    Rect::new(x,y,x+width,y+height)
 }
 
 pub(super) fn crop_image(e: &mut Element, from: Rect, to: Rect, natural: World) {
@@ -27,7 +126,10 @@ pub(super) fn crop_image(e: &mut Element, from: Rect, to: Rect, natural: World) 
     let center = to.center().rotate(angle, pivot);
     let x = if image.scale[0] < 0. { from.max_x - to.max_x } else { to.min_x - from.min_x };
     let y = if image.scale[1] < 0. { from.max_y - to.max_y } else { to.min_y - from.min_y };
-    image.crop = Some(scene::element::ImageCrop { x: crop.x + x * sx, y: crop.y + y * sy, width: to.width() * sx, height: to.height() * sy, ..crop });
+    let width = (to.width() * sx).min(crop.natural_width); let height = (to.height() * sy).min(crop.natural_height);
+    image.crop = (width < crop.natural_width - 0.00001 || height < crop.natural_height - 0.00001).then(|| scene::element::ImageCrop {
+        x: (crop.x + x * sx).clamp(0., crop.natural_width - width), y: (crop.y + y * sy).clamp(0., crop.natural_height - height), width, height, ..crop
+    });
     let b = &mut image.base;
     (b.x, b.y, b.width, b.height) = (center.x - to.width() / 2., center.y - to.height() / 2., to.width(), to.height());
 }
@@ -74,15 +176,54 @@ fn set_points(e: &mut Element, map: impl Fn(World) -> World) -> bool {
     true
 }
 
-pub(super) fn resize_selection(doc: &mut Scene, roots: &[usize], from: Rect, to: Rect) {
+pub(super) fn resize_selection(doc: &mut Scene, roots: &[usize], from: Rect, to: Rect, corner: Option<usize>) {
     if let [i] = roots && matches!(doc.elements[*i], Element::Frame(_) | Element::MagicFrame(_)) {
         let b = doc.elements[*i].base_mut();
         (b.x, b.y, b.width, b.height) = (to.min_x, to.min_y, to.width(), to.height());
+    } else if let [i] = roots && linear_points(&doc.elements[*i]).is_some()
+        && (corner.is_some() || Rect::from_points(linear_points(&doc.elements[*i]).unwrap()) == from) {
+        resize_linear(&mut doc.elements[*i], from, to, corner.unwrap_or(2)); refresh_scene(doc);
     } else { transform_selection(doc, roots, from, to, 0.); }
+}
+
+fn resize_linear(e: &mut Element, from: Rect, to: Rect, corner: usize) {
+    let pivot = element_center(e); let angle = e.base().angle;
+    let scaled = |p: World| {
+        let x = if from.width() > 0.000001 { (p.x - from.min_x) / from.width() } else { (p.y - from.min_y) / from.height().max(0.000001) };
+        let y = if from.height() > 0.000001 { (p.y - from.min_y) / from.height() } else { x };
+        let flip = corner == 1 || corner == 3;
+        World::new(to.min_x + (if from.width() <= 0.000001 && flip { 1. - x } else { x }) * to.width(),
+            to.min_y + (if from.height() <= 0.000001 && flip { 1. - y } else { y }) * to.height())
+    };
+    let center = Rect::from_points(&linear_points(e).unwrap().iter().map(|p| scaled(*p)).collect::<Vec<_>>()).center();
+    let shift = center.rotate(angle, pivot) - center;
+    let map = |p| scaled(p) + shift;
+    let l = match e {
+        Element::Arrow(a) => {
+            if let Some(segments) = &mut a.fixed_segments { for s in segments { s.start = map(s.start); s.end = map(s.end); } }
+            &mut a.linear
+        }
+        Element::Line(l) => &mut l.linear, _ => return,
+    };
+    for p in &mut l.points { *p = map(*p); }
+    l.start_binding = None; l.end_binding = None;
+    let b = Rect::from_points(&l.points);
+    (l.base.x, l.base.y, l.base.width, l.base.height) = (b.min_x, b.min_y, b.width(), b.height());
 }
 
 pub(super) fn transform_selection(doc: &mut Scene, roots: &[usize], from: Rect, to: Rect, angle: f64) {
     let indices = selection_indices(doc, roots);
+    if let [i] = roots && linear_points(&doc.elements[*i]).is_some()
+        && (from.width() - to.width()).abs() < 0.000001 && (from.height() - to.height()).abs() < 0.000001 {
+        if angle.abs() < 0.000001 {
+            for &n in &indices { scene::transform::translate_element(&mut doc.elements[n], to.min_x - from.min_x, to.min_y - from.min_y); }
+        } else {
+            let b = doc.elements[*i].base_mut(); b.angle = (b.angle + angle).rem_euclid(std::f64::consts::TAU);
+        }
+        let l = match &mut doc.elements[*i] { Element::Arrow(a) => &mut a.linear, Element::Line(l) => &mut l.linear, _ => unreachable!() };
+        l.start_binding = None; l.end_binding = None;
+        refresh_scene(doc); return;
+    }
     let ids: HashSet<_> = indices.iter().map(|i| doc.elements[*i].id().to_string()).collect();
     let sx = if from.width() > 0.000001 { to.width() / from.width() } else { 1. };
     let sy = if from.height() > 0.000001 { to.height() / from.height() } else { 1. };
@@ -134,9 +275,17 @@ fn remap_bindings(l: &mut scene::element::LinearElement, ids: &HashMap<&str, Str
     }
 }
 
-pub(super) fn move_vertices(doc: &mut Scene, index: usize, indices: &[usize], insert: Option<(usize, World)>, _start: World, delta: World, bind: bool) {
+pub(super) fn move_vertices(doc: &mut Scene, index: usize, indices: &[usize], insert: Option<(usize, World)>, _start: World, delta: World, snap: Option<ArrowSnap>) {
+    if let Some(points) = linear_points(&doc.elements[index]) {
+        let (start, end) = (indices.contains(&0), indices.contains(&(points.len() - 1)));
+        if start != end { pin_opposite_binding(doc, index, usize::from(end)); }
+        else if !start { pin_opposite_binding(doc, index, 0); pin_opposite_binding(doc, index, 1); }
+    }
     let e = &mut doc.elements[index];
     set_points(e, |p| p);
+    if insert.is_some() && linear_points(e).is_some_and(|points| points.len() == 2) && !matches!(e, Element::Arrow(a) if a.elbowed) {
+        e.base_mut().roundness = Some(roundness(Tool::Line));
+    }
     let elbow = matches!(e, Element::Arrow(a) if a.elbowed);
     let l = match e { Element::Arrow(a) => &mut a.linear, Element::Line(l) => &mut l.linear, _ => return };
     let old_points = l.points.clone();
@@ -155,8 +304,8 @@ pub(super) fn move_vertices(doc: &mut Scene, index: usize, indices: &[usize], in
     let moved_start = indices.contains(&0); let moved_end = indices.contains(&(l.points.len() - 1));
     let rect = Rect::from_points(&l.points);
     (l.base.x, l.base.y, l.base.width, l.base.height) = (rect.min_x, rect.min_y, rect.width(), rect.height());
-    let start_binding = (bind && moved_start).then(|| arrow_binding(doc, start)).flatten();
-    let end_binding = (bind && moved_end).then(|| arrow_binding(doc, end)).flatten();
+    let start_binding = moved_start.then(|| arrow_binding(doc, start, snap)).flatten();
+    let end_binding = moved_end.then(|| arrow_binding(doc, end, snap)).flatten();
     let l = match &mut doc.elements[index] { Element::Arrow(a) => &mut a.linear, Element::Line(l) => &mut l.linear, _ => return };
     if moved_start { l.start_binding = start_binding; }
     if moved_end { l.end_binding = end_binding; }
@@ -172,13 +321,7 @@ impl DrawingEditor {
         let mut cache = self.library_images.borrow_mut();
         if let Some(image) = cache.get(&index) { return Some(image.clone()); }
         let raster = quiet_excalidraw::render::export::rasterize_pixels(&self.library.get(index)?.svg(), 0.5, 128).ok()?;
-        let (w, h) = (raster.width(), raster.height()); let mut bytes = raster.take();
-        for p in bytes.as_chunks_mut::<4>().0 {
-            let a = u32::from(p[3]);
-            if a > 0 && a < 255 { for c in &mut p[..3] { *c = ((u32::from(*c) * 255 + a / 2) / a) as u8; } }
-            p.swap(0, 2);
-        }
-        let image = Arc::new(RenderImage::new(vec![image::Frame::new(image::RgbaImage::from_raw(w, h, bytes)?)]));
+        let image = drawing_scene::render_image(raster)?;
         cache.insert(index, image.clone()); Some(image)
     }
 
@@ -207,7 +350,7 @@ impl DrawingEditor {
 
     pub(super) fn add_to_library(&mut self, cx: &mut Context<Self>) {
         if !self.editable() || self.selection.is_empty() || self.library.len() >= 64 { return; }
-        let doc = self.selection_document();
+        let mut doc = self.selection_document(); doc.init_library_item();
         self.library.push(doc);
         if DrawingScene::library_json(&self.library).is_err() { self.library.pop(); return; }
         self.persist_library(); self.panel = Some(Panel::Library); cx.notify();
@@ -240,13 +383,20 @@ impl DrawingEditor {
             let result = if let Some(path) = paths.and_then(|p| p.into_iter().next()) {
                 Some(cx.background_executor().spawn(async move { DrawingScene::load_library(&store::read_bounded(&path, MAX_SOURCE)?) }).await)
             } else { None };
-            let _ = this.update_in(cx, |d, _, cx| {
+            let _ = this.update_in(cx, |d, window, cx| {
                 d.busy = false;
                 if let Some(result) = result {
                     match result {
-                        Ok(items) if items.len() + d.library.len() <= 64 => {
-                            let mut all = d.library.clone(); all.extend(items);
-                            if DrawingScene::library_json(&all).is_ok() { d.library = all; d.persist_library(); }
+                        Ok(mut items) => {
+                            items.retain(|item| !d.library.iter().any(|local| local.scene.non_deleted().map(|e| (e.id(), e.base().version_nonce))
+                                .eq(item.scene.non_deleted().map(|e| (e.id(), e.base().version_nonce)))));
+                            if items.is_empty() { cx.notify(); return; }
+                            items.extend(d.library.iter().cloned());
+                            if items.len() <= 64 && DrawingScene::library_json(&items).is_ok() {
+                                for image in d.library_images.borrow_mut().drain().map(|(_,image)| image) { let _ = window.drop_image(image); }
+                                d.library = items; d.persist_library();
+                            }
+                            else { d.error = Some(tr("无法导入此素材库", "Could not import this library")); }
                         }
                         _ => d.error = Some(tr("无法导入此素材库", "Could not import this library")),
                     }
@@ -327,7 +477,7 @@ impl DrawingEditor {
     }
 
     pub(super) fn edit_points(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.text_at.is_some() || self.edit_link.is_some() || self.edit_frame.is_some() || self.edit_property.is_some() { self.finish_field(window, cx); return; }
+        if self.mermaid || self.text_at.is_some() || self.edit_link.is_some() || self.edit_frame.is_some() || self.edit_property.is_some() { self.finish_field(window, cx); return; }
         if !self.editable() { return; }
         if let Some(i) = self.selected() && matches!(self.doc.scene.elements[i], Element::Image(_)) {
             self.crop = if self.crop == Some(i) { None } else { Some(i) }; cx.notify(); return;
@@ -354,10 +504,54 @@ impl DrawingEditor {
         refresh_scene(&mut self.doc.scene); self.selected_points.clear(); self.rebuild(); cx.notify();
     }
 
+    pub(super) fn duplicate_points(&mut self, cx: &mut Context<Self>) {
+        let Some(i) = self.line_edit.filter(|i| self.selected() == Some(*i)) else { return };
+        let e = &self.doc.scene.elements[i];
+        let Some(points) = linear_points(e) else { return };
+        let count = self.selected_points.len();
+        if e.is_deleted() || e.base().locked || count == 0 || points.len() + count > MAX_POINTS || count > self.doc.remaining_points()
+            || matches!(e, Element::Arrow(a) if a.elbowed) { return; }
+
+        let polygon = matches!(e, Element::Line(l) if l.polygon);
+        self.checkpoint();
+        let e = &mut self.doc.scene.elements[i];
+        set_points(e, |p| p);
+        let linear = match e { Element::Arrow(a) => &mut a.linear, Element::Line(l) => &mut l.linear, _ => unreachable!() };
+        let points = &linear.points;
+        let keep_last = linear.end_binding.is_some() || polygon || points.first() == points.last();
+        let mut next = Vec::with_capacity(points.len() + count);
+        let mut selected = Vec::with_capacity(count);
+        for (n, &p) in points.iter().enumerate() {
+            if self.selected_points.contains(&n) {
+                if let Some(&q) = points.get(n + 1) {
+                    next.push(p);
+                    selected.push(next.len());
+                    next.push(p.lerp(q, 0.5));
+                    continue;
+                }
+                if keep_last {
+                    // Keep the original endpoint and leave room for a copy of the preceding point.
+                    selected.push(next.len());
+                    next.push(points[n - 1].lerp(p, 0.75));
+                } else {
+                    next.push(p);
+                    selected.push(next.len());
+                    next.push(World::new((p.x + 30.).clamp(-MAX_COORD, MAX_COORD), (p.y + 30.).clamp(-MAX_COORD, MAX_COORD)));
+                    continue;
+                }
+            }
+            next.push(p);
+        }
+        linear.points = next;
+        set_points(e, |p| p); touch(e);
+        self.selected_points = selected;
+        refresh_scene(&mut self.doc.scene); self.rebuild(); cx.notify();
+    }
+
     pub(super) fn zoom_selection(&mut self, cx: &mut Context<Self>) {
         let Some(b) = selection_bounds(&self.doc.scene, &self.selection) else { return };
         let view = self.viewport.get(); let w = f64::from(f32::from(view.size.width)); let h = f64::from(f32::from(view.size.height));
-        self.zoom = ((w - 96.) / b.width().max(1.)).min((h - 96.) / b.height().max(1.)).clamp(0.05, 8.);
+        self.zoom = ((w - 96.) / b.width().max(1.)).min((h - 96.) / b.height().max(1.)).clamp(0.1, 30.);
         self.offset = point(px((w / 2. - b.center().x * self.zoom) as f32), px((h / 2. - b.center().y * self.zoom) as f32)); cx.notify();
     }
 
@@ -387,8 +581,10 @@ impl DrawingEditor {
 
     pub(super) fn start_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.line_edit = None; self.crop = None; self.selected_points.clear();
-        if !self.editable() { return; }
-        self.finish_field(window, cx); self.searching = true;
+        if self.busy || self.discard || self.reset_confirmation || self.gesture.is_some() { return; }
+        self.finish_field(window, cx);
+        if self.mermaid { return; }
+        self.searching = true;
         self.field.update(cx, |f, cx| { f.multiline = false; f.set_placeholder(tr("查找画板文字", "Find text on canvas"), cx); f.set_text("", cx); });
         window.focus(&self.field.read(cx).focus_handle(cx)); cx.notify();
     }
@@ -407,17 +603,19 @@ impl DrawingEditor {
     }
 
     pub(super) fn preview_scene(&self) -> Option<Scene> {
-        if !matches!(self.gesture, Some(Gesture::Crop { .. } | Gesture::Endpoint { .. } | Gesture::Vertex { .. } | Gesture::Move { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. })) { return None; }
+        if !matches!(self.gesture, Some(Gesture::Crop { .. } | Gesture::CropPan { .. } | Gesture::Label { .. } | Gesture::Endpoint { .. } | Gesture::Vertex { .. } | Gesture::Move { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. })) { return None; }
         let mut doc = self.doc.scene.clone();
         match &self.gesture {
+            Some(Gesture::Label { index,position,.. }) => place_label(&mut doc,*index,*position),
+            Some(Gesture::CropPan { index,delta,.. }) => pan_crop(&mut doc.elements[*index],*delta),
             Some(Gesture::Crop { start, rect, index, .. }) => crop_image(&mut doc.elements[*index], *start, *rect, self.image_dimensions(*index)),
-            Some(Gesture::Endpoint { index, endpoint, start, end, .. }) if start.distance(*end) > 0.5 => move_endpoint_binding(&mut doc, *index, *endpoint, *end, !self.binding_disabled),
-            Some(Gesture::Vertex { index, start, delta, indices, insert }) => move_vertices(&mut doc, *index, indices, *insert, *start, *delta, !self.binding_disabled),
+            Some(Gesture::Endpoint { index, endpoint, start, end, .. }) if start.distance(*end) > 0.5 => move_endpoint_binding(&mut doc, *index, *endpoint, *end, self.arrow_snap(!self.binding_disabled)),
+            Some(Gesture::Vertex { index, start, delta, indices, insert }) => move_vertices(&mut doc, *index, indices, *insert, *start, *delta, self.arrow_snap(!self.binding_disabled)),
             Some(Gesture::Move { delta, .. }) => {
                 let b = selection_bounds(&doc, &self.selection)?;
                 transform_selection(&mut doc, &self.selection, b, Rect::new(b.min_x + delta.x, b.min_y + delta.y, b.max_x + delta.x, b.max_y + delta.y), 0.);
             }
-            Some(Gesture::Resize { start, rect, .. }) => resize_selection(&mut doc, &self.selection, *start, *rect),
+            Some(Gesture::Resize { start, rect, corner, .. }) => resize_selection(&mut doc, &self.selection, *start, *rect, Some(*corner)),
             Some(Gesture::Rotate { angle, .. }) => { let b = selection_bounds(&doc, &self.selection)?; transform_selection(&mut doc, &self.selection, b, b, *angle); }
             _ => return None,
         }
@@ -466,7 +664,7 @@ impl DrawingEditor {
         self.checkpoint();
         let to = Rect::new(b.min_x + delta.x, b.min_y + delta.y, b.max_x + delta.x, b.max_y + delta.y);
         transform_selection(&mut self.doc.scene, &self.selection, b, to, 0.);
-        self.touch_selection(); self.sync_frames(); self.rebuild(); cx.notify();
+        self.touch_selection(); self.sync_selection_frames(); self.rebuild(); cx.notify();
     }
 
     pub(super) fn touch_selection(&mut self) {
@@ -544,13 +742,58 @@ impl DrawingEditor {
         refresh_scene(&mut self.doc.scene); self.rebuild(); cx.notify();
     }
 
-    pub(super) fn sync_frames(&mut self) {
-        let frames: Vec<_> = self.doc.scene.non_deleted().filter(|e| matches!(e, Element::Frame(_) | Element::MagicFrame(_))).map(|e| (e.id().to_string(), element_bounds(e))).collect();
-        for e in &mut self.doc.scene.elements {
+    pub(super) fn sync_selection_frames(&mut self) {
+        self.sync_frames(&self.selection.clone());
+    }
+
+    pub(super) fn sync_frames(&mut self, changed: &[usize]) {
+        let mut moved: HashSet<_> = selection_indices(&self.doc.scene, changed).into_iter().collect();
+        let frames: Vec<_> = self.doc.scene.elements.iter().enumerate()
+            .filter(|(_,e)| !e.is_deleted() && matches!(e, Element::Frame(_) | Element::MagicFrame(_)))
+            .map(|(i,e)| (e.id().to_string(), element_bounds(e), moved.contains(&i))).collect();
+        for (i, e) in self.doc.scene.elements.iter().enumerate() {
             if e.is_deleted() || matches!(e, Element::Frame(_) | Element::MagicFrame(_)) { continue; }
             let b = element_bounds(e);
-            e.base_mut().frame_id = frames.iter().rev().find(|(id, frame)| frame.contains(b.center()) || e.base().frame_id.as_deref() == Some(id.as_str()) && frame.intersects(&b)).map(|(id, _)| id.clone());
+            if frames.iter().any(|(_, frame, changed)| *changed && frame.contains(World::new(b.min_x,b.min_y)) && frame.contains(World::new(b.max_x,b.max_y))) {
+                moved.insert(i);
+            }
         }
+        for i in moved {
+            let e = &mut self.doc.scene.elements[i];
+            if e.is_deleted() || matches!(e, Element::Frame(_) | Element::MagicFrame(_)) { continue; }
+            let b = element_bounds(e);
+            let old = e.base().frame_id.as_deref();
+            let frame = frames.iter().rev().find(|(id, frame, _)| frame.contains(b.center()) || old == Some(id.as_str()) && frame.intersects(&b)).map(|(id, _, _)| id.clone());
+            if e.base().frame_id != frame { e.base_mut().frame_id = frame; touch(e); }
+        }
+    }
+
+    pub(super) fn selected_frame(&self) -> Option<&Element> {
+        self.selected().map(|i| &self.doc.scene.elements[i]).filter(|e| matches!(e, Element::Frame(_) | Element::MagicFrame(_)))
+    }
+
+    pub(super) fn frame_members(&mut self, detach: bool, cx: &mut Context<Self>) {
+        if !self.editable() { return; }
+        let Some(frame) = self.selected_frame() else { return };
+        let members: Vec<_> = self.doc.scene.elements.iter().enumerate()
+            .filter_map(|(i, e)| (!e.is_deleted() && e.base().frame_id.as_deref() == Some(frame.id())).then_some(i)).collect();
+        if detach && !members.is_empty() {
+            self.checkpoint();
+            for i in members {
+                let e = &mut self.doc.scene.elements[i]; e.base_mut().frame_id = None; touch(e);
+            }
+            self.rebuild();
+        } else if !detach {
+            self.selection = members.into_iter().filter(|&i| !matches!(&self.doc.scene.elements[i], Element::Text(t) if t.container_id.is_some())).collect();
+        }
+        self.panel = None;
+        cx.notify();
+    }
+
+    pub(super) fn selection_export_document(&self) -> DrawingScene {
+        let mut doc = self.selection_document();
+        doc.export_region = self.selected_frame().map(element_bounds);
+        doc
     }
 
     pub(super) fn selection_document(&self) -> DrawingScene {
@@ -566,10 +809,7 @@ impl DrawingEditor {
         let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else { return };
         value["type"] = "excalidraw/clipboard".into();
         let text = value.to_string();
-        let mut fake = crate::clipboard::FAKE_CLIPBOARD.lock().unwrap();
-        if let Some(clip) = fake.as_mut() { clip.text = text; clip.html = None; clip.images.clear(); }
-        else { cx.write_to_clipboard(ClipboardItem::new_string(text)); }
-        drop(fake);
+        palette::write_clipboard_text(text,cx);
         if cut { self.delete(cx); }
     }
 
@@ -603,14 +843,19 @@ impl DrawingEditor {
                 self.insert_scene(doc, self.pointer, window, cx); return;
             }
         }
-        if !text.trim().is_empty() { self.start_text(self.pointer, None, text, window, cx); }
+        if let Some(data) = chart::Spreadsheet::parse(&text) {
+            self.chart = Some((data,text,self.pointer)); self.panel = Some(Panel::Chart); cx.notify();
+        } else if !text.trim().is_empty() { self.start_text(self.pointer, None, text, window, cx); }
     }
 
-    pub(super) fn insert_scene(&mut self, source: DrawingScene, at: World, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn insert_scene(&mut self, source: DrawingScene, at: World, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.editable() { return false; }
         let elements: Vec<_> = source.scene.non_deleted().cloned().collect();
-        if elements.is_empty() || elements.len() + self.doc.scene.elements.len() > MAX_ELEMENTS || source.remaining_points() < drawing_scene::MAX_SCENE_POINTS.saturating_sub(self.doc.remaining_points()) { return; }
+        if elements.is_empty() || elements.len() + self.doc.scene.non_deleted().count() > MAX_ELEMENTS || source.remaining_points() < drawing_scene::MAX_SCENE_POINTS.saturating_sub(self.doc.remaining_points()) { return false; }
         let mut next = self.doc.clone();
-        let mut elements = clone_elements(&elements);
+        let copies = clone_elements(&elements);
+        for (from, to) in elements.iter().zip(&copies) { next.copy_original(&source, from, to); }
+        let mut elements = copies;
         let start = next.scene.elements.len();
         next.scene.elements.append(&mut elements);
         for (id, file) in source.files {
@@ -622,15 +867,16 @@ impl DrawingEditor {
             file.id.clone_from(&new_id); next.files.insert(new_id, file);
         }
         let indices: Vec<_> = (start..next.scene.elements.len()).collect();
-        let Some(b) = selection_bounds(&next.scene, &indices) else { return };
+        let Some(b) = selection_bounds(&next.scene, &indices) else { return false };
         let delta = bounded_delta(b, at - b.center());
         for &i in &indices { scene::transform::translate_element(&mut next.scene.elements[i], delta.x, delta.y); }
-        let Ok(bytes) = next.json() else { return };
-        if DrawingScene::load(&bytes).is_err() { return; }
+        let Ok(bytes) = next.json() else { return false };
+        if DrawingScene::load(&bytes).is_err() { return false; }
         self.checkpoint(); self.doc = next;
         self.selection = indices.into_iter().filter(|i| !matches!(&self.doc.scene.elements[*i], Element::Text(t) if t.container_id.is_some())).collect();
         self.line_edit = None; self.crop = None; self.selected_points.clear();
         self.tool = Tool::Select; self.panel = Some(Panel::Properties); self.load_images(window); self.rebuild(); cx.notify();
+        true
     }
 }
 
@@ -640,7 +886,52 @@ pub(super) fn bounded_delta(b: Rect, delta: World) -> World {
 
 #[cfg(test)]
 mod tests {
-    use super::{clone_elements, crop_image, move_vertices, refresh_scene, selection_indices, transform_selection, DrawingScene, Element, ElementOptions, Rect, Scene, World, factory, Arrowhead};
+    use super::{ArrowSnap, clone_elements, crop_image, move_vertices, refresh_scene, selection_indices, transform_selection, DrawingScene, Element, ElementOptions, Rect, Scene, World, factory, Arrowhead};
+
+    #[test]
+    fn dragging_the_middle_control_creates_a_curve_with_fixed_endpoints() {
+        let mut doc = Scene::new(); let options = ElementOptions::default();
+        doc.elements.push(factory::new_arrow(vec![World::new(100., 100.), World::new(500., 300.)], None, Some(Arrowhead::Arrow), &options));
+        move_vertices(&mut doc, 0, &[1], Some((1, World::new(300., 200.))), World::new(300., 200.), World::new(0., -80.), Some(ArrowSnap::default()));
+        let Element::Arrow(a) = &doc.elements[0] else { panic!() };
+        assert_eq!(a.linear.points, vec![World::new(100., 100.), World::new(300., 120.), World::new(500., 300.)]);
+        assert!(a.linear.base.roundness.is_some());
+    }
+
+    #[test]
+    fn a_rotated_curve_scales_about_the_opposite_corner_and_keeps_its_angle() {
+        let mut doc = DrawingScene::new(); let options = ElementOptions::default();
+        let mut arrow = factory::new_arrow(vec![World::new(100., 100.), World::new(300., 150.), World::new(500., 300.)], None, Some(Arrowhead::Arrow), &options);
+        arrow.base_mut().angle = std::f64::consts::FRAC_PI_4;
+        let before = super::endpoints(&arrow).unwrap(); doc.scene.elements.push(arrow);
+        super::resize_selection(&mut doc.scene, &[0], Rect::new(100., 100., 500., 300.), Rect::new(100., 100., 700., 500.), Some(2));
+        let after = super::endpoints(&doc.scene.elements[0]).unwrap();
+        assert!(before[0].distance(after[0]) < 0.000001); assert!(before[1].distance(after[1]) > 100.);
+        assert_eq!(doc.scene.elements[0].base().angle, std::f64::consts::FRAC_PI_4);
+        let reopened = DrawingScene::load(&doc.json().unwrap()).unwrap();
+        for (a, b) in after.into_iter().zip(super::endpoints(&reopened.scene.elements[0]).unwrap()) { assert!(a.distance(b) < 0.000001); }
+    }
+
+    #[test]
+    fn horizontal_lines_can_be_resized_from_the_upper_and_lower_corners() {
+        for (corner, to, end) in [(2, Rect::new(100., 100., 600., 200.), World::new(600., 200.)), (1, Rect::new(100., 0., 600., 100.), World::new(600., 0.))] {
+            let mut doc = Scene::new(); doc.elements.push(factory::new_line(vec![World::new(100., 100.), World::new(500., 100.)], &ElementOptions::default()));
+            super::resize_selection(&mut doc, &[0], Rect::new(100., 100., 500., 100.), to, Some(corner));
+            assert_eq!(super::endpoints(&doc.elements[0]).unwrap(), [World::new(100., 100.), end]);
+        }
+    }
+
+    #[test]
+    fn moving_a_rotated_line_keeps_the_orientation_of_its_selection_frame() {
+        let mut doc = Scene::new(); doc.elements.push(factory::new_line(vec![World::new(100., 100.), World::new(500., 300.)], &ElementOptions::default()));
+        let b = super::element_bounds(&doc.elements[0]);
+        transform_selection(&mut doc, &[0], b, b, std::f64::consts::FRAC_PI_2);
+        let before = super::endpoints(&doc.elements[0]).unwrap(); let b = super::element_bounds(&doc.elements[0]);
+        transform_selection(&mut doc, &[0], b, Rect::new(b.min_x + 40., b.min_y + 20., b.max_x + 40., b.max_y + 20.), 0.);
+        let after = super::endpoints(&doc.elements[0]).unwrap();
+        for (a, b) in before.into_iter().zip(after) { assert!((a + World::new(40., 20.)).distance(b) < 0.000001); }
+        assert_eq!(doc.elements[0].base().angle, std::f64::consts::FRAC_PI_2);
+    }
 
     #[test]
     fn elbow_segment_drag_stays_orthogonal_and_keeps_endpoints() {
@@ -649,7 +940,7 @@ mod tests {
         let mut e = factory::new_arrow(vec![start, end], None, Some(Arrowhead::Arrow), &ElementOptions::default());
         if let Element::Arrow(a) = &mut e { a.elbowed = true; super::elbow_points(a); }
         doc.elements.push(e);
-        move_vertices(&mut doc, 0, &[1, 2], None, World::zero(), World::new(50., 80.), false);
+        move_vertices(&mut doc, 0, &[1, 2], None, World::zero(), World::new(50., 80.), None);
         let Element::Arrow(a) = &doc.elements[0] else { panic!() };
         assert_eq!(a.linear.points, vec![start, World::new(350., 100.), World::new(350., 300.), end]);
         assert_eq!(a.fixed_segments.as_ref().unwrap().len(), 1);
@@ -662,7 +953,7 @@ mod tests {
         let mut child = factory::new_rectangle(100., 100., 100., 80., &options);
         child.base_mut().frame_id = Some(frame.id().to_string()); let original = child.clone();
         doc.elements = vec![frame, child];
-        super::resize_selection(&mut doc, &[0], Rect::new(0., 0., 300., 200.), Rect::new(0., 0., 150., 150.));
+        super::resize_selection(&mut doc, &[0], Rect::new(0., 0., 300., 200.), Rect::new(0., 0., 150., 150.), None);
         assert_eq!(doc.elements[1], original); assert_eq!(doc.elements[0].base().width, 150.);
     }
 
@@ -715,8 +1006,8 @@ mod tests {
     fn inserting_and_moving_multiple_vertices_preserves_unselected_points() {
         let mut doc = Scene::new();
         doc.elements.push(factory::new_line(vec![World::new(10., 20.), World::new(110., 20.), World::new(210., 120.)], &ElementOptions::default()));
-        move_vertices(&mut doc, 0, &[1], Some((1, World::new(60., 20.))), World::zero(), World::new(0., 30.), false);
-        move_vertices(&mut doc, 0, &[1, 2], None, World::zero(), World::new(10., -5.), false);
+        move_vertices(&mut doc, 0, &[1], Some((1, World::new(60., 20.))), World::zero(), World::new(0., 30.), None);
+        move_vertices(&mut doc, 0, &[1, 2], None, World::zero(), World::new(10., -5.), None);
         let Element::Line(l) = &doc.elements[0] else { unreachable!() };
         assert_eq!(l.linear.points, [World::new(10., 20.), World::new(70., 45.), World::new(120., 15.), World::new(210., 120.)]);
     }

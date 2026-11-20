@@ -57,6 +57,7 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 35 | `text_system.rs`、`text_system/line_layout.rs` | `ShapedTextCache`、`shape_text_with_cache` / `retain_shaped_text`：供块级布局缓存持有并续用平台排版缓存 | 复用长代码块布局时，平台缓存也保持热状态，修改一行不用重新排版其余万行 |
 | 36 | `elements/list.rs` | `ListState::set_measure_all` 支持切换完整 / 可见行测量 | 小搜索结果保持精确滚动条，大结果恢复虚拟测量，避免全量布局 |
 | 37 | `window.rs` | 对应用层开放已有的 `with_element_opacity` | 画板手动绘制图片时可应用透明度 |
+| 38 | 交互事件、各平台指针事件 | 传递可选归一化笔压，macOS 读取 AppKit tablet-point subtype | 画板按采样位置保存和渲染真实压力 |
 
 ## taffy 0.9.0
 
@@ -79,10 +80,17 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 
 `vendor/gpui-excalidraw` 取自 [LittleGuest/gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw/tree/2641e1b9c00b51e5e8329094a7d88cd1223ed630)。只保留场景、几何、手绘路径和 SVG/PNG 渲染所需的 Rust 模块。用本地 `quiet_excalidraw` crate 暴露这部分代码，界面、字体与图标由 Quiet.md 提供。
 
-- 栅格化使用内置画板字体和系统字体，只解析内嵌图片，长边上限为 2048 像素。画板预览可直接取内存像素，保存画板可以只算预览尺寸，PNG 导出复用同一套栅格化逻辑。
+- 画板字体为汉字匹配手写、标准、等宽或展示用系统字体。画布与 SVG/PNG 共用字体候选及字形分段规则，混排时保留原西文字体。
+- 栅格化使用内置画板字体和系统字体，只解析内嵌图片，预览长边上限为 2048 像素，显式 PNG 导出可到 4096 像素。画板预览可直接取内存像素，保存画板可以只算预览尺寸，PNG 导出复用同一套栅格化逻辑。
 - SVG 输出处理旋转、透明度和填充线条颜色，补充 PNG 渲染所需的内嵌图片命名空间和图片透明度。
 - 形状内文字重新布局时保留水平和垂直对齐，并使用原始文字重新折行。
 - 路径生成对大尺寸图形采样，并限制虚线细分。非 ASCII 颜色值不会触发字节边界错误。
 - SVG/PNG 输出保留图片的裁剪区域和水平/垂直翻转；画板中旋转后的文字、图片复用同一份输出生成缓存像素，保持编辑与导出一致。
-- 形状绑定文字按容器本地尺寸折行，再随容器旋转；箭头标签按旋转后的实际路径居中，文字本身保持水平。
+- 形状绑定文字按容器本地尺寸折行，再随容器旋转；箭头标签按 labelPosition 在旋转后的路径上定位，文字本身保持水平。
 - 画框子元素在画布、SVG 和 PNG 中按画框边界裁切；缩小画框保持内容本身的尺寸。
+- 固定连接使用形状本地坐标中的锚点，随形状移动/缩放/旋转；更新一端不再按新的方向重算另一端。旧版无固定锚点的连接保留 orbit 兼容路径。
+
+- 同一版上游的 `core/lasso.rs`、`core/mermaid.rs` 和 `render/bucket_fill.rs` 分别提供套索、Mermaid 流程图和封闭区域填色。区域栅格化复用 resvg 的 usvg/tiny-skia 依赖。
+- 手绘路径读取 strokeOptions 和压力数据；内置字体使用 ttf-parser 获取字形 advance，用于标签宽度及折行。SVG 尺寸测量、单像素取色共用禁止外部文件解析的渲染选项。
+
+- SVG 和 PNG 使用画框根元素计算整图边界，选区仅含画框时以画框作为裁切区域，隐藏该画框的名称与边框。

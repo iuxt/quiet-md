@@ -67,7 +67,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 | `key <按键>` | 发送按键，如 `key cmd-b`、`key escape` |
 | `type <文字>` | 输入文字（行尾空格有效） |
 | `move x y` / `click x y` / `dclick x y` / `rclick x y` / `drag x1 y1 x2 y2` | 鼠标操作（窗口坐标） |
-| `pointer click\|drag\|down\|dragto\|up\|move x y [x2 y2] [shift] [alt] [cmd] [ctrl] [middle]` | 直接派发带修饰键的指针事件，用于多选、约束拖动、复制拖动和中键平移 |
+| `pointer click\|drag\|down\|dragto\|up\|move x y [x2 y2] [shift] [alt] [cmd] [ctrl] [middle] [pressure=0…1]` | 直接派发带修饰键的指针事件，用于多选、约束拖动、复制拖动和中键平移。pressure 用于验证画板笔压 |
 | `wheel x y dy [dx]` | 一次滚轮事件；可选的 `dx` 是横向分量（模拟触控板），正数露出右边的内容 |
 | `shot <名字>` / `burst <名字> n` | 截图；连拍 n 张，间隔约 8ms |
 | `frame <名字> <命令>` | 执行命令后立即截取首帧，不等待事件循环重绘，用于检查瞬间闪烁 |

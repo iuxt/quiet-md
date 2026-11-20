@@ -1121,6 +1121,7 @@ impl X11Client {
 
                         drop(state);
                         window.handle_input(PlatformInput::MouseDown(crate::MouseDownEvent {
+                            pressure: None,
                             button,
                             position,
                             modifiers,
@@ -1167,6 +1168,7 @@ impl X11Client {
                         let click_count = state.current_count;
                         drop(state);
                         window.handle_input(PlatformInput::MouseUp(crate::MouseUpEvent {
+                            pressure: None,
                             button,
                             position,
                             modifiers,
@@ -1191,6 +1193,7 @@ impl X11Client {
 
                 if event.valuator_mask[0] & 3 != 0 {
                     window.handle_input(PlatformInput::MouseMove(crate::MouseMoveEvent {
+                        pressure: None,
                         position,
                         pressed_button,
                         modifiers,

@@ -285,7 +285,13 @@ pub fn start(window: &mut Window, cx: &mut App) {
                     let handle = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()).unwrap();
                     handle.update(cx, |ws, window, cx| match paths {
                         // Over the sidebar the tree takes it; otherwise the page.
-                        Some(p) if drop => { FILE_DRAG.lock().unwrap().take(); if ws.sidebar_drop_at(at, false, cx) { ws.sidebar_files_dropped(p, cx); } else { ws.file_drag_at(at, p.clone(), cx); ws.file_drop_paths(p, window, cx); } }
+                        Some(p) if drop => {
+                            FILE_DRAG.lock().unwrap().take();
+                            if let Some(drawing) = ws.editor.as_ref().and_then(|ed| ed.read(cx).drawing.clone()) {
+                                drawing.update(cx, |d,cx| d.drop_at(p,at,window,cx));
+                            } else if ws.sidebar_drop_at(at, false, cx) { ws.sidebar_files_dropped(p, cx); }
+                            else { ws.file_drag_at(at, p.clone(), cx); ws.file_drop_paths(p, window, cx); }
+                        }
                         Some(p) => { if !ws.sidebar_drop_at(at, false, cx) { ws.file_drag_at(at, p, cx); } }
                         None => cx.notify(),
                     }).unwrap();
@@ -614,9 +620,10 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
             let modifiers = Modifiers { shift: args.contains(&"shift"), alt: args.contains(&"alt"), control: args.contains(&"ctrl"), platform: args.contains(&"cmd"), ..Default::default() };
             let button = if args.contains(&"middle") { MouseButton::Middle } else { MouseButton::Left };
             let p = |x, y| point(px(x), px(y));
-            let down = |position| PlatformInput::MouseDown(MouseDownEvent { button, position, modifiers, click_count: 1, first_mouse: false });
-            let up = |position| PlatformInput::MouseUp(MouseUpEvent { button, position, modifiers, click_count: 1 });
-            let moved = |position, pressed| PlatformInput::MouseMove(MouseMoveEvent { position, modifiers, pressed_button: pressed });
+            let pressure = args.iter().find_map(|arg| arg.strip_prefix("pressure=")?.parse::<f32>().ok());
+            let down = |position| PlatformInput::MouseDown(MouseDownEvent { pressure, button, position, modifiers, click_count: 1, first_mouse: false });
+            let up = |position| PlatformInput::MouseUp(MouseUpEvent { pressure, button, position, modifiers, click_count: 1 });
+            let moved = |position, pressed| PlatformInput::MouseMove(MouseMoveEvent { pressure, position, modifiers, pressed_button: pressed });
             let start = p(n[0], n[1]);
             match op {
                 "down" => { window.dispatch_event(down(start), cx); }
@@ -640,12 +647,12 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
             if n.len() >= 2 {
                 let position = point(px(n[0]), px(n[1]));
                 let modifiers = Modifiers::default();
-                window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { position, pressed_button: None, modifiers }), cx);
+                window.dispatch_event(PlatformInput::MouseMove(MouseMoveEvent { pressure: None, position, pressed_button: None, modifiers }), cx);
                 window.dispatch_event(
-                    PlatformInput::MouseDown(MouseDownEvent { button: MouseButton::Right, position, modifiers, click_count: 1, first_mouse: false }),
+                    PlatformInput::MouseDown(MouseDownEvent { pressure: None, button: MouseButton::Right, position, modifiers, click_count: 1, first_mouse: false }),
                     cx,
                 );
-                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { button: MouseButton::Right, position, modifiers, click_count: 1 }), cx);
+                window.dispatch_event(PlatformInput::MouseUp(MouseUpEvent { pressure: None, button: MouseButton::Right, position, modifiers, click_count: 1 }), cx);
             }
         }
         "key" => {

@@ -91,6 +91,9 @@ pub enum TouchPhase {
 /// A mouse down event from the platform
 #[derive(Clone, Debug, Default)]
 pub struct MouseDownEvent {
+    /// Normalized pressure from a pen, if supplied by the platform.
+    pub pressure: Option<f32>,
+
     /// Which mouse button was pressed.
     pub button: MouseButton,
 
@@ -118,6 +121,9 @@ impl MouseEvent for MouseDownEvent {}
 /// A mouse up event from the platform
 #[derive(Clone, Debug, Default)]
 pub struct MouseUpEvent {
+    /// Normalized pressure from a pen, if supplied by the platform.
+    pub pressure: Option<f32>,
+
     /// Which mouse button was released.
     pub button: MouseButton,
 
@@ -333,6 +339,9 @@ impl Default for NavigationDirection {
 /// A mouse move event from the platform
 #[derive(Clone, Debug, Default)]
 pub struct MouseMoveEvent {
+    /// Normalized pressure from a pen, if supplied by the platform.
+    pub pressure: Option<f32>,
+
     /// The position of the mouse on the window.
     pub position: Point<Pixels>,
 

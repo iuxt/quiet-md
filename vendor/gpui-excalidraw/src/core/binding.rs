@@ -79,29 +79,32 @@ pub fn find_bindable(
 }
 
 pub fn make_binding(element: &Element, from: Point) -> FixedPointBinding {
-    let focus = focus_point(element, from);
-    let b: Bounds = element_bounds(element);
-    let fx = if b.width() > 0.0 {
-        (focus.x - b.min_x) / b.width()
-    } else {
-        0.5
-    };
-    let fy = if b.height() > 0.0 {
-        (focus.y - b.min_y) / b.height()
-    } else {
-        0.5
-    };
+    let b = element.base();
+    let center = Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0);
+    let focus = focus_point(element, from).rotate(-b.angle, center);
     FixedPointBinding {
         element_id: element.id().to_string(),
-        fixed_point: [fx.clamp(0.0, 1.0), fy.clamp(0.0, 1.0)],
+        fixed_point: [((focus.x - b.x) / b.width.max(0.0001)).clamp(0.0, 1.0), ((focus.y - b.y) / b.height.max(0.0001)).clamp(0.0, 1.0)],
         mode: BindMode::Inside,
+    }
+}
+
+fn bound_point(element: &Element, binding: &FixedPointBinding, from: Point, current: Point) -> Point {
+    match binding.mode {
+        BindMode::Inside => {
+            let b = element.base();
+            let center = Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0);
+            Point::new(b.x + b.width * binding.fixed_point[0], b.y + b.height * binding.fixed_point[1]).rotate(b.angle, center)
+        }
+        BindMode::Orbit => focus_point(element, from),
+        BindMode::Skip => current,
     }
 }
 
 struct BindJob {
     id: String,
-    start: Option<String>,
-    end: Option<String>,
+    start: Option<FixedPointBinding>,
+    end: Option<FixedPointBinding>,
     points: Vec<Point>,
 }
 
@@ -111,22 +114,14 @@ pub fn update_bindings(scene: &mut Scene) {
         .filter_map(|e| match e {
             Element::Arrow(a) => Some(BindJob {
                 id: e.id().to_string(),
-                start: a
-                    .linear
-                    .start_binding
-                    .as_ref()
-                    .map(|b| b.element_id.clone()),
-                end: a.linear.end_binding.as_ref().map(|b| b.element_id.clone()),
+                start: a.linear.start_binding.clone(),
+                end: a.linear.end_binding.clone(),
                 points: a.linear.points.clone(),
             }),
             Element::Line(l) => Some(BindJob {
                 id: e.id().to_string(),
-                start: l
-                    .linear
-                    .start_binding
-                    .as_ref()
-                    .map(|b| b.element_id.clone()),
-                end: l.linear.end_binding.as_ref().map(|b| b.element_id.clone()),
+                start: l.linear.start_binding.clone(),
+                end: l.linear.end_binding.clone(),
                 points: l.linear.points.clone(),
             }),
             _ => None,
@@ -140,15 +135,15 @@ pub fn update_bindings(scene: &mut Scene) {
         }
         let n = job.points.len();
         let mut pts = job.points.clone();
-        if let Some(sid) = &job.start
-            && let Some(target) = scene.get(sid)
+        if let Some(binding) = &job.start
+            && let Some(target) = scene.get(&binding.element_id)
         {
-            pts[0] = focus_point(target, pts[1]);
+            pts[0] = bound_point(target, binding, pts[1], pts[0]);
         }
-        if let Some(eid) = &job.end
-            && let Some(target) = scene.get(eid)
+        if let Some(binding) = &job.end
+            && let Some(target) = scene.get(&binding.element_id)
         {
-            pts[n - 1] = focus_point(target, pts[n - 2]);
+            pts[n - 1] = bound_point(target, binding, pts[n - 2], pts[n - 1]);
         }
         let b = Bounds::from_points(&pts);
         if let Some(el) = scene.get_mut(&job.id) {
@@ -176,7 +171,7 @@ pub fn snap_to_grid(v: f64, grid: f64) -> f64 {
 
 pub fn sync_container_text(scene: &mut Scene) {
     let pad = 8.0;
-    let jobs: Vec<(String, String, f64, f64, String)> = scene
+    let jobs: Vec<_> = scene
         .non_deleted()
         .filter_map(|e| {
             if let Element::Text(t) = e {
@@ -185,7 +180,7 @@ pub fn sync_container_text(scene: &mut Scene) {
                     t.base.id.clone(),
                     cid.clone(),
                     t.font_size,
-                    t.line_height,
+                    t.line_height, t.font_family,
                     if t.original_text.is_empty() { t.text.clone() } else { t.original_text.clone() },
                 ))
             } else {
@@ -194,12 +189,12 @@ pub fn sync_container_text(scene: &mut Scene) {
         })
         .collect();
 
-    for (_, cid, font_size, line_height, text) in &jobs {
+    for (_, cid, font_size, line_height, family, text) in &jobs {
         let Some(base) = scene.get(cid).map(Element::base) else {
             continue;
         };
         let inner_w = (base.width - pad * 2.0).max(*font_size);
-        let lines = crate::text::wrap_text(text, inner_w, *font_size)
+        let lines = crate::text::wrap_text_in(text, inner_w, *font_size, *family)
             .split('\n')
             .count()
             .max(1);
@@ -209,14 +204,15 @@ pub fn sync_container_text(scene: &mut Scene) {
         }
     }
 
-    for (id, cid, font_size, line_height, text) in jobs {
+    for (id, cid, font_size, line_height, family, text) in jobs {
         if let Some(points) = scene.get(&cid).and_then(linear_points) {
             // Arrow labels sit at the path midpoint like upstream's bound text
             // and keep their intrinsic size instead of filling the container.
-            let Some(mid) = path_midpoint(&points) else {
+            let position = scene.get(&id).and_then(|e| if let Element::Text(t) = e { t.label_position } else { None }).unwrap_or(0.5);
+            let Some(mid) = path_position(&points, position) else {
                 continue;
             };
-            let width = crate::text::text_width(&text, font_size);
+            let width = crate::text::text_width_in(&text, font_size, family);
             let height = crate::text::text_height(&text, font_size, line_height);
             if let Some(Element::Text(t)) = scene.get_mut(&id) {
                 t.base.x = mid.x - width / 2.0;
@@ -236,7 +232,7 @@ pub fn sync_container_text(scene: &mut Scene) {
         let angle = base.angle;
         let pivot = bounds.center();
         let inner_w = (bounds.width() - pad * 2.0).max(font_size);
-        let wrapped = crate::text::wrap_text(&text, inner_w, font_size);
+        let wrapped = crate::text::wrap_text_in(&text, inner_w, font_size, family);
         let text_h = crate::text::text_height(&wrapped, font_size, line_height);
         let x = bounds.min_x + pad;
         let spare = (bounds.height() - text_h).max(0.0);
@@ -271,7 +267,7 @@ fn linear_points(element: &Element) -> Option<Vec<Point>> {
 
 /// Point half way along a polyline, matching upstream's
 /// `getPointAtPathParameter(element, 0.5)` used to place arrow labels.
-fn path_midpoint(points: &[Point]) -> Option<Point> {
+fn path_position(points: &[Point], position: f64) -> Option<Point> {
     if points.len() < 2 {
         return points.first().copied();
     }
@@ -282,7 +278,7 @@ fn path_midpoint(points: &[Point]) -> Option<Point> {
     if total <= 1e-9 {
         return points.first().copied();
     }
-    let target = total / 2.0;
+    let target = total * position.clamp(0.0, 1.0);
     let mut walked = 0.0;
     for pair in points.windows(2) {
         let (a, b) = (pair[0], pair[1]);

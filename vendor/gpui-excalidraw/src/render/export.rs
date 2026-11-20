@@ -4,7 +4,7 @@ use resvg::{tiny_skia, usvg};
 
 use crate::{
     core::{
-        bounds::{common_bounds, element_bounds},
+        bounds::element_bounds,
         element::Element,
         scene::{BinaryFileData, Scene},
         types::{FillStyle, FontFamily},
@@ -133,7 +133,7 @@ fn raster_size(size: usvg::Size, scale: f32, max_edge: u32) -> (f32, u32, u32) {
     } else {
         1.0
     };
-    let scale = scale.min(max_edge.clamp(1, 2048) as f32 / size.width().max(size.height()));
+    let scale = scale.min(max_edge.clamp(1, 4096) as f32 / size.width().max(size.height()));
     let width = (size.width() * scale).ceil().max(1.0) as u32;
     let height = (size.height() * scale).ceil().max(1.0) as u32;
     (scale, width, height)
@@ -146,7 +146,23 @@ pub fn raster_dimensions(svg: &str, scale: f32) -> Result<(u32, u32), String> {
     Ok((width, height))
 }
 
+pub fn intrinsic_svg_size(svg: &str) -> Result<(u32, u32), String> {
+    let tree = usvg::Tree::from_str(svg, svg_options()).map_err(|e| e.to_string())?;
+    let size = tree.size().to_int_size();
+    Ok((size.width(), size.height()))
+}
+
+pub fn sample_svg(svg: &str, x: f32, y: f32) -> Option<[u8; 4]> {
+    let tree = usvg::Tree::from_str(svg, svg_options()).ok()?;
+    let mut pixel = tiny_skia::Pixmap::new(1, 1)?;
+    resvg::render(&tree, tiny_skia::Transform::from_translate(-x, -y), &mut pixel.as_mut());
+    let c = pixel.pixel(0, 0)?.demultiply();
+    Some([c.red(), c.green(), c.blue(), c.alpha()])
+}
+
 // quiet.md: display the raster directly in memory.
+pub type RasterPixmap = tiny_skia::Pixmap;
+
 pub fn rasterize_pixels(svg: &str, scale: f32, max_edge: u32) -> Result<tiny_skia::Pixmap, String> {
     let tree = usvg::Tree::from_str(svg, svg_options()).map_err(|e| e.to_string())?;
     let (scale, width, height) = raster_size(tree.size(), scale, max_edge);
@@ -212,6 +228,18 @@ fn svg_options() -> &'static usvg::Options<'static> {
     })
 }
 
+/// Bounds of the exported root elements. Clipped frame children cannot enlarge the image.
+pub fn visible_bounds(scene: &Scene, show_frames: bool) -> Option<crate::core::Bounds> {
+    let is_frame = |e: &Element| matches!(e, Element::Frame(_) | Element::MagicFrame(_));
+    let frames: std::collections::HashSet<_> = if show_frames {
+        scene.non_deleted().filter(|e| is_frame(e)).map(Element::id).collect()
+    } else { std::collections::HashSet::new() };
+    scene.non_deleted().filter(|e| {
+        if show_frames { !e.base().frame_id.as_deref().is_some_and(|id| frames.contains(id)) }
+        else { !is_frame(e) }
+    }).map(element_bounds).reduce(|a,b| a.union(&b))
+}
+
 impl SvgExporter {
     pub fn export(scene: &Scene, background: &str) -> String {
         Self::export_with_files(scene, background, &BinaryFiles::new())
@@ -227,19 +255,26 @@ impl SvgExporter {
         files: &BinaryFiles,
         dark_mode: bool,
     ) -> String {
-        let elements: Vec<&Element> = scene.non_deleted().collect();
-        let bounds =
-            common_bounds(&elements).unwrap_or(crate::core::Bounds::new(0.0, 0.0, 100.0, 100.0));
-        let padding = DEFAULT_EXPORT_PADDING;
-        let width = bounds.width() + padding * 2.0;
-        let height = bounds.height() + padding * 2.0;
+        Self::export_region(scene, background, files, dark_mode, true, None)
+    }
+
+    /// Render either the scene or the exact area of a selected frame.
+    pub fn export_region(scene: &Scene, background: &str, files: &BinaryFiles, dark_mode: bool,
+        show_frames: bool, region: Option<crate::core::Bounds>) -> String {
+        let elements: Vec<&Element> = scene.non_deleted().filter(|e| {
+            (show_frames && region.is_none()) || !matches!(e, Element::Frame(_) | Element::MagicFrame(_))
+        }).collect();
+        let bounds = region.or_else(|| visible_bounds(scene, show_frames)).unwrap_or(crate::core::Bounds::new(0.0, 0.0, 100.0, 100.0));
+        let padding = if region.is_some() { 0.0 } else { DEFAULT_EXPORT_PADDING };
+        let width = (bounds.width() + padding * 2.0).max(1.0);
+        let height = (bounds.height() + padding * 2.0).max(1.0);
         let ox = bounds.min_x - padding;
         let oy = bounds.min_y - padding;
 
         let mut svg = String::new();
         let _ = write!(
             svg,
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" width=\"{:.1}\" height=\"{:.1}\" viewBox=\"{:.1} {:.1} {:.1} {:.1}\">",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" overflow=\"hidden\" width=\"{:.1}\" height=\"{:.1}\" viewBox=\"{:.1} {:.1} {:.1} {:.1}\">",
             width, height, ox, oy, width, height
         );
 
@@ -370,13 +405,14 @@ fn write_drawable(svg: &mut String, d: &Drawable, files: &BinaryFiles, dark_mode
         );
         for (i, line) in lines.iter().enumerate() {
             let y = block_top + (i as f64 + 0.5) * line_h;
-            let _ = write!(
-                svg,
-                "<tspan x=\"{:.2}\" y=\"{:.2}\">{}</tspan>",
-                anchor_x,
-                y,
-                escape_xml(line)
-            );
+            let _ = write!(svg, "<tspan x=\"{anchor_x:.2}\" y=\"{y:.2}\">");
+            for (part, han) in crate::fonts::han_runs(line) {
+                if han {
+                    let _ = write!(svg, "<tspan font-family=\"{}, {}, {fallback}\">{}</tspan>",
+                        t.font_family.han_families().join(", "), t.font_family.name(), escape_xml(part));
+                } else { svg.push_str(&escape_xml(part)); }
+            }
+            svg.push_str("</tspan>");
         }
         svg.push_str("</text>");
         return;

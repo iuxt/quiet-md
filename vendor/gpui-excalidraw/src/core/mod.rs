@@ -12,3 +12,5 @@ pub mod transform;
 pub mod types;
 
 pub use bounds::Bounds;
+pub mod lasso;
+pub mod mermaid;

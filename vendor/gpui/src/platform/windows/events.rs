@@ -305,6 +305,7 @@ impl WindowsWindowInner {
         let x = lparam.signed_loword() as f32;
         let y = lparam.signed_hiword() as f32;
         let input = PlatformInput::MouseMove(MouseMoveEvent {
+            pressure: None,
             position: logical_point(x, y, scale_factor),
             pressed_button,
             modifiers: current_modifiers(),
@@ -467,6 +468,7 @@ impl WindowsWindowInner {
         drop(lock);
 
         let input = PlatformInput::MouseDown(MouseDownEvent {
+            pressure: None,
             button,
             position: logical_point(x as f32, y as f32, scale_factor),
             modifiers: current_modifiers(),
@@ -497,6 +499,7 @@ impl WindowsWindowInner {
         drop(lock);
 
         let input = PlatformInput::MouseUp(MouseUpEvent {
+            pressure: None,
             button,
             position: logical_point(x, y, scale_factor),
             modifiers: current_modifiers(),
@@ -942,6 +945,7 @@ impl WindowsWindowInner {
         };
         unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
         let input = PlatformInput::MouseMove(MouseMoveEvent {
+            pressure: None,
             position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
             pressed_button: None,
             modifiers: current_modifiers(),
@@ -972,6 +976,7 @@ impl WindowsWindowInner {
             drop(lock);
 
             let input = PlatformInput::MouseDown(MouseDownEvent {
+                pressure: None,
                 button,
                 position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
                 modifiers: current_modifiers(),
@@ -1021,6 +1026,7 @@ impl WindowsWindowInner {
             };
             unsafe { ScreenToClient(handle, &mut cursor_point).ok().log_err() };
             let input = PlatformInput::MouseUp(MouseUpEvent {
+                pressure: None,
                 button,
                 position: logical_point(cursor_point.x as f32, cursor_point.y as f32, scale_factor),
                 modifiers: current_modifiers(),

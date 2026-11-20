@@ -788,7 +788,7 @@ impl R<'_> {
             dim_marks: false,
             link_underline: false,
             doc_font: true,
-            font: None,
+            font: None, han_font: None,
             italic: false,
         };
         // Line numbers follow the wrapped rows of the last layout.
@@ -2135,7 +2135,7 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
             dim_marks: false,
             link_underline: false,
             doc_font: true,
-            font: None,
+            font: None, han_font: None,
             italic: false,
         };
         // Line numbers follow the wrapped rows of the last layout.

@@ -3683,6 +3683,7 @@ impl Window {
                         });
                     }
                     PlatformInput::MouseMove(MouseMoveEvent {
+                        pressure: None,
                         position,
                         pressed_button: Some(MouseButton::Left),
                         modifiers: Modifiers::default(),
@@ -3691,6 +3692,7 @@ impl Window {
                 FileDropEvent::Pending { position } => {
                     self.mouse_position = position;
                     PlatformInput::MouseMove(MouseMoveEvent {
+                        pressure: None,
                         position,
                         pressed_button: Some(MouseButton::Left),
                         modifiers: Modifiers::default(),
@@ -3700,6 +3702,7 @@ impl Window {
                     cx.activate(true);
                     self.mouse_position = position;
                     PlatformInput::MouseUp(MouseUpEvent {
+                        pressure: None,
                         button: MouseButton::Left,
                         position,
                         modifiers: Modifiers::default(),

@@ -813,23 +813,21 @@ fn dash_polyline(pts: &[(f64, f64)], dash: f64, gap: f64, out: &mut Vec<Op>) {
     }
 }
 
-pub fn free_draw_outline(
-    points: &[Point],
-    stroke_width: f64,
-    simulate_pressure: bool,
-) -> Vec<[f64; 2]> {
-    let inputs: Vec<perfect_freehand::InputPoint> = points
-        .iter()
-        .map(|p| perfect_freehand::InputPoint::Array([p.x, p.y], None))
-        .collect();
+fn free_draw_outline(f: &FreeDrawElement, stroke_width: f64) -> Vec<[f64; 2]> {
+    let variable = f.stroke_options.variability == crate::core::types::StrokeVariability::Variable;
+    let inputs: Vec<_> = f.points.iter().enumerate().map(|(i, p)| {
+        let pressure = if !variable { Some(1.) } else if f.simulate_pressure { None } else { f.pressures.get(i).copied() };
+        perfect_freehand::InputPoint::Array([p.x, p.y], pressure)
+    }).collect();
     perfect_freehand::get_stroke(
         &inputs,
         &perfect_freehand::StrokeOptions {
-            size: Some(stroke_width * 4.25),
-            thinning: Some(0.6),
+            size: Some(stroke_width * if variable { 4.25 } else { 1.4 }),
+            thinning: Some(if variable { 0.6 } else { 0. }),
             smoothing: Some(0.5),
-            streamline: Some(0.5),
-            simulate_pressure: Some(simulate_pressure),
+            streamline: Some(f.stroke_options.streamline.clamp(0., 1.)),
+            easing: Some(|t| (t * std::f64::consts::FRAC_PI_2).sin()),
+            simulate_pressure: Some(variable && f.simulate_pressure),
             last: Some(true),
             ..Default::default()
         },
@@ -837,7 +835,7 @@ pub fn free_draw_outline(
 }
 
 pub fn perfect_freehand_drawable(f: &FreeDrawElement, options: &DrawOptions) -> Drawable {
-    let outline = free_draw_outline(&f.points, options.stroke_width, f.simulate_pressure);
+    let outline = free_draw_outline(f, options.stroke_width);
     let mut ink: Vec<Op> = outline
         .iter()
         .enumerate()
@@ -1181,7 +1179,7 @@ fn text_drawable(t: &crate::core::element::TextElement) -> Drawable {
     let color = Rgba::from_hex(&base.stroke_color);
 
     let text = if t.container_id.is_some() {
-        crate::core::text::wrap_text(&t.text, base.width, t.font_size)
+        crate::core::text::wrap_text_in(&t.text, base.width, t.font_size, t.font_family)
     } else {
         t.text.clone()
     };

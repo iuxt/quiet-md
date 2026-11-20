@@ -1597,6 +1597,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
                         state.enter_token = None;
                     }
                     let input = PlatformInput::MouseMove(MouseMoveEvent {
+                        pressure: None,
                         position: state.mouse_location.unwrap(),
                         pressed_button: state.button_pressed,
                         modifiers: state.modifiers,
@@ -1661,6 +1662,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
 
                         if let Some(window) = state.mouse_focused_window.clone() {
                             let input = PlatformInput::MouseDown(MouseDownEvent {
+                                pressure: None,
                                 button,
                                 position: state.mouse_location.unwrap(),
                                 modifiers: state.modifiers,
@@ -1676,6 +1678,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
 
                         if let Some(window) = state.mouse_focused_window.clone() {
                             let input = PlatformInput::MouseUp(MouseUpEvent {
+                                pressure: None,
                                 button,
                                 position: state.mouse_location.unwrap(),
                                 modifiers: state.modifiers,

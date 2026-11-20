@@ -228,6 +228,7 @@ pub struct TextSpec {
     pub doc_font: bool,
     /// A family of its own (headings, the title), else the body's.
     pub font: Option<&'static str>,
+    pub han_font: Option<&'static str>,
     /// Everything italic (a theme's quotes).
     pub italic: bool,
 }
@@ -247,7 +248,7 @@ impl TextSpec {
             dim_marks: false,
             link_underline: false,
             doc_font: true,
-            font: None,
+            font: None, han_font: None,
             italic: false,
         }
     }
@@ -715,10 +716,12 @@ pub fn build_runs(
         }
         // Curly quotes render in a Latin-width face (QUOTE_FONT) rather
         // than the body face's full-width ones.
-        for (i, ch) in text.text[range.clone()].char_indices() {
-            if is_quote(ch) || is_cjk_punct(ch) {
-                cuts.push(range.start + i);
-                cuts.push(range.start + i + ch.len_utf8());
+        if spec.han_font.is_none() {
+            for (i, ch) in text.text[range.clone()].char_indices() {
+                if is_quote(ch) || is_cjk_punct(ch) {
+                    cuts.push(range.start + i);
+                    cuts.push(range.start + i + ch.len_utf8());
+                }
             }
         }
         cuts.sort();
@@ -749,7 +752,7 @@ pub fn build_runs(
                 None
             };
             let mut font = font_for(spec, m);
-            if !spec.mono && !m.code {
+            if spec.han_font.is_none() && !spec.mono && !m.code {
                 if text.text[a..b].chars().all(is_quote) {
                     font.family = QUOTE_FONT.into();
                 } else if text.text[a..b].chars().all(is_cjk_punct) {
@@ -763,7 +766,7 @@ pub fn build_runs(
                 font.weight = if m.bold { bold_weight() } else { FontWeight::NORMAL };
             }
             let background_color = m.bg_color.as_ref().and_then(|c| theme::bg_color(&c.0)).map(|c| if spec.dim_marks { c.opacity(0.7) } else { c });
-            runs.push(TextRun {
+            let run = TextRun {
                 len: b - a,
                 font,
                 color: if background_color.is_some() { crate::theme::on_mark(color) } else { color },
@@ -771,7 +774,15 @@ pub fn build_runs(
                 underline,
                 // Painted by `RichTextElement::paint`, see `paint_strikes`.
                 strikethrough: None,
-            });
+            };
+            if let Some(family) = spec.han_font {
+                runs.extend(quiet_excalidraw::fonts::han_runs(&text.text[a..b]).map(|(part, han)| {
+                    let mut part_run = run.clone();
+                    part_run.len = part.len();
+                    if han { part_run.font.family = family.into(); }
+                    part_run
+                }));
+            } else { runs.push(run); }
         }
     }
     runs

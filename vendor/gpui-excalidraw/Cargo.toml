@@ -7,6 +7,8 @@ repository = "https://github.com/LittleGuest/gpui-excalidraw"
 publish = false
 
 [dependencies]
+unicode-segmentation = "1.13.3"
+ttf-parser = "0.25.1"
 perfect_freehand = "0.1.1"
 resvg = { version = "0.45.1", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 serde = { version = "1", features = ["derive"] }
