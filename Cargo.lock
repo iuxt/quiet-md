@@ -3446,15 +3446,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mermaid-svg"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe0e905ac75d52a4d30692373beadd4bd4e09d8ea5275a3cb8e29a5f7ab4af62"
-dependencies = [
- "thiserror 2.0.21",
-]
-
-[[package]]
 name = "metal"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4493,10 +4484,16 @@ dependencies = [
 name = "quiet_excalidraw"
 version = "0.1.9"
 dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "gpui",
+ "image",
  "perfect_freehand",
  "resvg",
  "serde",
  "serde_json",
+ "tiny-skia",
  "ttf-parser 0.25.1",
  "unicode-segmentation",
  "uuid",
@@ -4521,7 +4518,6 @@ dependencies = [
  "katex-rs",
  "log",
  "markup5ever_rcdom",
- "mermaid-svg",
  "objc",
  "png 0.18.1",
  "quick-xml 0.37.5",

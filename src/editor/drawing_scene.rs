@@ -2,7 +2,7 @@
 use anyhow::{Result, anyhow, ensure};
 use base64::Engine as _;
 use crate::{model::Drawing, store};
-use quiet_excalidraw::core::{bounds::{Bounds, element_bounds}, element::Element, geometry::Point, scene::{BinaryFileData, Scene}};
+use quiet_excalidraw::core::{bounds::Bounds, element::Element, geometry::Point, scene::{BinaryFileData, Scene}};
 use quiet_excalidraw::render::export;
 use serde_json::{Map, Value, json};
 use std::{collections::{HashMap, HashSet}, io::Cursor, path::Path};
@@ -35,6 +35,7 @@ pub(super) struct DrawingScene {
     pub grid_step: usize,
     pub files: HashMap<String, BinaryFileData>,
     template: Map<String, Value>,
+    #[cfg(test)]
     pub(super) library_item: Map<String, Value>,
     original: HashMap<String, (Map<String, Value>, Map<String, Value>)>,
 }
@@ -177,6 +178,7 @@ fn encode_metadata(bytes: &[u8]) -> Result<String> {
 }
 
 impl DrawingScene {
+    #[cfg(test)]
     pub(super) fn load_library(bytes: &[u8]) -> Result<Vec<Self>> {
         ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing library is too large");
         let root: Value = serde_json::from_slice(bytes)?;
@@ -193,12 +195,14 @@ impl DrawingScene {
         }).collect()
     }
 
+    #[cfg(test)]
     pub(super) fn init_library_item(&mut self) {
         self.library_item.entry("id").or_insert_with(|| json!(uuid::Uuid::new_v4().to_string()));
         self.library_item.entry("status").or_insert(json!("unpublished"));
         self.library_item.entry("created").or_insert_with(|| json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64));
     }
 
+    #[cfg(test)]
     pub(super) fn library_json(items: &[Self]) -> Result<Vec<u8>> {
         let mut files = serde_json::Map::new();
         let items = items.iter().map(|source| {
@@ -275,9 +279,10 @@ impl DrawingScene {
     }
 
     pub(super) fn new() -> Self {
-        Self { scene: Scene::new(), background: "#ffffff".into(), grid_enabled:false, export_region: None, grid_size:20., grid_step:5, files: HashMap::new(), template: Map::new(), library_item: Map::new(), original: HashMap::new() }
+        Self { scene: Scene::new(), background: "#ffffff".into(), grid_enabled:false, export_region: None, grid_size:20., grid_step:5, files: HashMap::new(), template: Map::new(), #[cfg(test)] library_item: Map::new(), original: HashMap::new() }
     }
 
+    #[cfg(test)]
     pub(super) fn retain_used_files(&mut self) {
         let used: HashSet<_> = self.scene.non_deleted().filter_map(|e| if let Element::Image(i) = e { i.file_id.as_deref() } else { None }).collect();
         self.files.retain(|id, _| used.contains(id.as_str()));
@@ -332,17 +337,6 @@ impl DrawingScene {
         Ok(result)
     }
 
-    pub(super) fn copy_original(&mut self, source: &Self, from: &Element, to: &Element) {
-        if let Some(original) = source.original.get(from.id()) { self.original.insert(to.id().into(), original.clone()); }
-    }
-
-    pub(super) fn remaining_points(&self) -> usize {
-        let count = self.scene.non_deleted().map(|e| match e {
-            Element::Freedraw(f) => f.points.len(), Element::Line(l) => l.linear.points.len(), Element::Arrow(a) => a.linear.points.len(), _ => 0,
-        }).sum::<usize>();
-        MAX_SCENE_POINTS.saturating_sub(count)
-    }
-
     pub(super) fn json(&self) -> Result<Vec<u8>> {
         let mut root = self.template.clone();
         root.insert("type".into(), json!("excalidraw"));
@@ -385,12 +379,8 @@ impl DrawingScene {
         export::SvgExporter::export_region(&self.scene, background, &self.files, options.dark, options.show_frames, self.export_region)
     }
 
-    pub(super) fn export_thumbnail(&self, options: ExportOptions) -> Option<std::sync::Arc<gpui::RenderImage>> {
-        let svg = self.render_export(if options.background { &self.background } else { "transparent" }, options);
-        render_image(export::rasterize_pixels(&svg, options.scale, 256).ok()?)
-    }
-
-    pub(super) fn sample_color(&self, p: Point, dark: bool, show_frames: bool) -> Option<String> {
+    #[cfg(test)]
+    fn sample_color(&self, p: Point, dark: bool, show_frames: bool) -> Option<String> {
         let b = export::visible_bounds(&self.scene, show_frames)?;
         let svg = self.render_export(&self.background, ExportOptions { dark, show_frames, ..Default::default() });
         let [r, g, b, a] = export::sample_svg(&svg, (p.x - b.min_x + export::DEFAULT_EXPORT_PADDING) as f32,
@@ -472,16 +462,6 @@ pub(super) fn preview_pixels(root: &Path, source: &str, preview: &str, edge: u32
     Ok(image::RgbaImage::from_raw(w, h, bytes).expect("pixmap dimensions match its pixels"))
 }
 
-pub(super) fn render_image(raster: export::RasterPixmap) -> Option<std::sync::Arc<gpui::RenderImage>> {
-    let (w, h) = (raster.width(), raster.height()); let mut bytes = raster.take();
-    for p in bytes.as_chunks_mut::<4>().0 {
-        let a = u32::from(p[3]);
-        if a > 0 && a < 255 { for c in &mut p[..3] { *c = ((u32::from(*c) * 255 + a / 2) / a) as u8; } }
-        p.swap(0, 2);
-    }
-    Some(std::sync::Arc::new(gpui::RenderImage::new(vec![image::Frame::new(image::RgbaImage::from_raw(w, h, bytes)?)])))
-}
-
 pub(super) enum DrawingImage { Bitmap(Vec<u8>, image::ImageFormat), Svg(String) }
 
 impl DrawingImage {
@@ -528,14 +508,10 @@ pub(super) fn drawing_image(file: &BinaryFileData) -> Result<DrawingImage> {
     Ok(DrawingImage::Bitmap(bytes, format))
 }
 
-pub(super) fn bounds(scene: &Scene) -> Option<Bounds> {
-    scene.non_deleted().map(element_bounds).reduce(|a, b| a.union(&b))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use quiet_excalidraw::core::{arrowhead::Arrowhead, factory::{ElementOptions, new_arrow}, transform::translate_element};
+    use quiet_excalidraw::core::{arrowhead::Arrowhead, bounds::element_bounds, factory::{ElementOptions, new_arrow}, transform::translate_element};
 
     #[test]
     fn official_legacy_exports_and_library_reopen() {

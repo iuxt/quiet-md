@@ -7,6 +7,12 @@ repository = "https://github.com/LittleGuest/gpui-excalidraw"
 publish = false
 
 [dependencies]
+gpui = "0.2.2"
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "pnm", "tiff", "webp"] }
+tiny-skia = "0.11.4"
 unicode-segmentation = "1.13.3"
 ttf-parser = "0.25.1"
 perfect_freehand = "0.1.1"

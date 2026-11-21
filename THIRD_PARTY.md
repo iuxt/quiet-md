@@ -334,7 +334,6 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | maybe-rayon | 0.1.1 | MIT |
 | md-5 | 0.10.6 | MIT OR Apache-2.0 |
 | memchr | 2.8.3 | Unlicense OR MIT |
-| mermaid-svg | 0.7.0 | MIT |
 | memmap2 | 0.9.11 | MIT OR Apache-2.0 |
 | memoffset | 0.9.1 | MIT |
 | metal | 0.29.0 | MIT OR Apache-2.0 |
@@ -803,16 +802,16 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 
 ## 画板渲染
 
-`quiet_excalidraw` 包含 [gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw) 的场景与手绘渲染代码，版权为 pujianquan，使用 MIT 许可。见 [原始许可](vendor/gpui-excalidraw/LICENSE) 和 [本地改动](vendor/PATCHES.md#gpui-excalidraw-019)。
+`quiet_excalidraw` 包含 [gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw) 的 Rust 画板编辑器、场景与手绘渲染代码，版权为 pujianquan，使用 MIT 许可。见 [原始许可](vendor/gpui-excalidraw/LICENSE) 和 [本地改动](vendor/PATCHES.md#gpui-excalidraw-019)。
 
 ## 图标
 
 | 素材 | 许可 |
 |---|---|
-| `assets/editor-icons/`（编辑器与文档里的 192 个图标） | 其中 49 个直接取自 Lucide（ISC，见同目录 `LICENSE-lucide`），其余按同一 24px / 2px 描边规格绘制 |
-| `assets/editor-icons/drawing-*.svg`（20 个） | 本项目绘制，MIT，包含画板工具、图层和属性图标 |
+| `assets/editor-icons/`（编辑器与文档里的 172 个图标） | 其中 49 个直接取自 Lucide（ISC，见同目录 `LICENSE-lucide`），其余按同一 24px / 2px 描边规格绘制 |
 | `assets/icons/`（界面外壳的 67 个图标，含一个在 Nucleo 图标上加了 MD 字样的 `doc-md.svg`） | Nucleo UI Outline / Fill 18。本项目持有 Nucleo 商业授权，按授权条款「公开源码项目中最多 100 个图标」使用（<https://nucleoapp.com/license>）。**这些图标不在 MIT 范围内**：fork 时请自行确认授权，或换成自己的图标；不得把它们抽出来做成图标库或图标包。 |
 | `assets/icons/folder.svg`、`assets/icons/disclosure.svg`、`assets/icons/import.svg`、`assets/icons/globe.svg` | 本项目绘制，MIT；不属于上述 67 个 Nucleo 图标 |
+| `vendor/gpui-excalidraw/assets/icons/`（139 个画板图标） | 随上游项目提供，见 [原始许可](vendor/gpui-excalidraw/LICENSE) |
 | `assets/branding/app-icon.png`、`assets/branding/app-icon-dev.png`（预览版，带 dev 丝带，由 `tools/branding/dev_icon.py` 生成） | 本项目自有 |
 
 ## 封面与插画

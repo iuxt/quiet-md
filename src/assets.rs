@@ -15,10 +15,13 @@ impl AssetSource for Assets {
         if path.starts_with(crate::editor::math::SVG_PREFIX) {
             return Ok(crate::editor::math::svg_asset(path).map(Cow::Owned));
         }
+        if path.starts_with("excalidraw-icons/") { return quiet_excalidraw::ui::IconAssets.load(path); }
         Ok(get(path).map(Cow::Borrowed))
     }
 
     fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
-        Ok(FILES.iter().filter(|(p, _)| p.starts_with(path)).map(|(p, _)| SharedString::from(*p)).collect())
+        let mut paths = quiet_excalidraw::ui::IconAssets.list(path)?;
+        paths.extend(FILES.iter().filter(|(p, _)| p.starts_with(path)).map(|(p, _)| SharedString::from(*p)));
+        Ok(paths)
     }
 }

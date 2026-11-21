@@ -21,7 +21,6 @@ exclude = ["vendor/gpui-excalidraw"]
 default-members = [".", "crates/core"]
 
 [dependencies]
-mermaid-svg = "0.7.0"
 url = "2.5"
 fdl_core = { path = "crates/core" }
 anyhow = "1.0.104"

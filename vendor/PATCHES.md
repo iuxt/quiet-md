@@ -59,6 +59,8 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 | 37 | `window.rs` | 对应用层开放已有的 `with_element_opacity` | 画板手动绘制图片时可应用透明度 |
 | 38 | 交互事件、各平台指针事件 | 传递可选归一化笔压，macOS 读取 AppKit tablet-point subtype | 画板按采样位置保存和渲染真实压力 |
 
+- 外部文件拖出窗口时请求重绘，清掉只在拖放期间显示的叠层。
+
 ## taffy 0.9.0
 
 | 文件 | 改动 | 用途 |
@@ -78,16 +80,20 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 
 ## gpui-excalidraw 0.1.9
 
-`vendor/gpui-excalidraw` 取自 [LittleGuest/gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw/tree/2641e1b9c00b51e5e8329094a7d88cd1223ed630)。只保留场景、几何、手绘路径和 SVG/PNG 渲染所需的 Rust 模块。用本地 `quiet_excalidraw` crate 暴露这部分代码，界面、字体与图标由 Quiet.md 提供。
+`vendor/gpui-excalidraw` 取自 [LittleGuest/gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw/tree/2641e1b9c00b51e5e8329094a7d88cd1223ed630)。`quiet_excalidraw` 暴露上游画板编辑器、场景和渲染器。画板图标含本次接入时用户本地 checkout 中的 `HelpIcon.svg` 调整。
+
+- 上游界面适配 Quiet.md 使用的 GPUI 0.2.2。宿主接管打开绘图、离开画板、绘图文件序列化、预览驱动的剪贴板和文件选择。原生 GPUI 提供布局、控件、焦点和绘制。
+- 上游图标使用独立资产路径。手写字体复用已内置的 Quiet.md 画板字体。拖放提示保留文字状态，GPUI 0.2.2 版省略原先用内联 SVG 生成的文件叠加插图。
+- Quiet.md 在顶部保留返回和保存入口。打开已有场景时保持已保存的几何和绑定，随后由上游处理场景编辑。
 
 - 画板字体为汉字匹配手写、标准、等宽或展示用系统字体。画布与 SVG/PNG 共用字体候选及字形分段规则，混排时保留原西文字体。
 - 栅格化使用内置画板字体和系统字体，只解析内嵌图片，预览长边上限为 2048 像素，显式 PNG 导出可到 4096 像素。画板预览可直接取内存像素，保存画板可以只算预览尺寸，PNG 导出复用同一套栅格化逻辑。
 - SVG 输出处理旋转、透明度和填充线条颜色，补充 PNG 渲染所需的内嵌图片命名空间和图片透明度。
 - 形状内文字重新布局时保留水平和垂直对齐，并使用原始文字重新折行。
 - 路径生成对大尺寸图形采样，并限制虚线细分。非 ASCII 颜色值不会触发字节边界错误。
-- SVG/PNG 输出保留图片的裁剪区域和水平/垂直翻转；画板中旋转后的文字、图片复用同一份输出生成缓存像素，保持编辑与导出一致。
+- SVG/PNG 输出保留图片的裁剪区域和水平/垂直翻转。
 - 形状绑定文字按容器本地尺寸折行，再随容器旋转；箭头标签按 labelPosition 在旋转后的路径上定位，文字本身保持水平。
-- 画框子元素在画布、SVG 和 PNG 中按画框边界裁切；缩小画框保持内容本身的尺寸。
+- SVG 和 PNG 按画框边界裁切。
 - 固定连接使用形状本地坐标中的锚点，随形状移动/缩放/旋转；更新一端不再按新的方向重算另一端。旧版无固定锚点的连接保留 orbit 兼容路径。
 
 - 同一版上游的 `core/lasso.rs`、`core/mermaid.rs` 和 `render/bucket_fill.rs` 分别提供套索、Mermaid 流程图和封闭区域填色。区域栅格化复用 resvg 的 usvg/tiny-skia 依赖。
