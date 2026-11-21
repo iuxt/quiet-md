@@ -80,7 +80,7 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 
 ## gpui-excalidraw 0.1.9
 
-`vendor/gpui-excalidraw` 取自 [LittleGuest/gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw/tree/2641e1b9c00b51e5e8329094a7d88cd1223ed630)。`quiet_excalidraw` 暴露上游画板编辑器、场景和渲染器。画板图标含本次接入时用户本地 checkout 中的 `HelpIcon.svg` 调整。
+`vendor/gpui-excalidraw` 取自 [LittleGuest/gpui-excalidraw](https://github.com/LittleGuest/gpui-excalidraw/tree/2641e1b9c00b51e5e8329094a7d88cd1223ed630)。`quiet_excalidraw` 暴露上游画板编辑器、场景和渲染器。帮助入口统一使用 `helpIcon.svg`，以便在大小写不敏感的文件系统上检出。
 
 - 上游界面适配 Quiet.md 使用的 GPUI 0.2.2。宿主接管打开绘图、离开画板、绘图文件序列化、预览驱动的剪贴板和文件选择。原生 GPUI 提供布局、控件、焦点和绘制。
 - 上游图标使用独立资产路径。手写字体复用已内置的 Quiet.md 画板字体。拖放提示保留文字状态，GPUI 0.2.2 版省略原先用内联 SVG 生成的文件叠加插图。

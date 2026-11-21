@@ -6060,7 +6060,7 @@ impl Editor {
             .child(
                 chrome::menu_row_with(
                     "fm-help",
-                    Some("HelpIcon"),
+                    Some("helpIcon"),
                     &t("menu.help"),
                     Some("?"),
                     false,
@@ -7633,7 +7633,7 @@ const PALETTE_COMMANDS: &[PaletteCommand] = &[
         id: "editor-shortcuts",
         label: "welcomeScreen.defaults.helpHint",
         shortcut: Some("?"),
-        icon: "HelpIcon",
+        icon: "helpIcon",
         category: PaletteCategory::Editor,
         keywords: "help shortcuts keyboard documentation",
         gate: PaletteGate::Always,
