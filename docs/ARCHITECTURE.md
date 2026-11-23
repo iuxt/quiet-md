@@ -102,9 +102,11 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 
 ## 画板
 
-`src/editor/drawing.rs` 把 `vendor/gpui-excalidraw` 的原生编辑器嵌到 Quiet.md 文档窗口。上游负责画布、工具栏、属性、选区和画板撤销。Quiet.md 管理草稿、退出确认和保存到笔记。保存时在后台编码并计算预览尺寸，校验原块或插入位置后写图源，经 `Core::insert_drawing` / `Core::replace_drawing` 提交到文档。保存后可以继续编辑。
+`src/editor/drawing.rs` 在文档窗口内用 GPUI 绘制画布。打开画板时读取 `.excalidraw` 场景，拖动、绘制和画板内撤销都留在草稿里。保存时在后台生成图源和计算预览尺寸，检查原块或插入位置仍有效，再写入图源。 `Core::insert_drawing` / `replace_drawing` 把图源写入文档的画板块。正文、首页和历史可见时在后台将图源渲染成内存像素，共用文档图片缓存。已有 PNG 预览可以继续读取，Git 历史直接读 LFS 对象。 `drawing_ui.rs` 把 Excalidraw 的工具顺序、底部控制区和上下文属性面板接到同一份草稿。画板可在原地保存，随后继续修改已经插入的块。
 
-`drawing_scene.rs` 在 Excalidraw 的相对点坐标和 Rust 模型的画布坐标间转换。导入时保留原始场景字段，导出时合入本次修改。正文、首页和历史继续使用共享图片缓存渲染场景预览，也可读取旧 PNG 预览。Git 历史直接读取 LFS 对象。操作见 [DRAWING.md](DRAWING.md)。
+`drawing_edit.rs` 统一处理选区、附属文字和画框成员的变换、引用重映射、剪贴板与本地素材库。`drawing_commands.rs` 处理精确属性输入、辅助工具与流程图快捷操作；预览和提交复用相同场景操作。完整操作见 [DRAWING.md](DRAWING.md)。
+
+`drawing_scene.rs` 在 Excalidraw 的相对点坐标和 Rust 渲染器的画布坐标间转换。导入时保留原始场景字段，导出时把修改合进去；同时读写 PNG/SVG 内嵌图源和 `.excalidrawlib` 素材库。手绘渲染和几何复用 `vendor/gpui-excalidraw` 的 Rust 代码。
 
 ## 内存与缓存
 

@@ -3710,9 +3710,7 @@ impl Window {
                     })
                 }
                 FileDropEvent::Exited => {
-                    if cx.active_drag.take().is_some() {
-                        self.refresh();
-                    }
+                    cx.active_drag.take();
                     PlatformInput::FileDrop(FileDropEvent::Exited)
                 }
             },

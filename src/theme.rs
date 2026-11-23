@@ -344,6 +344,8 @@ impl Theme {
     pub fn primary_500() -> Hsla { c(craft::B500) }
     pub fn primary_fill_1() -> Hsla { c(craft::B50) }
     // Drawing toolbar and property selection, sampled from the supplied Excalidraw tray reference in sRGB.
+    pub fn drawing_accent() -> Hsla { if dark() { rgb(0xcbc0f6).into() } else { rgb(0x7658ed).into() } }
+    pub fn drawing_selection() -> Hsla { if dark() { Self::drawing_accent().opacity(0.25) } else { rgb(0xcbc0f6).into() } }
     /// The note: white page.
     pub fn bg_body() -> Hsla { c(craft::N00) }
     /// Light fills inside the note (code blocks, quiet cards).

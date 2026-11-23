@@ -288,7 +288,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                         Some(p) if drop => {
                             FILE_DRAG.lock().unwrap().take();
                             if let Some(drawing) = ws.editor.as_ref().and_then(|ed| ed.read(cx).drawing.clone()) {
-                                drawing.update(cx, |d,cx| d.drop_at(&p,window,cx));
+                                drawing.update(cx, |d,cx| d.drop_at(p,at,window,cx));
                             } else if ws.sidebar_drop_at(at, false, cx) { ws.sidebar_files_dropped(p, cx); }
                             else { ws.file_drag_at(at, p.clone(), cx); ws.file_drop_paths(p, window, cx); }
                         }
