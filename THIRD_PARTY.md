@@ -4,7 +4,7 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 
 ## Rust 依赖
 
-由 `cargo metadata` 生成，共 779 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
+由 `cargo metadata` 生成，共 778 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
 
@@ -428,8 +428,6 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | prettyplease | 0.2.37 | MIT OR Apache-2.0 |
 | prettyplease | 0.3.0 | MIT OR Apache-2.0 |
 | proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 |
-| proc-macro-error-attr2 | 2.0.0 | MIT OR Apache-2.0 |
-| proc-macro-error2 | 2.0.1 | MIT OR Apache-2.0 |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 |
 | profiling | 1.0.18 | MIT OR Apache-2.0 |
 | profiling-procmacros | 1.0.18 | MIT OR Apache-2.0 |
@@ -546,8 +544,8 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | ssh2 | 0.9.7 | MIT OR Apache-2.0 |
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 |
 | stacker | 0.1.25 | MIT OR Apache-2.0 |
-| stacksafe | 0.1.4 | Apache-2.0 |
-| stacksafe-macro | 0.1.4 | Apache-2.0 |
+| stacksafe | 1.0.3 | Apache-2.0 |
+| stacksafe-macro | 1.0.3 | Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |
 | strict-num | 0.1.1 | MIT |
 | string_cache | 0.8.9 | MIT OR Apache-2.0 |

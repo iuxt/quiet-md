@@ -1,6 +1,6 @@
 # vendor 补丁
 
-`vendor/gpui` 是 crates.io 的 gpui 0.2.2，`vendor/taffy` 是 taffy 0.9.0，`vendor/xattr` 是 xattr 0.2.3，都打了本地补丁。项目通过 `Cargo.toml` 的 `[patch.crates-io]` 使用这些目录。补丁处都带 `quiet.md:` 注释；完整列表以下表和 diff 为准。
+`vendor/gpui`、`vendor/taffy`、`vendor/xattr` 和 `vendor/block` 均取自 crates.io，并打了本地补丁。项目通过 `Cargo.toml` 的 `[patch.crates-io]` 使用这些目录。补丁处都带 `quiet.md:` 注释；完整列表以下表和 diff 为准。
 
 和上游对比：
 
@@ -8,6 +8,7 @@
 R=~/.cargo/registry/src/index.crates.io-*/
 diff -ru $R/gpui-0.2.2/src vendor/gpui/src
 diff -ru $R/taffy-0.9.0/src vendor/taffy/src
+diff -ru $R/block-0.1.6/src vendor/block/src
 ```
 
 升级上游时，按下表逐条重新打补丁，并在补丁处保留注释。
@@ -17,6 +18,7 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 - `interactive.rs`、`window.rs`、AppKit 和 Wayland 事件转换：派发原生触控板捏合的增量缩放事件，普通滚轮维持原行为。
 - GPUI 文件拖放提交事件携带释放时的修饰键，用于 Shift 拖入图源时插入元素。macOS、Windows、X11 和 Wayland 的拖放入口都提供修饰键。
 - `platform/windows/events.rs`: `VK_PROCESSKEY` 始终交给 IME，不在组合结束后重新派发成编辑快捷键，避免小狼毫退格、回车被处理两次。
+- `Cargo.toml`：将 `stacksafe` 升到 1.0.2 以上的 1.x，移除触发 Rust 未来兼容性警告的间接依赖 `proc-macro-error2`。
 
 | # | 文件 | 改动 | 用途 |
 |---|---|---|---|
@@ -73,6 +75,12 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 |---|---|---|
 | `src/sys/mod.rs` | Linux/Android 下 `ENOATTR` 映射为 `::libc::ENODATA` | 解决现代 libc crate 在 Linux GNU 下没有 `ENOATTR` 常量导致的编译错误 |
 | `src/sys/linux_macos/macos.rs` | macOS 扩展属性 FFI 的 `position` 参数改用 `u32`，移除 `libc::uint32_t` 导入 | 保持 ABI 不变，消除现代 libc crate 的弃用警告 |
+
+## block 0.1.6
+
+`src/lib.rs` 将 `_NSConcreteStackBlock` 声明为由 32 个指针组成的外部类存储，构建 block 时直接取符号地址。布局与 [BlocksRuntime](https://github.com/llvm/llvm-project/blob/main/compiler-rt/lib/BlocksRuntime/data.c) 的定义一致，消除 Rust 对不可实例化的外部静态类型发出的未来兼容性警告。显式声明原先默认的 Rust 2015 edition 和 C ABI，避免使用本地依赖后出现弃用警告。
+
+`test_utils/` 来自[同版本的上游源码](https://github.com/SSheldon/rust-block/tree/47178790cfc9d4a8b092051d8b413b78bd31254a/test_utils)，用 `cc` 编译原有 Objective-C block 测试夹具。MIT 许可见 [LICENSE](block/LICENSE)。
 
 ## 删掉的上游文件
 

@@ -64,6 +64,7 @@ windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gd
 # explicit pixel column widths. Taffy 0.9.0 with the beyond-limits fix for
 # items spanning several auto rows (merged table cells).
 [patch.crates-io]
+block = { path = "vendor/block" }
 gpui = { path = "vendor/gpui" }
 taffy = { path = "vendor/taffy" }
 xattr = { path = "vendor/xattr" }
