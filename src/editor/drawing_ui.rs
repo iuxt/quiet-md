@@ -31,7 +31,7 @@ impl DrawingEditor {
             .child(div().flex_1().min_w_0().flex().gap(px(6.)).items_center().text_size(px(14.)).font_weight(FontWeight::MEDIUM)
                 .child(div().flex_none().child(tr("画板", "Drawing")))
                 .when(!title.is_empty(), |d| d.child(div().flex_none().text_color(Theme::text_caption()).child("/")).child(div().min_w_0().truncate().child(ui::ui_text(title)))))
-            .children(self.error.map(|msg| div().min_w_0().truncate().text_size(px(12.)).text_color(Theme::text_caption()).child(ui::ui_text(msg))))
+            .children(self.error.map(|msg| div().id("drawing-error").min_w_0().truncate().text_size(px(12.)).text_color(Theme::text_caption()).child(ui::ui_text(msg)).tip(msg, None)))
             .when(self.busy, |d| d.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(tr("正在处理", "Working…"))))
             .child(div().id("drawing-save").flex_none().h(px(crate::app::HEADER_ACTIONS_H)).px(px(12.)).flex().items_center().rounded(px(8.))
                 .text_size(px(13.)).font_weight(FontWeight::MEDIUM).text_color(if can_save { Theme::text() } else { Theme::text_disabled() })
@@ -641,7 +641,9 @@ impl DrawingEditor {
             (tr("创建副本", "Duplicate"), "⌘D / Alt + drag"), (tr("编组", "Group selection"), "⌘G"), (tr("取消编组", "Ungroup selection"), "⌘⇧G"),
             (tr("编辑线条节点", "Edit line points"), "⌘Enter"), (tr("锁定所选内容", "Lock selection"), "⌘⇧L"),
             (tr("链接", "Link"), "⌘K"), (tr("查找画板文字", "Find text on canvas"), "⌘F"),
-            (tr("缩放到全部内容", "Zoom to fit"), "Shift + 1"), (tr("缩放到所选内容", "Zoom to selection"), "Shift + 2"),
+            (tr("缩放到全部内容", "Zoom to fit"), "Shift + 1"), (tr("在视口中显示所选内容", "Fit selection in viewport"), "Shift + 2"),
+            (tr("缩放到所选内容", "Zoom to selection"), "Shift + 3"), (tr("按页平移画布", "Pan by page"), "PgUp / PgDn"),
+            (tr("按页横向平移", "Pan horizontally by page"), "Shift + PgUp / PgDn"),
             (tr("网格模式", "Grid mode"), "Shift + G"), (tr("水平翻转", "Flip horizontal"), "Shift + H"), (tr("垂直翻转", "Flip vertical"), "Shift + V"),
         ];
         ui::popover().id("drawing-help-panel").occlude().w(px(310.)).max_h(px(max_h)).overflow_y_scroll().p(px(12.)).flex().flex_col().gap(px(7.))
@@ -744,6 +746,7 @@ impl DrawingEditor {
             let t = index.and_then(|i| match &self.doc.scene.elements[i] { Element::Text(t) => Some(t), _ => None });
             let field = self.field.read(cx);
             let width = if let Some(t) = t.filter(|t| !t.auto_resize || t.container_id.is_some()) { t.base.width * self.zoom }
+                else if let Some(width) = self.text_width { width * self.zoom }
                 else if let Some(i) = self.text_container { (self.doc.scene.elements[i].base().width - 10.).max(10.) * self.zoom }
                 else { scene::text::text_width_in(&field.text, f64::from(field.size), t.map_or(self.text_font, |t| t.font_family)) + f64::from(field.size) };
             let w = px((width as f32).max(30.).min(f32::from(view.size.width).max(30.)));

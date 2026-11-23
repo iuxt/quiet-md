@@ -183,6 +183,15 @@ pub(super) fn resize_selection(doc: &mut Scene, roots: &[usize], from: Rect, to:
     } else if let [i] = roots && linear_points(&doc.elements[*i]).is_some()
         && (corner.is_some() || Rect::from_points(linear_points(&doc.elements[*i]).unwrap()) == from) {
         resize_linear(&mut doc.elements[*i], from, to, corner.unwrap_or(2)); refresh_scene(doc);
+    } else if let [i] = roots && side_resizable(&doc.elements[*i]) && corner.is_some() {
+        let e = &mut doc.elements[*i];
+        let center = to.center().rotate(e.base().angle, from.center());
+        let origin = center - World::new(to.width(), to.height()) * 0.5;
+        let width = to.width().min(MAX_COORD * 2.); let height = to.height().min(MAX_COORD * 2.);
+        let b = e.base_mut();
+        (b.x, b.y, b.width, b.height) = (origin.x.clamp(-MAX_COORD, MAX_COORD), origin.y.clamp(-MAX_COORD, MAX_COORD), width, height);
+        if let Element::StickyNote(t) = e && from.height() != to.height() { t.base_height *= height / from.height().max(1.); }
+        refresh_scene(doc);
     } else { transform_selection(doc, roots, from, to, 0.); }
 }
 
@@ -548,13 +557,6 @@ impl DrawingEditor {
         refresh_scene(&mut self.doc.scene); self.rebuild(); cx.notify();
     }
 
-    pub(super) fn zoom_selection(&mut self, cx: &mut Context<Self>) {
-        let Some(b) = selection_bounds(&self.doc.scene, &self.selection) else { return };
-        let view = self.viewport.get(); let w = f64::from(f32::from(view.size.width)); let h = f64::from(f32::from(view.size.height));
-        self.zoom = ((w - 96.) / b.width().max(1.)).min((h - 96.) / b.height().max(1.)).clamp(0.1, 30.);
-        self.offset = point(px((w / 2. - b.center().x * self.zoom) as f32), px((h / 2. - b.center().y * self.zoom) as f32)); cx.notify();
-    }
-
     pub(super) fn copy_style(&mut self, cx: &mut Context<Self>) {
         if let Some(i) = self.selection.first() { self.copied_style = Some(self.doc.scene.elements[*i].clone()); cx.notify(); }
     }
@@ -843,7 +845,22 @@ impl DrawingEditor {
                 self.insert_scene(doc, self.pointer, window, cx); return;
             }
         }
-        if let Some(data) = chart::Spreadsheet::parse(&text) {
+        if let Some(source) = mermaid::clipboard_source(&text) {
+            let source = source.to_owned();
+            let at = self.pointer;
+            self.busy = true; self.error = None; cx.notify();
+            cx.spawn_in(window, async move |this, cx| {
+                let doc = cx.background_executor().spawn(async move { mermaid::mermaid_scene(&source) }).await;
+                let _ = this.update_in(cx, |d,w,cx| {
+                    d.busy = false;
+                    match doc {
+                        Ok(doc) => { d.insert_scene(doc, at, w, cx); }
+                        Err(_) => d.start_text(at, None, text, w, cx),
+                    }
+                    cx.notify();
+                });
+            }).detach();
+        } else if let Some(data) = chart::Spreadsheet::parse(&text) {
             self.chart = Some((data,text,self.pointer)); self.panel = Some(Panel::Chart); cx.notify();
         } else if !text.trim().is_empty() { self.start_text(self.pointer, None, text, window, cx); }
     }
@@ -851,7 +868,11 @@ impl DrawingEditor {
     pub(super) fn insert_scene(&mut self, source: DrawingScene, at: World, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.editable() { return false; }
         let elements: Vec<_> = source.scene.non_deleted().cloned().collect();
-        if elements.is_empty() || elements.len() + self.doc.scene.non_deleted().count() > MAX_ELEMENTS || source.remaining_points() < drawing_scene::MAX_SCENE_POINTS.saturating_sub(self.doc.remaining_points()) { return false; }
+        if elements.is_empty() { return false; }
+        let limit = if elements.len() + self.doc.scene.non_deleted().count() > MAX_ELEMENTS { Some(drawing_scene::SceneLimit::Elements) }
+            else if source.remaining_points() < drawing_scene::MAX_SCENE_POINTS.saturating_sub(self.doc.remaining_points()) { Some(drawing_scene::SceneLimit::Points) }
+            else { None };
+        if let Some(limit) = limit { self.error = Some(limit.message()); cx.notify(); return false; }
         let mut next = self.doc.clone();
         let copies = clone_elements(&elements);
         for (from, to) in elements.iter().zip(&copies) { next.copy_original(&source, from, to); }
@@ -870,8 +891,10 @@ impl DrawingEditor {
         let Some(b) = selection_bounds(&next.scene, &indices) else { return false };
         let delta = bounded_delta(b, at - b.center());
         for &i in &indices { scene::transform::translate_element(&mut next.scene.elements[i], delta.x, delta.y); }
-        let Ok(bytes) = next.json() else { return false };
-        if DrawingScene::load(&bytes).is_err() { return false; }
+        if let Err(e) = next.json().and_then(|bytes| DrawingScene::load(&bytes)) {
+            self.error = Some(drawing_error(&e, tr("无法插入绘图内容。", "Could not insert the drawing content.")));
+            cx.notify(); return false;
+        }
         self.checkpoint(); self.doc = next;
         self.selection = indices.into_iter().filter(|i| !matches!(&self.doc.scene.elements[*i], Element::Text(t) if t.container_id.is_some())).collect();
         self.line_edit = None; self.crop = None; self.selected_points.clear();

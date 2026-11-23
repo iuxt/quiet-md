@@ -14,6 +14,8 @@ diff -ru $R/taffy-0.9.0/src vendor/taffy/src
 
 ## GPUI 0.2.2
 
+- `interactive.rs`、`window.rs`、AppKit 和 Wayland 事件转换：派发原生触控板捏合的增量缩放事件，普通滚轮维持原行为。
+- GPUI 文件拖放提交事件携带释放时的修饰键，用于 Shift 拖入图源时插入元素。macOS、Windows、X11 和 Wayland 的拖放入口都提供修饰键。
 - `platform/windows/events.rs`: `VK_PROCESSKEY` 始终交给 IME，不在组合结束后重新派发成编辑快捷键，避免小狼毫退格、回车被处理两次。
 
 | # | 文件 | 改动 | 用途 |

@@ -842,9 +842,19 @@ impl X11Client {
                         state.xdnd_state.other_window,
                     );
                     let position = state.xdnd_state.position;
+                    let mut modifiers = state.modifiers;
+                    // quiet.md: on an external drag the source can still have keyboard focus.
+                    if let Ok(pointer) = get_reply(
+                        || "Failed to query drop modifiers",
+                        state.xcb_connection.query_pointer(event.window),
+                    ) {
+                        modifiers.shift = pointer.mask & xproto::KeyButMask::SHIFT == xproto::KeyButMask::SHIFT;
+                    }
                     drop(state);
-                    window
-                        .handle_input(PlatformInput::FileDrop(FileDropEvent::Submit { position }));
+                    window.handle_input(PlatformInput::FileDrop(FileDropEvent::Submit {
+                        position,
+                        modifiers,
+                    }));
                     self.0.borrow_mut().xdnd_state = Xdnd::default();
                 }
             }

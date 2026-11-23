@@ -971,7 +971,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
     fn Drop(
         &self,
         pdataobj: windows::core::Ref<IDataObject>,
-        _grfkeystate: MODIFIERKEYS_FLAGS,
+        grfkeystate: MODIFIERKEYS_FLAGS,
         pt: &POINTL,
         pdweffect: *mut DROPEFFECT,
     ) -> windows::core::Result<()> {
@@ -994,6 +994,7 @@ impl IDropTarget_Impl for WindowsDragDropHandler_Impl {
                 cursor_position.y as f32,
                 scale_factor,
             ),
+            modifiers: Modifiers { shift: grfkeystate.contains(MK_SHIFT), ..current_modifiers() },
         });
         self.handle_drag_drop(input);
 

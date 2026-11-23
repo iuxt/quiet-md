@@ -434,4 +434,123 @@ frame = live(scene, "frame")[0]
 width, height = struct.unpack(">II", frame_png.read_bytes()[16:24])
 assert (width, height) == (int(2 * frame["width"]), int(2 * frame["height"]))
 
+diamond = [element("diamond", "diamond", 100, 100, 200, 200)]
+scene = run("no-arrow-binding-outside-outline", "key a\ndrag 350 350 510 409", diamond)
+result = live(scene, "arrow")[0]
+assert result["endBinding"] is None and result["points"] == [[0, 0], [160, 59]]
+
+shape = element("rectangle", "rect", 100, 100, 200, 100)
+shape.update(backgroundColor="#ffffff", fillStyle="solid")
+scene = run("text-tool-bind-and-edit", """key t
+click 600 499
+type First
+key cmd-enter
+key t
+click 600 499
+type Second
+key cmd-enter
+""", [shape])
+label, = live(scene, "text")
+assert (label["originalText"], label["containerId"]) == ("Second", "rect")
+
+text = "This long line wraps to the text box width and keeps its original source."
+scene = run("text-tool-drag-fixed-width", f"""key t
+drag 600 470 460 410
+type {text}
+key cmd-enter
+""", [])
+label, = live(scene, "text")
+assert label["width"] == 140 and not label["autoResize"]
+assert label["originalText"] == text and "\n" in label["text"]
+
+scene = run("sticky-note-ready-for-text", """key n
+click 500 400
+type Idea
+key cmd-enter
+""", [])
+sticky, = live(scene, "stickynote")
+label, = live(scene, "text")
+assert (sticky["x"], sticky["y"], sticky["width"], sticky["height"]) == (375, 227, 250, 250)
+assert (label["originalText"], label["containerId"]) == ("Idea", sticky["id"])
+
+scene = run("resize-shape-side-handles", """click 600 499
+drag 700 499 790 519
+drag 645 449 625 419
+key cmd-z
+key cmd-shift-z
+""", [shape])
+rect, = live(scene, "rectangle")
+assert (rect["x"], rect["y"], rect["width"], rect["height"]) == (100, 70, 290, 130)
+
+incoming = work / "drop-source.excalidraw"
+incoming.write_text(json.dumps(dict(type="excalidraw", version=2, files={}, elements=[
+    element("ellipse", "incoming", 100, 100, 100, 100),
+])))
+scene = run("shift-drop-inserts-source", f"""filedrag 750 450 {incoming}
+filedrop 750 450 shift
+wait 400
+key cmd-z
+key cmd-shift-z
+""")
+assert len(live(scene, "rectangle")) == 3
+added, = live(scene, "ellipse")
+assert (added["x"], added["y"]) == (500, 141)
+
+mermaid = work / "mermaid.txt"
+mermaid.write_text("flowchart LR\nA --> B")
+scene = run("paste-mermaid-directly", f"""clip text {mermaid}
+move 600 450
+key cmd-v
+wait 800
+""", [])
+assert len(live(scene, "arrow")) == 1 and len(live(scene, "text")) == 2
+
+scene = run("view-navigation", """click 600 499
+key shift-2
+key r
+drag 825 400 905 440
+click 600 499
+key shift-3
+key r
+drag 825 400 905 440
+key shift-2
+key alt-r
+key pageup
+key shift-pageup
+key alt-r
+key r
+drag 825 400 905 440
+""", [shape])
+_, fit, fill, paged = live(scene, "rectangle")
+assert fit["width"] == 80 and 10 < fill["width"] < 20
+assert paged["x"] < -700 and paged["y"] < -700
+
+scene = run("pinch-anchors-at-pointer", """magnify 600 499 2
+key r
+drag 690 410 770 450
+""", [shape])
+_, after_pinch = live(scene, "rectangle")
+assert (after_pinch["x"], after_pinch["width"], after_pinch["height"]) == (245, 40, 20)
+
+distant = work / "distant.excalidraw"
+distant.write_text(json.dumps(dict(type="excalidraw", version=2, files={}, elements=[
+    element("rectangle", "far", 100001, 100, 100, 100),
+    element("arrow", "far-arrow", 100101, 150, 60, 60, points=[[0, 0], [60, 60]],
+            startBinding=dict(elementId="far", fixedPoint=[1, 0.5], mode="inside"), endBinding=None),
+])))
+scene = run("open-distant-source", f"pick {distant}\nkey cmd-o\nwait 450", [])
+far, = live(scene, "rectangle")
+connection, = live(scene, "arrow")
+assert abs(far["x"]) < 100000 and connection["x"] - far["x"] == 100
+assert connection["points"] == [[0, 0], [60, 60]] and connection["startBinding"]["elementId"] == "far"
+
+wide = work / "wide.excalidraw"
+wide.write_text(json.dumps(dict(type="excalidraw", version=2, files={}, elements=[
+    element("rectangle", "left", -100001, 100, 100, 100),
+    element("rectangle", "right", 100001, 100, 100, 100),
+])))
+scene = run("reject-overwide-source", f"pick {wide}\nkey cmd-o\nwait 450")
+assert len(live(scene, "rectangle")) == 3
+assert "more than the canvas limit of 200,000 units" in (work / "reject-overwide-source/log").read_text()
+
 print("Drawing regression passed:", work)

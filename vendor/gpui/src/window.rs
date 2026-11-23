@@ -3669,6 +3669,11 @@ impl Window {
                 self.modifiers = scroll_wheel.modifiers;
                 PlatformInput::ScrollWheel(scroll_wheel)
             }
+            // quiet.md: native pinch, independent of normal scrolling.
+            PlatformInput::Magnify(magnify) => {
+                self.mouse_position = magnify.position;
+                PlatformInput::Magnify(magnify)
+            }
             // Translate dragging and dropping of external files from the operating system
             // to internal drag and drop events.
             PlatformInput::FileDrop(file_drop) => match file_drop {
@@ -3698,14 +3703,15 @@ impl Window {
                         modifiers: Modifiers::default(),
                     })
                 }
-                FileDropEvent::Submit { position } => {
+                FileDropEvent::Submit { position, modifiers } => {
                     cx.activate(true);
                     self.mouse_position = position;
+                    self.modifiers = modifiers;
                     PlatformInput::MouseUp(MouseUpEvent {
                         pressure: None,
                         button: MouseButton::Left,
                         position,
-                        modifiers: Modifiers::default(),
+                        modifiers,
                         click_count: 1,
                     })
                 }

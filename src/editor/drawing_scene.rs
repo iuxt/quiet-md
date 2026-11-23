@@ -17,6 +17,40 @@ pub(super) const MAX_IMAGES: usize = 32;
 const PREVIEW_SCALE: f32 = 2.;
 const MAX_PREVIEW_EDGE: u32 = 2048;
 const MAX_PNG: u64 = 20 * 1024 * 1024;
+const MAX_IMPORT_FILE: u64 = MAX_SOURCE * 4;
+
+#[derive(Debug)]
+pub(super) enum SceneLimit { File, Source, Elements, Points, Coordinates, Images, ImagePixels }
+
+impl SceneLimit {
+    fn messages(&self) -> (&'static str, &'static str) {
+        match self {
+            Self::File => ("绘图文件超过 32 MiB。", "The drawing file exceeds 32 MiB."),
+            Self::Source => ("绘图源超过 8 MiB。", "The drawing source exceeds 8 MiB."),
+            Self::Elements => ("画板最多容纳 16,384 个元素。", "A drawing can contain at most 16,384 elements."),
+            Self::Points => ("笔迹和连线超过单条 32,768 点或全图 524,288 点的上限。", "Strokes and lines exceed 32,768 points per element or 524,288 points per drawing."),
+            Self::Coordinates => ("图形横向或纵向跨度超过画板的 200,000 单位上限。", "The drawing spans more than the canvas limit of 200,000 units on one axis."),
+            Self::Images => ("画板最多容纳 32 张图片。", "A drawing can contain at most 32 images."),
+            Self::ImagePixels => ("图片边长超过 4,096 像素，或总像素数超过 1,600 万。", "An image exceeds 4,096 pixels on one side, or the images exceed 16 million pixels in total."),
+        }
+    }
+    pub(super) fn message(&self) -> &'static str {
+        let (zh, en) = self.messages();
+        crate::settings::tr(zh, en)
+    }
+}
+
+impl std::fmt::Display for SceneLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.messages().1) }
+}
+impl std::error::Error for SceneLimit {}
+
+#[derive(Debug)]
+pub(super) struct NoEmbeddedScene;
+impl std::fmt::Display for NoEmbeddedScene {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str("image has no embedded drawing source") }
+}
+impl std::error::Error for NoEmbeddedScene {}
 
 #[derive(Clone, Copy)]
 pub(super) struct ExportOptions { pub background: bool, pub dark: bool, pub embed: bool, pub scale: f32, pub show_frames: bool }
@@ -97,7 +131,7 @@ fn migrate_element(fields: &mut Map<String, Value>) {
     }
 }
 
-fn load_element(mut fields: Map<String, Value>) -> Result<Element> {
+fn load_element(mut fields: Map<String, Value>) -> Result<(Element, Bounds)> {
     // Older Excalidraw scenes used a focus/gap binding. Fill the fields
     // understood by the Rust model while retaining the original on export.
     for key in ["startBinding", "endBinding"] {
@@ -112,7 +146,8 @@ fn load_element(mut fields: Map<String, Value>) -> Result<Element> {
     let b = element.base();
     let origin = Point::new(b.x, b.y);
     ensure!(b.id.len() <= 128 && b.seed.unsigned_abs() <= u32::MAX as u64 && b.version >= 0, "invalid element metadata");
-    ensure!(coord(b.x) && coord(b.y) && b.width >= 0. && b.height >= 0. && b.width <= MAX_COORD * 2. && b.height <= MAX_COORD * 2., "element outside canvas limits");
+    ensure!(b.width >= 0. && b.height >= 0., "invalid element dimensions");
+    ensure!(b.width <= MAX_COORD * 2. && b.height <= MAX_COORD * 2., SceneLimit::Coordinates);
     ensure!(b.angle.abs() <= std::f64::consts::TAU * 2. && (0.1..=64.).contains(&b.stroke_width) && (0. ..=10.).contains(&b.roughness), "invalid drawing style");
     if let Element::Text(t) = &element {
         ensure!((1. ..=512.).contains(&t.font_size) && (0.5..=4.).contains(&t.line_height), "text exceeds drawing limits");
@@ -125,20 +160,31 @@ fn load_element(mut fields: Map<String, Value>) -> Result<Element> {
                 && crop.y + crop.height <= crop.natural_height + 0.001, "invalid image crop");
         }
     }
+    let mut extent = Bounds::from_points(&[origin]);
     if let Some(points) = element_points(&mut element) {
-        ensure!(!points.is_empty() && points.len() <= MAX_POINTS, "too many drawing points");
-        for p in points.iter_mut() { *p += origin; ensure!(coord(p.x) && coord(p.y), "point outside canvas limits"); }
+        ensure!(!points.is_empty(), "missing drawing points");
+        ensure!(points.len() <= MAX_POINTS, SceneLimit::Points);
+        for p in points.iter_mut() { *p += origin; ensure!(p.x.is_finite() && p.y.is_finite(), SceneLimit::Coordinates); }
         let bounds = Bounds::from_points(points);
+        extent = extent.union(&bounds);
         let base = element.base_mut();
         (base.x, base.y, base.width, base.height) = (bounds.min_x, bounds.min_y, bounds.width(), bounds.height());
     }
     if let Element::Arrow(a) = &mut element && let Some(segments) = &mut a.fixed_segments {
-        for s in segments { s.start += origin; s.end += origin; }
+        for s in segments {
+            s.start += origin; s.end += origin;
+            ensure!([s.start.x,s.start.y,s.end.x,s.end.y].into_iter().all(f64::is_finite), SceneLimit::Coordinates);
+            extent = extent.union(&Bounds::from_points(&[s.start, s.end]));
+        }
     }
-    Ok(element)
+    Ok((element, extent))
 }
 
-fn coord(v: f64) -> bool { v.abs() <= MAX_COORD }
+fn rebase_axis(min: f64, max: f64) -> Result<f64> {
+    if min >= -MAX_COORD && max <= MAX_COORD { return Ok(0.); }
+    ensure!(max - min <= MAX_COORD * 2., SceneLimit::Coordinates);
+    Ok(-(min + (max - min) / 2.))
+}
 
 fn decode_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
     use std::io::Read;
@@ -149,7 +195,7 @@ fn decode_metadata(bytes: &[u8]) -> Result<Vec<u8>> {
     let bytes = if value["compressed"] == true {
         let mut out = Vec::new(); flate2::read::ZlibDecoder::new(bytes.as_slice()).take(MAX_SOURCE + 1).read_to_end(&mut out)?; out
     } else { bytes };
-    ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing source is too large"); Ok(bytes)
+    ensure!(bytes.len() as u64 <= MAX_SOURCE, SceneLimit::Source); Ok(bytes)
 }
 
 fn embedded_png_source(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -165,7 +211,7 @@ fn embedded_png_source(bytes: &[u8]) -> Result<Vec<u8>> {
         }
         at = end;
     }
-    Err(anyhow!("PNG has no drawing source"))
+    Err(NoEmbeddedScene.into())
 }
 
 fn encode_metadata(bytes: &[u8]) -> Result<String> {
@@ -222,8 +268,22 @@ impl DrawingScene {
         ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing library is too large"); Ok(bytes)
     }
 
+    pub(super) fn read_exported(path: &Path) -> Result<Self> {
+        use std::io::Read;
+        let file = std::fs::File::open(path)?;
+        let limit = if path.extension().and_then(|s| s.to_str()).is_some_and(|ext| ext.eq_ignore_ascii_case("json") || ext.eq_ignore_ascii_case("excalidraw")) {
+            MAX_SOURCE
+        } else { MAX_IMPORT_FILE };
+        let error = || if limit == MAX_SOURCE { SceneLimit::Source } else { SceneLimit::File };
+        ensure!(file.metadata()?.len() <= limit, error());
+        let mut bytes = Vec::new();
+        file.take(limit + 1).read_to_end(&mut bytes)?;
+        ensure!(bytes.len() as u64 <= limit, error());
+        Self::load_exported(&bytes)
+    }
+
     pub(super) fn load_exported(bytes: &[u8]) -> Result<Self> {
-        ensure!(bytes.len() as u64 <= MAX_SOURCE * 4, "drawing file is too large");
+        ensure!(bytes.len() as u64 <= MAX_IMPORT_FILE, SceneLimit::File);
         if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
             return Self::load(&embedded_png_source(bytes)?);
         }
@@ -242,7 +302,7 @@ impl DrawingScene {
                     _ => {}
                 }
             }
-            return Err(anyhow!("SVG has no drawing source"));
+            return Err(NoEmbeddedScene.into());
         }
         Self::load(bytes)
     }
@@ -285,7 +345,7 @@ impl DrawingScene {
     }
 
     pub(super) fn load(bytes: &[u8]) -> Result<Self> {
-        ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing file is too large");
+        ensure!(bytes.len() as u64 <= MAX_SOURCE, SceneLimit::Source);
         let mut template: Map<String, Value> = serde_json::from_slice(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(bytes))?;
         ensure!(template.get("type").and_then(Value::as_str) == Some("excalidraw"), "expected an Excalidraw scene");
         let Some(Value::Array(elements)) = template.remove("elements") else { return Err(anyhow!("missing drawing elements")) };
@@ -302,28 +362,48 @@ impl DrawingScene {
         }
         let mut seen = HashSet::new();
         let mut points = 0;
+        let mut extent: Option<Bounds> = None;
         for value in elements {
             let Value::Object(mut fields) = value else { return Err(anyhow!("invalid drawing element")) };
             if fields.get("isDeleted") == Some(&Value::Bool(true)) || fields.get("type").and_then(Value::as_str) == Some("selection") { continue; }
             migrate_element(&mut fields);
-            let mut element = load_element(fields.clone())?;
+            ensure!(result.scene.elements.len() < MAX_ELEMENTS, SceneLimit::Elements);
+            let (mut element, item_extent) = load_element(fields.clone())?;
+            extent = Some(extent.map_or(item_extent, |all| all.union(&item_extent)));
             points += element_points(&mut element).map_or(0, |p| p.len());
-            ensure!(points <= MAX_SCENE_POINTS && seen.insert(element.id().to_string()), "too many points or duplicate element id");
+            ensure!(points <= MAX_SCENE_POINTS, SceneLimit::Points);
+            ensure!(seen.insert(element.id().to_owned()), "duplicate element id");
             result.original.insert(element.id().into(), (fields, official_element(&element)?));
             result.scene.elements.push(element);
         }
-        ensure!(result.scene.elements.len() <= MAX_ELEMENTS, "too many drawing elements");
+        if let Some(extent) = extent {
+            let dx = rebase_axis(extent.min_x, extent.max_x)?;
+            let dy = rebase_axis(extent.min_y, extent.max_y)?;
+            if dx != 0. || dy != 0. {
+                for element in &mut result.scene.elements {
+                    let (raw, normalized) = result.original.get_mut(element.id()).unwrap();
+                    if dx != 0. { raw.insert("x".into(), json!(raw["x"].as_f64().unwrap() + dx)); }
+                    if dy != 0. { raw.insert("y".into(), json!(raw["y"].as_f64().unwrap() + dy)); }
+                    // Decode relative points from the new origin to retain precision.
+                    let (rebased, extent) = load_element(raw.clone())?;
+                    ensure!(extent.min_x >= -MAX_COORD && extent.max_x <= MAX_COORD && extent.min_y >= -MAX_COORD && extent.max_y <= MAX_COORD,
+                        SceneLimit::Coordinates);
+                    *element = rebased;
+                    *normalized = official_element(element)?;
+                }
+            }
+        }
         if let Some(files) = template.get_mut("files").filter(|f| !f.is_null()) {
             let used: HashSet<_> = result.scene.non_deleted().filter_map(|e| match e { Element::Image(i) => i.file_id.as_deref(), _ => None }).collect();
             if let Value::Object(map) = files { map.retain(|id, _| used.contains(id.as_str())); }
             let mut files: HashMap<String, BinaryFileData> = serde_json::from_value(files.clone())?;
-            ensure!(files.len() <= MAX_IMAGES, "too many drawing images");
+            ensure!(files.len() <= MAX_IMAGES, SceneLimit::Images);
             let mut pixels = 0;
             for file in files.values_mut() {
                 let image = drawing_image(file)?;
                 let (w, h) = image.dimensions()?;
                 pixels += u64::from(w) * u64::from(h);
-                ensure!(w <= 4096 && h <= 4096 && pixels <= MAX_IMAGE_PIXELS, "drawing images exceed the pixel limit");
+                ensure!(w <= 4096 && h <= 4096 && pixels <= MAX_IMAGE_PIXELS, SceneLimit::ImagePixels);
                 image.normalize_bitmap(file)?;
             }
             result.files = files;
@@ -377,7 +457,7 @@ impl DrawingScene {
         }).collect::<Result<Vec<_>>>()?;
         root.insert("elements".into(), Value::Array(elements));
         let bytes = serde_json::to_vec(&root)?;
-        ensure!(bytes.len() as u64 <= MAX_SOURCE, "drawing file is too large");
+        ensure!(bytes.len() as u64 <= MAX_SOURCE, SceneLimit::Source);
         Ok(bytes)
     }
 

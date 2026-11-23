@@ -1,5 +1,5 @@
 use crate::{
-    Capslock, KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, ModifiersChangedEvent, MouseButton,
+    Capslock, KeyDownEvent, KeyUpEvent, Keystroke, MagnifyEvent, Modifiers, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels,
     PlatformInput, ScrollDelta, ScrollWheelEvent, TouchPhase,
     platform::mac::{
@@ -225,6 +225,15 @@ impl PlatformInput {
                         _ => None,
                     }
                 }
+                // quiet.md: AppKit reports the incremental change from 1.0.
+                NSEventType::NSEventTypeMagnify => window_height.map(|height| {
+                    let magnification: f64 = msg_send![native_event, magnification];
+                    let location = native_event.locationInWindow();
+                    Self::Magnify(MagnifyEvent {
+                        position: point(px(location.x as f32), height - px(location.y as f32)),
+                        scale: 1.0 + magnification,
+                    })
+                }),
                 NSEventType::NSScrollWheel => window_height.map(|window_height| {
                     let phase = match native_event.phase() {
                         NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => {

@@ -8,7 +8,7 @@
 //!   key press through AppKit, so the active input method sees it) |
 //!   activate (make the window key; takes focus) | quit |
 //!   pick <path>[|<path>...] (answers the next file dialog instead of showing it)
-//!   filedrag x y <path>[|<path>...] / filedrop x y / fileleave (files dragged in from the Finder)
+//!   filedrag x y <path>[|<path>...] / filedrop x y [shift] / fileleave (files dragged in from the Finder)
 //! For profiling: bench <n> <step> (runs the step n times, drawing a frame
 //!   synchronously after each, and prints step / frame / editor-render times) |
 //!   wheel x y dy [dx] (one scroll-wheel event; dx: sideways component).
@@ -281,6 +281,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 }
                 let paths = if cmd == "fileleave" { FILE_DRAG.lock().unwrap().take(); None } else { FILE_DRAG.lock().unwrap().clone() };
                 let drop = cmd == "filedrop";
+                let insert = drop && it.next().is_some_and(|m| m.trim() == "shift");
                 cx.update(|cx| {
                     let handle = cx.windows().into_iter().find_map(|w| w.downcast::<crate::app::Workspace>()).unwrap();
                     handle.update(cx, |ws, window, cx| match paths {
@@ -288,7 +289,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
                         Some(p) if drop => {
                             FILE_DRAG.lock().unwrap().take();
                             if let Some(drawing) = ws.editor.as_ref().and_then(|ed| ed.read(cx).drawing.clone()) {
-                                drawing.update(cx, |d,cx| d.drop_at(p,at,window,cx));
+                                drawing.update(cx, |d,cx| d.drop_at(p,at,insert,window,cx));
                             } else if ws.sidebar_drop_at(at, false, cx) { ws.sidebar_files_dropped(p, cx); }
                             else { ws.file_drag_at(at, p.clone(), cx); ws.file_drop_paths(p, window, cx); }
                         }
@@ -725,6 +726,13 @@ fn run(cmd: &str, rest: &str, window: &mut Window, cx: &mut App) {
             match capture(window, cx, &path) {
                 Ok(()) => eprintln!("devtools: saved {path}"),
                 Err(e) => eprintln!("devtools: capture failed: {e}"),
+            }
+        }
+        "magnify" => {
+            let n = nums(rest);
+            if n.len() >= 3 {
+                let event = MagnifyEvent { position: point(px(n[0]), px(n[1])), scale: f64::from(n[2]) };
+                window.dispatch_event(PlatformInput::Magnify(event), cx);
             }
         }
         "wheel" => {

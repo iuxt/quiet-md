@@ -3,6 +3,24 @@ use super::{DrawingScene, Element, ElementOptions, MAX_SOURCE, World, drawing_sc
 use anyhow::{Result, ensure};
 use base64::Engine as _;
 
+pub(super) fn clipboard_source(text: &str) -> Option<&str> {
+    let text = text.trim();
+    if let Some(body) = text.strip_prefix("```mermaid").and_then(|s| s.strip_prefix(['\r', '\n'])) {
+        return body.trim().strip_suffix("```").map(str::trim);
+    }
+    let header = text.lines().map(str::trim).find(|line| !line.is_empty() && !line.starts_with("%%"))?;
+    let (kind, rest) = header.split_once(char::is_whitespace).unwrap_or((header, ""));
+    let known = match kind {
+        "flowchart" | "graph" => matches!(rest.split(|c: char| c.is_whitespace() || c == ';').find(|s| !s.is_empty()), Some("TD" | "TB" | "BT" | "LR" | "RL")),
+        "sequenceDiagram" | "classDiagram" | "stateDiagram" | "stateDiagram-v2" | "erDiagram"
+        | "journey" | "gantt" | "pie" | "mindmap" | "timeline" | "gitGraph"
+        | "quadrantChart" | "requirementDiagram" | "sankey-beta" | "xychart-beta"
+        | "block-beta" | "packet-beta" | "architecture-beta" | "kanban" | "radar-beta" => text.contains('\n'),
+        _ => false,
+    };
+    known.then_some(text)
+}
+
 pub(super) fn mermaid_scene(input: &str) -> Result<DrawingScene> {
     ensure!(input.len() as u64 <= MAX_SOURCE, "Mermaid source exceeds the drawing size limit");
     let mut doc = DrawingScene::new();

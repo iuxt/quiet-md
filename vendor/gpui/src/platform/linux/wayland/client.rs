@@ -42,6 +42,9 @@ use wayland_protocols::wp::cursor_shape::v1::client::{
 use wayland_protocols::wp::fractional_scale::v1::client::{
     wp_fractional_scale_manager_v1, wp_fractional_scale_v1,
 };
+use wayland_protocols::wp::pointer_gestures::zv1::client::{
+    zwp_pointer_gesture_pinch_v1, zwp_pointer_gestures_v1,
+};
 use wayland_protocols::wp::primary_selection::zv1::client::zwp_primary_selection_offer_v1::{
     self, ZwpPrimarySelectionOfferV1,
 };
@@ -73,7 +76,7 @@ use super::{
 use crate::platform::{PlatformWindow, blade::BladeContext};
 use crate::{
     AnyWindowHandle, Bounds, Capslock, CursorStyle, DOUBLE_CLICK_INTERVAL, DevicePixels, DisplayId,
-    FileDropEvent, ForegroundExecutor, KeyDownEvent, KeyUpEvent, Keystroke, LinuxCommon,
+    FileDropEvent, ForegroundExecutor, KeyDownEvent, KeyUpEvent, Keystroke, LinuxCommon, MagnifyEvent,
     LinuxKeyboardLayout, Modifiers, ModifiersChangedEvent, MouseButton, MouseDownEvent,
     MouseExitEvent, MouseMoveEvent, MouseUpEvent, NavigationDirection, Pixels, PlatformDisplay,
     PlatformInput, PlatformKeyboardLayout, Point, SCROLL_LINES, ScrollDelta, ScrollWheelEvent,
@@ -106,6 +109,7 @@ pub struct Globals {
     pub compositor: wl_compositor::WlCompositor,
     pub cursor_shape_manager: Option<wp_cursor_shape_manager_v1::WpCursorShapeManagerV1>,
     pub data_device_manager: Option<wl_data_device_manager::WlDataDeviceManager>,
+    pointer_gestures: Option<zwp_pointer_gestures_v1::ZwpPointerGesturesV1>,
     pub primary_selection_manager:
         Option<zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1>,
     pub wm_base: xdg_wm_base::XdgWmBase,
@@ -145,6 +149,7 @@ impl Globals {
                     (),
                 )
                 .ok(),
+            pointer_gestures: globals.bind(&qh, 1..=1, ()).ok(),
             primary_selection_manager: globals.bind(&qh, 1..=1, ()).ok(),
             shm: globals.bind(&qh, 1..=1, ()).unwrap(),
             seat,
@@ -196,6 +201,8 @@ pub(crate) struct WaylandClientState {
     gpu_context: BladeContext,
     wl_seat: wl_seat::WlSeat, // TODO: Multi seat support
     wl_pointer: Option<wl_pointer::WlPointer>,
+    pointer_pinch: Option<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1>,
+    pinch_scale: Option<f64>,
     wl_keyboard: Option<wl_keyboard::WlKeyboard>,
     cursor_shape_device: Option<wp_cursor_shape_device_v1::WpCursorShapeDeviceV1>,
     data_device: Option<wl_data_device::WlDataDevice>,
@@ -398,6 +405,9 @@ impl Drop for WaylandClient {
         let mut state = self.0.borrow_mut();
         state.windows.clear();
 
+        if let Some(pinch) = state.pointer_pinch.take() {
+            pinch.destroy();
+        }
         if let Some(wl_pointer) = &state.wl_pointer {
             wl_pointer.release();
         }
@@ -559,6 +569,8 @@ impl WaylandClient {
             gpu_context,
             wl_seat: seat,
             wl_pointer: None,
+            pointer_pinch: None,
+            pinch_scale: None,
             wl_keyboard: None,
             cursor_shape_device: None,
             data_device,
@@ -900,6 +912,10 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WaylandClientStat
                 version,
             } => match &interface[..] {
                 "wl_seat" => {
+                    if let Some(pinch) = state.pointer_pinch.take() {
+                        pinch.destroy();
+                    }
+                    state.pinch_scale = None;
                     if let Some(wl_pointer) = state.wl_pointer.take() {
                         wl_pointer.release();
                     }
@@ -941,6 +957,7 @@ delegate_noop!(WaylandClientStatePtr: ignore wl_compositor::WlCompositor);
 delegate_noop!(WaylandClientStatePtr: ignore wp_cursor_shape_device_v1::WpCursorShapeDeviceV1);
 delegate_noop!(WaylandClientStatePtr: ignore wp_cursor_shape_manager_v1::WpCursorShapeManagerV1);
 delegate_noop!(WaylandClientStatePtr: ignore wl_data_device_manager::WlDataDeviceManager);
+delegate_noop!(WaylandClientStatePtr: ignore zwp_pointer_gestures_v1::ZwpPointerGesturesV1);
 delegate_noop!(WaylandClientStatePtr: ignore zwp_primary_selection_device_manager_v1::ZwpPrimarySelectionDeviceManagerV1);
 delegate_noop!(WaylandClientStatePtr: ignore wl_shm::WlShm);
 delegate_noop!(WaylandClientStatePtr: ignore wl_shm_pool::WlShmPool);
@@ -1169,8 +1186,14 @@ impl Dispatch<wl_seat::WlSeat, ()> for WaylandClientStatePtr {
 
                 state.wl_keyboard = Some(keyboard);
             }
+            if let Some(pinch) = state.pointer_pinch.take() {
+                pinch.destroy();
+            }
+            state.pinch_scale = None;
             if capabilities.contains(wl_seat::Capability::Pointer) {
                 let pointer = seat.get_pointer(qh, ());
+                state.pointer_pinch = state.globals.pointer_gestures.as_ref()
+                    .map(|gestures| gestures.get_pinch_gesture(&pointer, qh, ()));
                 state.cursor_shape_device = state
                     .globals
                     .cursor_shape_manager
@@ -1821,6 +1844,35 @@ impl Dispatch<wl_pointer::WlPointer, ()> for WaylandClientStatePtr {
     }
 }
 
+// quiet.md: Wayland reports scale relative to gesture start. Dispatch incremental scale.
+impl Dispatch<zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1, ()> for WaylandClientStatePtr {
+    fn event(
+        this: &mut Self,
+        _: &zwp_pointer_gesture_pinch_v1::ZwpPointerGesturePinchV1,
+        event: zwp_pointer_gesture_pinch_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        use zwp_pointer_gesture_pinch_v1::Event;
+        let client = this.get_client();
+        let mut state = client.borrow_mut();
+        match event {
+            Event::Begin { fingers, .. } => state.pinch_scale = (fingers == 2).then_some(1.),
+            Event::Update { scale, .. } if scale.is_finite() && scale > 0. => {
+                let Some(previous) = state.pinch_scale else { return };
+                state.pinch_scale = Some(scale);
+                if let (Some(window), Some(position)) = (state.mouse_focused_window.clone(), state.mouse_location) {
+                    drop(state);
+                    window.handle_input(PlatformInput::Magnify(MagnifyEvent { position, scale: scale / previous }));
+                }
+            }
+            Event::End { .. } => state.pinch_scale = None,
+            _ => {}
+        }
+    }
+}
+
 impl Dispatch<wp_fractional_scale_v1::WpFractionalScaleV1, ObjectId> for WaylandClientStatePtr {
     fn event(
         this: &mut Self,
@@ -2009,6 +2061,7 @@ impl Dispatch<wl_data_device::WlDataDevice, ()> for WaylandClientStatePtr {
 
                 let input = PlatformInput::FileDrop(FileDropEvent::Submit {
                     position: state.drag.position,
+                    modifiers: state.modifiers,
                 });
                 drop(state);
                 drag_window.handle_input(input);

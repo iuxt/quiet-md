@@ -182,7 +182,6 @@ impl DrawingEditor {
             if let Element::Text(t) = &mut self.doc.scene.elements[i] {
                 t.auto_resize = !t.auto_resize;
                 t.text = text_to_edit(t).to_string();
-                if !t.auto_resize { t.text = scene::text::wrap_text_in(&t.text, t.base.width, t.font_size, t.font_family); }
                 resize_text(t, window);
             }
             touch(&mut self.doc.scene.elements[i]);
@@ -362,7 +361,7 @@ impl DrawingEditor {
         let Ok(url) = url::Url::parse(link) else { return };
         if matches!(url.host_str(),Some("excalidraw.com"|"www.excalidraw.com"|"quiet.md")) && let Some((_,id)) = url.query_pairs().find(|(k,_)| k=="element") {
             let items: Vec<_> = self.doc.scene.elements.iter().enumerate().filter_map(|(i,e)| (!e.is_deleted() && (e.id()==id || e.base().group_ids.iter().any(|g| g==&*id))).then_some(i)).collect();
-            if !items.is_empty() { self.selection = items; self.zoom_selection(cx); }
+            if !items.is_empty() { self.selection = items; self.zoom_selection(true, cx); }
         } else if matches!(url.scheme(),"https"|"http"|"mailto") { crate::editor::link::open(cx,url.as_str()); }
     }
 
@@ -383,6 +382,14 @@ impl DrawingEditor {
             }
             cx.notify(); return true;
         }
+        if !m.secondary() && matches!(key, "pageup" | "pagedown") {
+            if self.fit { self.fit_view(); }
+            let delta = if key == "pageup" { 1. } else { -1. };
+            let view = self.viewport.get();
+            self.fit = false;
+            self.offset += if m.shift { point(view.size.width * delta, px(0.)) } else { point(px(0.), view.size.height * delta) };
+            cx.notify(); return true;
+        }
         if self.view_only { return false; }
         if m.secondary() {
             match key {
@@ -401,11 +408,6 @@ impl DrawingEditor {
             "w" => self.toggle_text_binding(window, cx),
             "s" | "g" if !m.shift => { self.colors = Some(if key == "s" { chrome::Colors::Stroke } else { chrome::Colors::Fill }); self.panel = Some(Panel::Properties); cx.notify(); }
             "f" if m.shift => { self.more_fonts = true; self.panel = Some(Panel::Properties); cx.notify(); }
-            "pageup" | "pagedown" => {
-                let delta = if key == "pageup" { 1. } else { -1. };
-                let view = self.viewport.get();
-                self.offset += if m.shift { point(view.size.width * delta, px(0.)) } else { point(px(0.), view.size.height * delta) }; cx.notify();
-            }
             _ => return false,
         }
         true

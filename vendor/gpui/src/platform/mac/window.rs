@@ -165,6 +165,11 @@ unsafe fn build_classes() {
                     sel!(scrollWheel:),
                     handle_view_event as extern "C" fn(&Object, Sel, id),
                 );
+                // quiet.md: forward AppKit trackpad pinch events.
+                decl.add_method(
+                    sel!(magnifyWithEvent:),
+                    handle_view_event as extern "C" fn(&Object, Sel, id),
+                );
                 decl.add_method(
                     sel!(swipeWithEvent:),
                     handle_view_event as extern "C" fn(&Object, Sel, id),
@@ -1090,23 +1095,7 @@ impl PlatformWindow for MacWindow {
     }
 
     fn modifiers(&self) -> Modifiers {
-        unsafe {
-            let modifiers: NSEventModifierFlags = msg_send![class!(NSEvent), modifierFlags];
-
-            let control = modifiers.contains(NSEventModifierFlags::NSControlKeyMask);
-            let alt = modifiers.contains(NSEventModifierFlags::NSAlternateKeyMask);
-            let shift = modifiers.contains(NSEventModifierFlags::NSShiftKeyMask);
-            let command = modifiers.contains(NSEventModifierFlags::NSCommandKeyMask);
-            let function = modifiers.contains(NSEventModifierFlags::NSFunctionKeyMask);
-
-            Modifiers {
-                control,
-                alt,
-                shift,
-                platform: command,
-                function,
-            }
-        }
+        current_modifiers()
     }
 
     fn capslock(&self) -> Capslock {
@@ -2456,12 +2445,24 @@ extern "C" fn dragging_exited(this: &Object, _: Sel, _: id) {
     window_state.lock().external_files_dragged = false;
 }
 
+// quiet.md: external drags have no event-local modifier flags in NSDraggingInfo.
+fn current_modifiers() -> Modifiers {
+    let flags: NSEventModifierFlags = unsafe { msg_send![class!(NSEvent), modifierFlags] };
+    Modifiers {
+        control: flags.contains(NSEventModifierFlags::NSControlKeyMask),
+        alt: flags.contains(NSEventModifierFlags::NSAlternateKeyMask),
+        shift: flags.contains(NSEventModifierFlags::NSShiftKeyMask),
+        platform: flags.contains(NSEventModifierFlags::NSCommandKeyMask),
+        function: flags.contains(NSEventModifierFlags::NSFunctionKeyMask),
+    }
+}
+
 extern "C" fn perform_drag_operation(this: &Object, _: Sel, dragging_info: id) -> BOOL {
     let window_state = unsafe { get_window_state(this) };
     let position = drag_event_position(&window_state, dragging_info);
     send_new_event(
         &window_state,
-        PlatformInput::FileDrop(FileDropEvent::Submit { position }),
+        PlatformInput::FileDrop(FileDropEvent::Submit { position, modifiers: current_modifiers() }),
     )
     .to_objc()
 }

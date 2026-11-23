@@ -59,7 +59,7 @@ impl DrawingEditor {
         use Command::*;
         self.palette = None; w.focus(&self.focus);
         match cmd {
-            Tool(t) => self.tool(t,w,cx), Fit => self.fit_view(), ZoomSelected => self.zoom_selection(cx),
+            Tool(t) => self.tool(t,w,cx), Fit => self.fit_view(), ZoomSelected => self.zoom_selection(true, cx),
             Minimap => self.minimap = !self.minimap, Stats => self.stats = !self.stats, Export => self.open_export(cx),
             Import => self.import(w,cx), Find => self.start_find(w,cx), Library => self.panel = Some(Panel::Library), Help => self.panel = Some(Panel::Help),
             Dark => self.dark_canvas = !self.dark_canvas, Grid => self.toggle_grid(cx), Snap => self.objects_snap = !self.objects_snap,

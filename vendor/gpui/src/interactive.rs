@@ -399,6 +399,23 @@ impl Deref for ScrollWheelEvent {
     }
 }
 
+/// Incremental scale from a native trackpad pinch.
+#[derive(Clone, Debug)]
+pub struct MagnifyEvent {
+    /// The pointer position in the window.
+    pub position: Point<Pixels>,
+    /// The multiplier relative to the previous event, where 1 is unchanged.
+    pub scale: f64,
+}
+
+impl Sealed for MagnifyEvent {}
+impl InputEvent for MagnifyEvent {
+    fn to_platform_input(self) -> PlatformInput {
+        PlatformInput::Magnify(self)
+    }
+}
+impl MouseEvent for MagnifyEvent {}
+
 /// The scroll delta for a scroll wheel event.
 #[derive(Clone, Copy, Debug)]
 pub enum ScrollDelta {
@@ -538,6 +555,8 @@ pub enum FileDropEvent {
     Submit {
         /// The position of the mouse relative to the window.
         position: Point<Pixels>,
+        /// The keyboard modifiers at the time of the drop.
+        modifiers: Modifiers,
     },
     /// The user has stopped dragging the files over the window.
     Exited,
@@ -570,6 +589,8 @@ pub enum PlatformInput {
     MouseExited(MouseExitEvent),
     /// The scroll wheel was used.
     ScrollWheel(ScrollWheelEvent),
+    /// A native pinch gesture changed scale.
+    Magnify(MagnifyEvent),
     /// Files were dragged and dropped onto the window.
     FileDrop(FileDropEvent),
 }
@@ -585,6 +606,7 @@ impl PlatformInput {
             PlatformInput::MouseMove(event) => Some(event),
             PlatformInput::MouseExited(event) => Some(event),
             PlatformInput::ScrollWheel(event) => Some(event),
+            PlatformInput::Magnify(event) => Some(event),
             PlatformInput::FileDrop(event) => Some(event),
         }
     }
@@ -598,7 +620,7 @@ impl PlatformInput {
             PlatformInput::MouseUp(_) => None,
             PlatformInput::MouseMove(_) => None,
             PlatformInput::MouseExited(_) => None,
-            PlatformInput::ScrollWheel(_) => None,
+            PlatformInput::ScrollWheel(_) | PlatformInput::Magnify(_) => None,
             PlatformInput::FileDrop(_) => None,
         }
     }
