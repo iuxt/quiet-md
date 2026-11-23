@@ -20,7 +20,7 @@ source = Path("shared-mock/guides/assets")
 sample_library = Path("shared-mock/library")
 for asset in source.rglob("*"):
     if asset.is_file() and not asset.name.startswith("."):
-        targets = [sample_library / folder / "guides" / asset.relative_to(source) for folder in ("Image", "Files", "Drawing")]
+        targets = [sample_library / folder / "guides" / asset.relative_to(source) for folder in ("Images", "Files", "Drawings")]
         found = [path for path in targets if path.is_file()]
         assert len(found) == 1 and found[0].read_bytes() == asset.read_bytes(), f"Sample library asset is stale: {asset}"
 print("Sample library assets match their sources")

@@ -20,7 +20,7 @@ fn configure(repo: &LibraryRepo, remote: &Path) {
 fn staged_commits_keep_the_snapshot_and_leave_other_changes_uncommitted() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let first = store.create_from(&doc("First")).unwrap(); let second = store.create_from(&doc("Second")).unwrap();
-    let a = format!("notes/{first}.xml"); let b = format!("notes/{second}.xml");
+    let a = format!("Notes/{first}.xml"); let b = format!("Notes/{second}.xml");
     let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
     let original = std::fs::read_to_string(lib.0.join(&a)).unwrap();
     let staged = original.replace("First", "Staged");
@@ -52,7 +52,7 @@ fn staged_commits_keep_the_snapshot_and_leave_other_changes_uncommitted() {
 #[test]
 fn blank_line_changes_are_hidden_and_restored_without_creating_a_commit() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    let id = store.create_from(&doc("First")).unwrap(); let path = format!("notes/{id}.xml");
+    let id = store.create_from(&doc("First")).unwrap(); let path = format!("Notes/{id}.xml");
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let initial = repo.commit("initial").unwrap().unwrap();
     let file = lib.0.join(&path);
@@ -81,7 +81,7 @@ fn commits_include_substantive_changes_and_restore_only_blank_line_files() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let clean = store.create_markdown(&doc("Clean"), "").unwrap();
     let mixed = store.create_from(&doc("Mixed")).unwrap();
-    let clean_path = format!("notes/{clean}.md"); let mixed_path = format!("notes/{mixed}.xml");
+    let clean_path = format!("Notes/{clean}.md"); let mixed_path = format!("Notes/{mixed}.xml");
     let clean_file = lib.0.join(&clean_path); let mixed_file = lib.0.join(&mixed_path);
     let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
     let original = std::fs::read_to_string(&clean_file).unwrap();
@@ -113,7 +113,7 @@ fn commits_include_substantive_changes_and_restore_only_blank_line_files() {
 #[test]
 fn stage_all_and_unstage_all_preserve_working_files_and_lfs_snapshots() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    let id = store.create_from(&doc("First")).unwrap(); let path = format!("notes/{id}.xml");
+    let id = store.create_from(&doc("First")).unwrap(); let path = format!("Notes/{id}.xml");
     let repo = lib.git(); configure(&repo, &Library::new().0);
     store.git_stage_all(true).unwrap();
     assert!(repo.status().unwrap().changes.iter().all(|c| c.staged && !c.unstaged));
@@ -158,14 +158,14 @@ fn stage_all_and_unstage_all_preserve_working_files_and_lfs_snapshots() {
 #[test]
 fn discard_restores_deleted_files_and_removes_new_notes_without_broken_metadata() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    let id = store.create_from(&doc("Keep")).unwrap(); let path = format!("notes/{id}.xml");
+    let id = store.create_from(&doc("Keep")).unwrap(); let path = format!("Notes/{id}.xml");
     let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
     let original = std::fs::read(lib.0.join(&path)).unwrap();
     std::fs::remove_file(lib.0.join(&path)).unwrap();
     assert!(repo.status().unwrap().changes.iter().any(|c| c.path == path && c.kind == 'D'));
     store.git_discard(&path).unwrap();
     assert_eq!(std::fs::read(lib.0.join(&path)).unwrap(), original);
-    let added = store.create_from(&doc("Remove")).unwrap(); let new_path = format!("notes/{added}.xml");
+    let added = store.create_from(&doc("Remove")).unwrap(); let new_path = format!("Notes/{added}.xml");
     assert!(store.git_discard(MANIFEST).is_err(), "Restoring metadata must not orphan a new note that the scanner would re-adopt");
     store.git_discard(&new_path).unwrap();
     assert!(!lib.0.join(&new_path).exists());
@@ -181,7 +181,7 @@ fn discard_restores_deleted_files_and_removes_new_notes_without_broken_metadata(
 #[test]
 fn staging_assets_uses_lfs_and_incomplete_staged_libraries_do_not_commit() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    let id = store.create_from(&doc("First")).unwrap(); let path = format!("notes/{id}.xml");
+    let id = store.create_from(&doc("First")).unwrap(); let path = format!("Notes/{id}.xml");
     let repo = lib.git(); configure(&repo, &Library::new().0);
     repo.stage(&path).unwrap();
     assert!(store.git_commit("incomplete").is_err()); assert!(repo.repo.head().is_err());
@@ -248,17 +248,17 @@ fn uuid_names_metadata_titles_links_and_trash_survive_reopen() {
 fn commits_use_lfs_pointers_and_history_tracks_ids_across_moves() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("First")).unwrap();
-    std::fs::create_dir_all(lib.0.join("Image")).unwrap();
-    std::fs::write(lib.0.join("Image/picture.png"), b"picture bytes").unwrap();
+    std::fs::create_dir_all(lib.0.join("Images")).unwrap();
+    std::fs::write(lib.0.join("Images/picture.png"), b"picture bytes").unwrap();
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let first = repo.commit("first").unwrap().unwrap();
     assert!(repo.status().unwrap().changes.is_empty());
     assert!(repo.commit("unchanged").unwrap().is_none());
     let tree = repo.repo.find_commit(Oid::from_str(&first).unwrap()).unwrap().tree().unwrap();
-    let blob = repo.repo.find_blob(tree.get_path(Path::new("Image/picture.png")).unwrap().id()).unwrap();
+    let blob = repo.repo.find_blob(tree.get_path(Path::new("Images/picture.png")).unwrap().id()).unwrap();
     let pointer = Pointer::parse(blob.content()).unwrap().unwrap();
     assert_eq!(pointer.size, 13);
-    assert_eq!(std::fs::read(lib.0.join("Image/picture.png")).unwrap(), b"picture bytes");
+    assert_eq!(std::fs::read(lib.0.join("Images/picture.png")).unwrap(), b"picture bytes");
     let folder = store.create_folder("Moved", None).unwrap(); store.set_parent(&id, Some(&folder)).unwrap();
     store.rename(&id, "Renamed").unwrap();
     repo.commit("moved").unwrap();
@@ -274,31 +274,31 @@ fn local_push_clone_pull_and_divergence_keep_documents_and_resources_safe() {
     let server = Library::new(); Repository::init_bare(&server.0).unwrap();
     let first = Library::new(); let mut a = first.store(); a.enable_git().unwrap();
     let id = a.create_from(&doc("Original")).unwrap();
-    std::fs::create_dir_all(first.0.join("Image/remote")).unwrap();
+    std::fs::create_dir_all(first.0.join("Images/remote")).unwrap();
     std::fs::create_dir_all(first.0.join("Files")).unwrap();
     std::fs::create_dir_all(first.0.join(".quiet/thumbs")).unwrap();
-    std::fs::write(first.0.join("Image/test.png"), b"original image").unwrap();
-    std::fs::write(first.0.join("Image/remote/fetch.part"), b"partial download").unwrap();
+    std::fs::write(first.0.join("Images/test.png"), b"original image").unwrap();
+    std::fs::write(first.0.join("Images/remote/fetch.part"), b"partial download").unwrap();
     std::fs::write(first.0.join("Files/report.pdf"), b"attachment").unwrap();
     std::fs::write(first.0.join(".quiet/thumbs/local.png"), b"thumbnail").unwrap();
     let drawing = Store::save_drawing(&first.0, b"drawing source", 400, 200).unwrap();
-    assert!(drawing.source.starts_with("Drawing/"));
+    assert!(drawing.source.starts_with("Drawings/"));
     configure(&first.git(), &server.0); first.git().commit("initial").unwrap(); first.git().push(&Auth::default()).unwrap();
     let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
     let mut b = second.store();
     assert_eq!(b.load(&id).unwrap().title.text, "Original");
-    assert_eq!(std::fs::read(second.0.join("Image/test.png")).unwrap(), b"original image");
+    assert_eq!(std::fs::read(second.0.join("Images/test.png")).unwrap(), b"original image");
     assert_eq!(std::fs::read(second.0.join("Files/report.pdf")).unwrap(), b"attachment");
     assert_eq!(std::fs::read(second.0.join(&drawing.source)).unwrap(), b"drawing source");
-    assert!(!second.0.join("Image/remote/fetch.part").exists());
+    assert!(!second.0.join("Images/remote/fetch.part").exists());
     assert!(!second.0.join(".quiet/thumbs").exists());
     assert!(second.git().status().unwrap().changes.is_empty());
     a.rename(&id, "Remote update").unwrap();
-    std::fs::write(first.0.join("Image/test.png"), b"changed image").unwrap();
+    std::fs::write(first.0.join("Images/test.png"), b"changed image").unwrap();
     first.git().commit("remote").unwrap(); first.git().push(&Auth::default()).unwrap();
     assert!(b.git_pull(&Auth::default()).unwrap());
     assert_eq!(b.load(&id).unwrap().title.text, "Remote update");
-    assert_eq!(std::fs::read(second.0.join("Image/test.png")).unwrap(), b"changed image");
+    assert_eq!(std::fs::read(second.0.join("Images/test.png")).unwrap(), b"changed image");
     b.rename(&id, "Local draft").unwrap();
     assert!(b.git_pull(&Auth::default()).is_err());
     assert_eq!(b.load(&id).unwrap().title.text, "Local draft");
@@ -331,8 +331,8 @@ fn git_refuses_symlinks_and_parent_repositories() {
     let child = parent.0.join("child"); std::fs::create_dir(&child).unwrap();
     assert!(LibraryRepo::check_location(&child).is_err());
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    std::fs::create_dir_all(lib.0.join("Image")).unwrap();
-    std::os::unix::fs::symlink("/etc/hosts", lib.0.join("Image/leak.png")).unwrap();
+    std::fs::create_dir_all(lib.0.join("Images")).unwrap();
+    std::os::unix::fs::symlink("/etc/hosts", lib.0.join("Images/leak.png")).unwrap();
     assert!(lib.git().status().is_err());
 }
 
@@ -340,15 +340,15 @@ fn git_refuses_symlinks_and_parent_repositories() {
 fn historical_images_and_markdown_titles_are_independent_of_current_files() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let mut document = doc("Old title");
-    document.blocks = vec![crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "path".into(), src: "Image/image.png".into(),
+    document.blocks = vec![crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "path".into(), src: "Images/image.png".into(),
         width: None, height: None, caption: None, crop: None }, RichText::default())];
-    std::fs::create_dir_all(lib.0.join("Image")).unwrap();
-    std::fs::write(lib.0.join("Image/image.png"), b"old picture").unwrap();
+    std::fs::create_dir_all(lib.0.join("Images")).unwrap();
+    std::fs::write(lib.0.join("Images/image.png"), b"old picture").unwrap();
     let id = store.create_markdown(&document, "").unwrap();
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let commit = repo.commit("old").unwrap().unwrap();
     store.rename(&id, "Current title").unwrap();
-    std::fs::write(lib.0.join("Image/image.png"), b"current picture").unwrap();
+    std::fs::write(lib.0.join("Images/image.png"), b"current picture").unwrap();
     repo.commit("current").unwrap();
     assert_eq!(store.git_versions(&id).unwrap().len(), 2);
     let version = store.git_versions(&id).unwrap().into_iter().find(|v| v.name.ends_with(&commit)).unwrap();
@@ -357,13 +357,13 @@ fn historical_images_and_markdown_titles_are_independent_of_current_files() {
     let source = &preview.asset_sources()[0];
     assert!(source.starts_with(".quiet/git-preview/"));
     assert_eq!(std::fs::read(lib.0.join(source)).unwrap(), b"old picture");
-    assert_eq!(std::fs::read(lib.0.join("Image/image.png")).unwrap(), b"current picture");
+    assert_eq!(std::fs::read(lib.0.join("Images/image.png")).unwrap(), b"current picture");
     let restored = store.restore_version(&id, &version.name).unwrap();
-    assert!(restored.asset_sources()[0].starts_with("Image/"));
+    assert!(restored.asset_sources()[0].starts_with("Images/"));
     assert_eq!(std::fs::read(lib.0.join(&restored.asset_sources()[0])).unwrap(), b"old picture");
-    assert_eq!(std::fs::read(lib.0.join("Image/image.png")).unwrap(), b"current picture");
+    assert_eq!(std::fs::read(lib.0.join("Images/image.png")).unwrap(), b"current picture");
     let copy = store.version_copy_document(&id, &version.name).unwrap();
-    assert!(copy.asset_sources()[0].starts_with("Image/"));
+    assert!(copy.asset_sources()[0].starts_with("Images/"));
 }
 
 #[test]
@@ -372,11 +372,11 @@ fn drawing_history_reads_assets_without_materializing_previews() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let mut drawing = Store::save_drawing(&lib.0, b"first drawing", 400, 200).unwrap();
     assert!(drawing.preview.is_empty());
-    assert_eq!(std::fs::read_dir(lib.0.join("Drawing")).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(lib.0.join("Drawings")).unwrap().count(), 1);
     // Older notes can carry an existing PNG. A read-only history view uses
     // the committed copy in memory even if the working file has changed.
-    std::fs::create_dir_all(lib.0.join("Image")).unwrap();
-    drawing.preview = "Image/old.png".into();
+    std::fs::create_dir_all(lib.0.join("Images")).unwrap();
+    drawing.preview = "Images/old.png".into();
     std::fs::write(lib.0.join(&drawing.preview), b"first preview").unwrap();
     let mut document = doc("Drawing history");
     document.blocks = vec![Block::new(BlockKind::Drawing(drawing.clone()), RichText::default())];
@@ -403,15 +403,15 @@ fn drawing_history_reads_assets_without_materializing_previews() {
     assert!(new_draw.preview.is_empty());
     assert_eq!(crate::store::read_drawing_asset(&lib.0, &new_draw.source, 1024).unwrap(), b"second drawing");
     assert!(!lib.0.join(".quiet/git-preview").exists());
-    assert_eq!(std::fs::read_dir(lib.0.join("Drawing")).unwrap().count(), 2);
-    assert_eq!(std::fs::read_dir(lib.0.join("Image")).unwrap().count(), 1);
+    assert_eq!(std::fs::read_dir(lib.0.join("Drawings")).unwrap().count(), 2);
+    assert_eq!(std::fs::read_dir(lib.0.join("Images")).unwrap().count(), 1);
 }
 
 #[test]
 fn historical_images_with_windows_paths_use_committed_assets() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    std::fs::create_dir_all(lib.0.join("Image/nested")).unwrap();
-    std::fs::write(lib.0.join("Image/nested/image.png"), b"old picture").unwrap();
+    std::fs::create_dir_all(lib.0.join("Images/nested")).unwrap();
+    std::fs::write(lib.0.join("Images/nested/image.png"), b"old picture").unwrap();
     let mut ids = Vec::new();
     for source in [r"Image\nested\image.png", r"C:\Notes\Image\nested\image.png"] {
         let mut document = doc("Windows image");
@@ -421,7 +421,7 @@ fn historical_images_with_windows_paths_use_committed_assets() {
     }
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let commit = repo.commit("old").unwrap().unwrap();
-    std::fs::write(lib.0.join("Image/nested/image.png"), b"current picture").unwrap();
+    std::fs::write(lib.0.join("Images/nested/image.png"), b"current picture").unwrap();
     for id in ids {
         let version = store.git_versions(&id).unwrap().into_iter().find(|v| v.name.ends_with(&commit)).unwrap();
         let preview = store.version_document(&id, &version.name).unwrap();
@@ -430,10 +430,10 @@ fn historical_images_with_windows_paths_use_committed_assets() {
         assert_eq!(std::fs::read(lib.0.join(source)).unwrap(), b"old picture");
         let restored = store.restore_version(&id, &version.name).unwrap();
         let source = &restored.asset_sources()[0];
-        assert!(source.starts_with("Image/"), "{source}");
+        assert!(source.starts_with("Images/"), "{source}");
         assert_eq!(std::fs::read(lib.0.join(source)).unwrap(), b"old picture");
     }
-    assert_eq!(std::fs::read(lib.0.join("Image/nested/image.png")).unwrap(), b"current picture");
+    assert_eq!(std::fs::read(lib.0.join("Images/nested/image.png")).unwrap(), b"current picture");
 }
 
 #[test]
@@ -477,13 +477,13 @@ fn virtual_library_adopts_notes_but_keeps_hierarchy_in_manifest() {
     let old = store.file_path(&id).unwrap();
     std::fs::create_dir(lib.0.join("external")).unwrap();
     std::fs::rename(&old, lib.0.join("external").join(old.file_name().unwrap())).unwrap();
-    std::fs::write(lib.0.join("notes/imported.md"), "# Body\n\nText\n").unwrap();
+    std::fs::write(lib.0.join("Notes/imported.md"), "# Body\n\nText\n").unwrap();
     let entries = store.list();
     let existing = entries.iter().find(|e| e.id == id).unwrap();
     assert_eq!(existing.title, "Display title");
     let imported = entries.iter().find(|e| e.title == "imported").unwrap();
     assert_eq!(store.file_path(&imported.id).unwrap().file_stem().unwrap().to_str().unwrap(), imported.id);
-    assert!(!lib.0.join("notes/imported.md").exists());
+    assert!(!lib.0.join("Notes/imported.md").exists());
     assert!(!entries.iter().any(|e| e.meta.folder.is_some()));
     assert!(store.load(&id).is_err());
     std::fs::rename(lib.0.join("external").join(old.file_name().unwrap()), old).unwrap();
@@ -536,7 +536,7 @@ fn physical_git_commits_remain_readable_after_virtual_conversion() {
     let version = format!("git:0-{old}"); let historical = store.version_document(&a, &version).unwrap();
     assert_eq!(historical.title.text, "Original"); assert_eq!(historical.doc_links()[0].target, b);
     assert!(repo.revision(&old, &a).unwrap().contains("Original")); assert_eq!(store.git_versions(&a).unwrap().len(), 2);
-    assert_eq!(store.file_path(&a).unwrap(), lib.0.join(format!("notes/{a}.xml")));
+    assert_eq!(store.file_path(&a).unwrap(), lib.0.join(format!("Notes/{a}.xml")));
 }
 
 #[test]
@@ -546,7 +546,7 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     let mut first = doc("Preview note");
     first.blocks.push(crate::model::Block::text("Before"));
     let id = store.create_from(&first).unwrap();
-    let path = format!("notes/{id}.xml");
+    let path = format!("Notes/{id}.xml");
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let added = repo.change_preview(&path).unwrap();
     assert_eq!(added.title, "Preview note");
@@ -572,16 +572,16 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     let changed = repo.change_preview(&path).unwrap();
     assert_eq!(counts(&changed.lines), (1, 1));
     assert!(changed.lines.iter().any(|l| l.kind == Kind::Added && l.text == "After"));
-    std::fs::create_dir_all(lib.0.join("Image")).unwrap();
-    std::fs::write(lib.0.join("Image/image.png"), b"image content").unwrap();
-    let binary = repo.change_preview("Image/image.png").unwrap();
+    std::fs::create_dir_all(lib.0.join("Images")).unwrap();
+    std::fs::write(lib.0.join("Images/image.png"), b"image content").unwrap();
+    let binary = repo.change_preview("Images/image.png").unwrap();
     assert!(binary.binary && binary.lines.is_empty());
     let markdown = "cccccccc-0000-4000-8000-000000000003.md";
     let mut meta: serde_json::Value = serde_json::from_slice(&std::fs::read(lib.0.join(MANIFEST)).unwrap()).unwrap();
     meta["notes"].as_array_mut().unwrap().push(serde_json::json!({"id": "cccccccc-0000-4000-8000-000000000003", "filename": markdown, "title": "Long note", "folderId": null, "createdAt": "1970-01-01T00:00:01Z", "updatedAt": "1970-01-01T00:00:01Z"}));
     std::fs::write(lib.0.join(MANIFEST), serde_json::to_vec(&meta).unwrap()).unwrap();
-    std::fs::write(lib.0.join("notes").join(markdown), "line\n".repeat(crate::diff::MAX_LINES + 1)).unwrap();
-    let long = repo.change_preview(&format!("notes/{markdown}")).unwrap();
+    std::fs::write(lib.0.join("Notes").join(markdown), "line\n".repeat(crate::diff::MAX_LINES + 1)).unwrap();
+    let long = repo.change_preview(&format!("Notes/{markdown}")).unwrap();
     assert!(long.truncated && long.source.is_none());
     let metadata = repo.change_preview(MANIFEST).unwrap();
     assert!(!metadata.binary && metadata.source.is_none());
@@ -631,8 +631,8 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
     let auth = Auth { ssh_passphrase: "test-key-password".into(), ..Default::default() };
     let source = Library::new(); let mut store = source.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("SSH + TLS")).unwrap();
-    std::fs::create_dir_all(source.0.join("Image")).unwrap();
-    std::fs::write(source.0.join("Image/photo.png"), b"first picture").unwrap();
+    std::fs::create_dir_all(source.0.join("Images")).unwrap();
+    std::fs::write(source.0.join("Images/photo.png"), b"first picture").unwrap();
     let repo = source.git(); repo.configure(&config).unwrap(); repo.commit("first").unwrap();
     let known_path = PathBuf::from(std::env::var("QUIET_MD_GIT_KNOWN_HOSTS").unwrap());
     let known = std::fs::read(&known_path).unwrap(); std::fs::write(&known_path, "").unwrap();
@@ -652,12 +652,12 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
     let destination = Library::new();
     let cloned = LibraryRepo::clone_configured(&config, &destination.0, &auth).unwrap();
     assert_eq!(destination.store().load(&id).unwrap().title.text, "SSH + TLS");
-    assert_eq!(std::fs::read(destination.0.join("Image/photo.png")).unwrap(), b"first picture");
+    assert_eq!(std::fs::read(destination.0.join("Images/photo.png")).unwrap(), b"first picture");
     store.rename(&id, "Updated over SSH").unwrap();
-    std::fs::write(source.0.join("Image/photo.png"), b"second picture").unwrap();
+    std::fs::write(source.0.join("Images/photo.png"), b"second picture").unwrap();
     repo.commit("second").unwrap(); repo.push(&auth).unwrap(); cloned.pull(&auth).unwrap();
     assert_eq!(destination.store().load(&id).unwrap().title.text, "Updated over SSH");
-    assert_eq!(std::fs::read(destination.0.join("Image/photo.png")).unwrap(), b"second picture");
+    assert_eq!(std::fs::read(destination.0.join("Images/photo.png")).unwrap(), b"second picture");
     let text = std::fs::read_to_string(cloned.repo.path().join("config")).unwrap();
     assert!(!text.contains("test-key-password") && !text.contains("fixture-token"));
 }
@@ -668,8 +668,8 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     let first = Library::new(); let mut a = first.store(); a.enable_git().unwrap();
     let folder = a.create_folder("Folder", None).unwrap(); let nested = a.create_folder("Nested", Some(&folder)).unwrap();
     let xml = a.create_from_in(&doc("XML"), Some(&nested)).unwrap();
-    let md = a.create_markdown_in(&doc("Markdown"), "# Markdown\n\n![image](../Image/test.png)\n", Some(&nested)).unwrap();
-    std::fs::create_dir_all(first.0.join("Image")).unwrap(); std::fs::write(first.0.join("Image/test.png"), b"keep image").unwrap();
+    let md = a.create_markdown_in(&doc("Markdown"), "# Markdown\n\n![image](../Images/test.png)\n", Some(&nested)).unwrap();
+    std::fs::create_dir_all(first.0.join("Images")).unwrap(); std::fs::write(first.0.join("Images/test.png"), b"keep image").unwrap();
     let bodies: Vec<_> = [(&xml, "xml"), (&md, "md")].into_iter().map(|(id, ext)| (id.clone(), ext, std::fs::read(a.file_path(id).unwrap()).unwrap())).collect();
     configure(&first.git(), &server.0); first.git().commit("initial").unwrap(); first.git().push(&Auth::default()).unwrap();
     let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
@@ -680,7 +680,7 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     let commit = repo.commit("move to trash").unwrap().unwrap(); repo.push(&Auth::default()).unwrap();
     let tree = repo.repo.find_commit(Oid::from_str(&commit).unwrap()).unwrap().tree().unwrap();
     for (id, ext, bytes) in &bodies {
-        let path = format!("notes/{id}.{ext}");
+        let path = format!("Notes/{id}.{ext}");
         assert_eq!(repo.repo.find_blob(tree.get_path(Path::new(&path)).unwrap().id()).unwrap().content(), bytes);
         assert!(tree.get_path(Path::new(&format!(".quiet/trash/{id}.{ext}"))).is_err());
     }
@@ -693,12 +693,77 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
         for version in versions { assert!(b.version_document(id, &version.name).is_ok()); }
     }
     assert!(!b.restore(&folder).unwrap()); assert!(b.list_trash().is_empty());
-    for (id, ext, bytes) in &bodies { assert_eq!(std::fs::read(second.0.join(format!("notes/{id}.{ext}"))).unwrap(), *bytes); }
+    for (id, ext, bytes) in &bodies { assert_eq!(std::fs::read(second.0.join(format!("Notes/{id}.{ext}"))).unwrap(), *bytes); }
     assert_eq!(b.list().iter().find(|e| e.id == xml).unwrap().meta.parent.as_deref(), Some(nested.as_str()));
-    assert_eq!(std::fs::read(second.0.join("Image/test.png")).unwrap(), b"keep image");
+    assert_eq!(std::fs::read(second.0.join("Images/test.png")).unwrap(), b"keep image");
     configure(&second.git(), &server.0); second.git().commit("restore").unwrap(); second.git().push(&Auth::default()).unwrap();
     assert!(a.git_pull(&Auth::default()).unwrap()); assert!(a.list_trash().is_empty());
     for (id, _, bytes) in bodies { assert_eq!(std::fs::read(a.file_path(&id).unwrap()).unwrap(), bytes); }
+}
+
+#[test]
+fn old_git_history_and_pull_survive_the_directory_renames() {
+    for old_format in [OLD_NOTES_FORMAT, NOTES_FORMAT] {
+        let server = Library::new(); Repository::init_bare(&server.0).unwrap();
+        let source = Library::new(); let mut store = source.store(); store.enable_git().unwrap();
+        let id = store.create_from(&doc("Keep")).unwrap(); drop(store);
+        let legacy = format!("{}/{id}.xml", notes_dir(old_format)); let current = format!("Notes/{id}.xml");
+        crate::store::rename_layout(&source.0, FORMAT, old_format).unwrap();
+        std::fs::write(source.0.join(FORMAT_PATH), format!(r#"{{"format":{old_format}}}"#)).unwrap();
+        for name in RULE_FILES { std::fs::write(source.0.join(name), "").unwrap(); }
+        write_rules(&source.0, old_format).unwrap();
+        for (path, bytes) in [("Image/p.png", b"picture".as_slice()), ("Drawing/d.excalidraw", b"scene".as_slice())] {
+            let target = source.0.join(path);
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            std::fs::write(target, bytes).unwrap();
+        }
+        let xml = "<title>Keep</title>\n<img src=\"Image/p.png\"/>\n<drawing path=\"Drawing/d.excalidraw\" width=\"100\" height=\"100\"/>\n";
+        std::fs::write(source.0.join(&legacy), xml).unwrap();
+        let old_body = std::fs::read_to_string(source.0.join(&legacy)).unwrap();
+        let repo = source.git(); configure(&repo, &server.0);
+        let old_commit = repo.commit("Old format").unwrap().unwrap(); repo.push(&Auth::default()).unwrap();
+
+        let first = Library::new(); let second = Library::new();
+        for lib in [&first, &second] { LibraryRepo::clone_into(server.0.to_str().unwrap(), &lib.0, &Auth::default()).unwrap(); }
+        let mut migrated = first.store();
+        assert_eq!(first.git().revision_paths(&old_commit).unwrap()[&id], legacy);
+        assert_eq!(first.git().revision(&old_commit, &id).unwrap(), old_body);
+        if legacy != current {
+            assert!(migrated.git_discard(&legacy).is_err()); assert!(migrated.git_discard(&current).is_err());
+        }
+        assert!(migrated.git_discard("Drawing/d.excalidraw").is_err());
+        assert!(migrated.git_discard("Drawings/d.excalidraw").is_err());
+
+        let edited = format!("{old_body}<p>Written before upgrading</p>\n");
+        std::fs::write(source.0.join(&legacy), &edited).unwrap();
+        std::fs::write(source.0.join("Image/p.png"), b"updated picture").unwrap();
+        repo.commit("Edit before upgrading").unwrap(); repo.push(&Auth::default()).unwrap();
+        assert!(migrated.git_pull(&Auth::default()).unwrap());
+        assert_eq!(Store::format_at(&first.0), Some(FORMAT));
+        assert_eq!(std::fs::read_to_string(first.0.join(&current)).unwrap(), edited);
+
+        let mut upgraded = source.store();
+        upgraded.git_stage_all(true).unwrap();
+        let migration = upgraded.git_commit("Plural directories").unwrap().unwrap(); repo.push(&Auth::default()).unwrap();
+        assert!(migrated.git_pull(&Auth::default()).unwrap());
+        assert!(second.git().pull(&Auth::default()).unwrap());
+        for lib in [&first, &second] {
+            assert_eq!(Store::format_at(&lib.0), Some(FORMAT));
+            assert_eq!(std::fs::read_to_string(lib.0.join(&current)).unwrap(), edited);
+            assert!(std::fs::read_dir(&lib.0).unwrap().any(|e| e.unwrap().file_name() == NOTES));
+            assert!(lib.git().status().unwrap().changes.is_empty());
+            assert!(!lib.0.join("Image").exists() && !lib.0.join("Drawing").exists());
+            assert_eq!(std::fs::read(lib.0.join("Images/p.png")).unwrap(), b"updated picture");
+            assert_eq!(std::fs::read(lib.0.join("Drawings/d.excalidraw")).unwrap(), b"scene");
+            let old_image = lib.git().revision_asset(&old_commit, "Image/p.png", false).unwrap().unwrap();
+            assert!(old_image.starts_with("Images/"));
+            assert_eq!(std::fs::read(lib.0.join(old_image)).unwrap(), b"picture");
+            let new_drawing = lib.git().revision_drawing_asset(&migration, "Drawing/d.excalidraw").unwrap().unwrap();
+            assert_eq!(crate::store::read_drawing_asset(&lib.0, &new_drawing, 1024).unwrap(), b"scene");
+            assert_eq!(lib.git().revision_paths(&migration).unwrap()[&id], current);
+            assert_eq!(lib.git().revision(&old_commit, &id).unwrap(), old_body);
+        }
+    }
 }
 
 #[test]

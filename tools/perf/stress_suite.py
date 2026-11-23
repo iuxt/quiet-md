@@ -2,7 +2,7 @@
 """Synthetic UI/resource stress suite (macOS, release devtools, Pillow).
 
 python3 tools/perf/stress_suite.py /tmp/quiet-stress [--cases idle,million]
-Each case runs sequentially, with its own disposable FORMAT 9 library.
+Each case runs sequentially, with its own disposable FORMAT 11 library.
 No system clipboard, focus activation, network or real notes are used.
 """
 import argparse
@@ -23,8 +23,8 @@ OPEN_MIXED = OPEN_FIRST + "key down\nkey end\n"
 
 def library(root, docs):
     (root / ".quiet").mkdir(parents=True)
-    (root / "notes").mkdir()
-    (root / ".quiet/format.json").write_text('{"format":9}')
+    (root / "Notes").mkdir()
+    (root / ".quiet/format.json").write_text('{"format":11}')
     (root / ".quiet/preferences.json").write_text(json.dumps({
         "english": True, "appearance": "light", "theme": "craft", "quick_hotkey": False,
     }))
@@ -32,7 +32,7 @@ def library(root, docs):
     for i, (title, body, ext) in enumerate(docs):
         key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"quiet-stress-{i}-{title}"))
         text = f"<title>{escape(title)}</title>\n{body}\n" if ext == "xml" else f"# {title}\n\n{body}\n"
-        (root / f"notes/{key}.{ext}").write_text(text)
+        (root / f"Notes/{key}.{ext}").write_text(text)
         notes.append({"id": key, "title": title, "filename": f"{key}.{ext}", "folderId": None,
                       "options": {"root_order": i, "created": 1794900000, "modified": 1794900000}})
     (root / "quiet.json").write_text(json.dumps({"version": 2, "folders": [], "notes": notes, "trash": []}))

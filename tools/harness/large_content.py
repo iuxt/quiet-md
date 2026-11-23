@@ -7,9 +7,9 @@ from pathlib import Path
 from xml.sax.saxutils import escape
 here=Path(__file__).resolve().parent
 root=Path(tempfile.mkdtemp(prefix='quiet-large-content-'))
-source=root/'source';(source/'.quiet').mkdir(parents=True,exist_ok=True);(source/'notes').mkdir(exist_ok=True)
+source=root/'source';(source/'.quiet').mkdir(parents=True,exist_ok=True);(source/'Notes').mkdir(exist_ok=True)
 id=str(uuid.uuid5(uuid.NAMESPACE_URL,'quiet-large-content-regression'))
-(source/'.quiet/format.json').write_text('{"format":9}')
+(source/'.quiet/format.json').write_text('{"format":11}')
 (source/'.quiet/preferences.json').write_text(json.dumps({'english':True,'appearance':'light','theme':'craft','quick_hotkey':False}))
 rows=[]
 for r in range(220):
@@ -22,7 +22,7 @@ for r in range(220):
  rows.append('<tr>'+''.join(cells)+'</tr>')
 code='\n'.join(f'let value_{i:03d} = "中文 code line {i}";' for i in range(300))
 body='<title>Large rendering</title>\n<table><colgroup>'+''.join('<col width="150"/>' for _ in range(4))+'</colgroup><thead><tr>'+''.join(f'<th><p>Column {c}</p></th>' for c in range(4))+'</tr></thead><tbody>'+''.join(rows)+'</tbody></table>\n<pre lang="Rust"><code>'+escape(code)+'</code></pre>\n<p>After code.</p>\n'
-(source/f'notes/{id}.xml').write_text(body)
+(source/f'Notes/{id}.xml').write_text(body)
 (source/'quiet.json').write_text(json.dumps({'version':2,'folders':[],'notes':[{'id':id,'filename':f'{id}.xml','title':'Large rendering','folderId':None,'options':{'root_order':0}}],'trash':[]}))
 script=root/'script.txt';script.write_text('''resize 1280 800
 wait 1400
@@ -78,11 +78,11 @@ for theme in os.environ.get('LARGE_CONTENT_THEMES','craft,feishu').split(','):
   run=output
  log=(run/'log').read_text()
  assert 'panicked' not in log and 'PANIC' not in log,log
- actual=(run/f'lib/notes/{id}.xml').read_text()
+ actual=(run/f'lib/Notes/{id}.xml').read_text()
  import xml.etree.ElementTree as ET
  doc=ET.fromstring('<doc>'+actual+'</doc>')
  marked=[row for row in doc.iter('tr') if 'MARKER' in ''.join(row.itertext())]
  assert len(marked)==1 and 'R190 C0' in ''.join(marked[0][0].itertext()) and ''.join(marked[0][2].itertext())=='MARKER. Body.', 'Find must reveal and replace the offscreen target match; undo/redo must preserve it'
  assert len(list(run.glob('*.png')))==10, 'Missing frames'
- if baseline:assert actual==(output/f'a/lib/notes/{id}.xml').read_text(),'Optimized editing changed document structure'
+ if baseline:assert actual==(output/f'a/lib/Notes/{id}.xml').read_text(),'Optimized editing changed document structure'
  print(f'{theme}: large table heights, rowspan, first-frame scrolling, find/reveal, undo/redo and long code screenshots verified: {run}',flush=True)

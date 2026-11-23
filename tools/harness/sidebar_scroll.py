@@ -15,8 +15,8 @@ for pinned in (False, True):
     case = work / ("pinned" if pinned else "plain")
     source = case / "source"
     (source / ".quiet").mkdir(parents=True)
-    (source / "notes").mkdir()
-    (source / ".quiet/format.json").write_text('{"format":6}')
+    (source / "Notes").mkdir()
+    (source / ".quiet/format.json").write_text('{"format":11}')
     (source / ".quiet/preferences.json").write_text(json.dumps({
         "appearance": "light", "english": True, "quick_hotkey": False,
     }))
@@ -24,7 +24,7 @@ for pinned in (False, True):
     for i in range(80):
         key = str(uuid.uuid4())
         title = f"Scroll note {i:02}" if i % 2 == 0 else f"滚动笔记 {i:02}"
-        (source / f"notes/{key}.xml").write_text(f"<title>{title}</title>\n<p>Body</p>\n")
+        (source / f"Notes/{key}.xml").write_text(f"<title>{title}</title>\n<p>Body</p>\n")
         notes.append({"id": key, "title": title, "filename": f"{key}.xml", "folderId": None,
                       "options": {"root_order": i, "pinned": pinned and i < 2}})
     (source / "quiet.json").write_text(json.dumps({"version": 2, "folders": [], "notes": notes, "trash": []}))

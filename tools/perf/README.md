@@ -17,7 +17,7 @@ python3 tools/perf/resource_probe.py script.txt synthetic-library /tmp/quiet-pro
 
 源文档库只读复制到输出的 `lib/`；`QUIET_MD_HOME`、`TMPDIR` 和日志目录指向输出目录，库的本机状态和解析缓存也隔离在其中。用 `phase 名字` 划分阶段（名字在一份脚本中应唯一），用 `idle 毫秒` 等待原生事件循环，`wait` 则会每 16ms 检查并绘制失效帧。采样器不强制绘图，也不调用系统剪贴板。光标默认正常闪烁，`--no-blink` 只用于诊断对照。
 
-`resources.json` / `samples.jsonl` 保存每阶段汇总 / 约 100ms 一次的原始采样，`log` 保存帧耗时，`file-writes.jsonl` 记录被观察文件的替换及内容是否相同。默认观察 `quiet.json` 和文件名排序后的前四份正文；`--watch notes/<UUID>.xml` 可指定正文，`--watch-cache` 也观察本机解析缓存。轮询可能漏掉两次采样间的替换，观察次数是下界。每个阶段还比较文档库和本机缓存的文件 inode、mtime 和大小；跨阶段完成的异步写入归于实际观察到的阶段。
+`resources.json` / `samples.jsonl` 保存每阶段汇总 / 约 100ms 一次的原始采样，`log` 保存帧耗时，`file-writes.jsonl` 记录被观察文件的替换及内容是否相同。默认观察 `quiet.json` 和文件名排序后的前四份正文；`--watch Notes/<UUID>.xml` 可指定正文，`--watch-cache` 也观察本机解析缓存。轮询可能漏掉两次采样间的替换，观察次数是下界。每个阶段还比较文档库和本机缓存的文件 inode、mtime 和大小；跨阶段完成的异步写入归于实际观察到的阶段。
 
 指标来自 `proc_pid_rusage(RUSAGE_INFO_V4)`：
 

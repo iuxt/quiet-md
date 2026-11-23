@@ -18,7 +18,7 @@ seed = runpy.run_path(str(here / "git_sync.py"))
 work = Path(tempfile.mkdtemp(prefix="quiet-git-diff-scroll-"))
 source = work / "source"
 shutil.copytree(seed["lib"], source)
-note = Path(f"notes/{seed['doc_id']}.xml")
+note = Path(f"Notes/{seed['doc_id']}.xml")
 body = "<title>Git regression</title>\n" + "\n".join(
     f"<p>Line {i:04d}: " + ("Long wrapped paragraph with 中文内容 and punctuation. " * 12 if i % 7 == 0 else "Changed text.") + "</p>"
     for i in range(1250)
@@ -29,7 +29,7 @@ md = dict(metadata["notes"][0])
 md.update(id="bbbbbbbb-0000-4000-8000-000000000002", filename="bbbbbbbb-0000-4000-8000-000000000002.md", title="Long Markdown")
 metadata["notes"].append(md)
 (source / "quiet.json").write_text(json.dumps(metadata))
-markdown = Path("notes") / md["filename"]
+markdown = Path("Notes") / md["filename"]
 md_body = "# Long Markdown\n\n" + "\n".join(
     f"Line {i:04d}: " + ("Long wrapped paragraph with 中文内容 and punctuation. " * 12 if i % 7 == 0 else "Changed text.")
     for i in range(1250)

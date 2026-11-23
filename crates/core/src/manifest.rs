@@ -6,7 +6,12 @@ use crate::store::{InfoRow, Meta, PageWidth};
 
 pub const VERSION: u32 = 2;
 pub const FILE: &str = "quiet.json";
-pub const NOTES: &str = "notes";
+pub const NOTES: &str = "Notes";
+pub(crate) const OLD_NOTES: &str = "notes";
+pub(crate) const OLD_NOTES_FORMAT: u32 = 9;
+pub(crate) const NOTES_FORMAT: u32 = 10;
+
+pub(crate) fn notes_dir(format: u32) -> &'static str { if format == OLD_NOTES_FORMAT { OLD_NOTES } else { NOTES } }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {

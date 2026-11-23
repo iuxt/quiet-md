@@ -3,7 +3,7 @@
 //! A Markdown file can carry its pictures inline, as
 //! `![alt](data:image/png;base64,…)`. Everything else in the editor reads
 //! images from disk, so opening such a file writes each payload into the
-//! library's `Image/` folder and points the block there. The Markdown file
+//! library's `Images/` folder and points the block there. The Markdown file
 //! keeps its base64 until the document is saved; from then on the image is an
 //! ordinary asset, exported like a pasted one.
 //!
@@ -15,13 +15,14 @@ use std::path::Path;
 use base64::Engine;
 
 use crate::model::{Block, BlockKind};
-use crate::store::IMAGE;
+use crate::store::image_dir;
+#[cfg(test)] use crate::store::IMAGE;
 
 /// Longest payload that is written out; one image pasted by hand is capped at
 /// the same 20 MB (`src/editor/image.rs`).
 const MAX_BYTES: u64 = 20 * 1024 * 1024;
 
-/// Writes every inline image under `root/Image` and rewrites its `src` to the
+/// Writes every inline image under `root/Images` and rewrites its `src` to the
 /// library-relative path. Returns how many were written. A payload that is too
 /// big, isn't an image this app can show, or doesn't decode is left alone — the
 /// block then shows `图片不可用` and the file keeps its own bytes.
@@ -37,12 +38,13 @@ pub fn absorb(blocks: &mut [Block], root: &Path) -> usize {
         let BlockKind::Image { src_kind, src, .. } = &mut b.kind else { continue };
         let Some((bytes, ext)) = inline_image(src) else { continue };
         let name = format!("b64-{:016x}.{ext}", hash(&bytes));
-        let dir = root.join(IMAGE);
+        let folder = image_dir(root);
+        let dir = root.join(folder);
         let path = dir.join(&name);
         if !path.is_file() && (std::fs::create_dir_all(&dir).is_err() || std::fs::write(&path, &bytes).is_err()) {
             continue;
         }
-        *src = format!("{IMAGE}/{name}");
+        *src = format!("{folder}/{name}");
         *src_kind = "src".into();
         n += 1;
     }
@@ -132,7 +134,7 @@ mod tests {
 
         assert_eq!(absorb(&mut blocks, &root), 1);
         let src = src_of(&blocks[0]).to_string();
-        assert!(src.starts_with("Image/b64-") && src.ends_with(".png"), "{src}");
+        assert!(src.starts_with("Images/b64-") && src.ends_with(".png"), "{src}");
         assert_eq!(std::fs::read(root.join(&src)).unwrap(), bytes);
 
         // Opening the file again reuses the same asset instead of a new copy.
@@ -153,7 +155,7 @@ mod tests {
             "data:image/png;base64,aGVsbG8=".to_string(),
             "data:image/png,notbase64".to_string(),
             "https://example.com/a.png".to_string(),
-            "Image/pasted.png".to_string(),
+            "Images/pasted.png".to_string(),
         ];
         let mut blocks: Vec<Block> = cases.iter().map(|c| image_block(c)).collect();
         assert_eq!(absorb(&mut blocks, &root), 0);

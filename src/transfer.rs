@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(std::fs::read(tmp.join(format!("full.assets/{stem}.excalidraw"))).unwrap(), scene);
         let png = std::fs::read(tmp.join(format!("full.assets/{stem}.png"))).unwrap();
         assert_eq!(image::load_from_memory(&png).unwrap().into_rgba8().get_pixel(120, 120).0, [26, 43, 60, 255]);
-        assert_eq!(std::fs::read_dir(root.join("Drawing")).unwrap().count(), 1);
+        assert_eq!(std::fs::read_dir(root.join("Drawings")).unwrap().count(), 1);
         std::fs::remove_dir_all(tmp).unwrap();
     }
 

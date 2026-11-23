@@ -5,14 +5,14 @@ import json,os,subprocess,sys,tempfile,uuid
 from pathlib import Path
 here=Path(__file__).resolve().parent
 root=Path(tempfile.mkdtemp(prefix='quiet-search-results-'))
-source=root/'source';(source/'.quiet').mkdir(parents=True);(source/'notes').mkdir()
-(source/'.quiet/format.json').write_text('{"format":9}')
+source=root/'source';(source/'.quiet').mkdir(parents=True);(source/'Notes').mkdir()
+(source/'.quiet/format.json').write_text('{"format":11}')
 (source/'.quiet/preferences.json').write_text(json.dumps({'english':True,'appearance':'light','theme':'craft','quick_hotkey':False}))
 notes=[]
 for i in range(100):
  id=str(uuid.uuid5(uuid.NAMESPACE_URL,f'quiet-search-row-{i}'))
  title=f'{"Needle" if i%2==0 else "Document"} {i:03d}'
- (source/f'notes/{id}.xml').write_text(f'<title>{title}</title>\n<p>Needle body {i:03d}. '+('Search context 中文. '*(1+i%5))+'</p>\n')
+ (source/f'Notes/{id}.xml').write_text(f'<title>{title}</title>\n<p>Needle body {i:03d}. '+('Search context 中文. '*(1+i%5))+'</p>\n')
  notes.append({'id':id,'filename':f'{id}.xml','title':title,'folderId':None,'options':{'root_order':i}})
 (source/'quiet.json').write_text(json.dumps({'version':2,'folders':[],'notes':notes,'trash':[]}))
 script=root/'script.txt';script.write_text('''resize 1280 800
@@ -54,10 +54,10 @@ else:
  run=root/'run'
  subprocess.run([sys.executable,str(here/'run.py'),str(script),str(source),str(run)],check=True,timeout=90)
 assert 'panicked' not in (run/'log').read_text()
-changed=[p for p in (run/'lib/notes').glob('*.xml') if 'MARKER' in p.read_text()]
+changed=[p for p in (run/'lib/Notes').glob('*.xml') if 'MARKER' in p.read_text()]
 last=max(note['id'] for i,note in enumerate(notes) if i%2)
 assert len(changed)==1 and changed[0].stem==last, 'Keyboard selection must reveal and open the final body-ranked hit (stable UUID order)'
 if baseline:
- for p in (run/'lib/notes').glob('*.xml'):
-  assert p.read_bytes()==(root/'compare/a/lib/notes'/p.name).read_bytes(),p
+ for p in (run/'lib/Notes').glob('*.xml'):
+  assert p.read_bytes()==(root/'compare/a/lib/Notes'/p.name).read_bytes(),p
 print(f'Search ranking, keyboard reveal, empty results and saved target verified: {root}',flush=True)

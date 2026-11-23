@@ -1,8 +1,63 @@
 //! Copy-first conversion. The journal makes interrupted conversions recoverable.
 use super::*;
-use crate::manifest::{Manifest, FILE, NOTES};
+use crate::manifest::{Manifest, FILE, NOTES, NOTES_FORMAT, OLD_NOTES, OLD_NOTES_FORMAT, notes_dir};
 
 const JOURNAL: &str = ".quiet/virtual-migration.json";
+const NOTES_PENDING: &str = ".quiet-notes-format-10";
+
+pub(super) fn has_old_notes(root: &Path) -> Result<bool> {
+    Ok(exact_entry(root, OLD_NOTES)? || exact_entry(root, NOTES_PENDING)?)
+}
+
+// Directory lookups can alias on macOS and Windows. The intermediate
+// spelling both forces the new name and lets the next open finish the move.
+fn exact_entry(root: &Path, name: &str) -> Result<bool> {
+    for entry in std::fs::read_dir(root)? {
+        if entry?.file_name() == name { return Ok(true) }
+    }
+    Ok(false)
+}
+
+pub(super) fn rename_notes(root: &Path, from: &str, to: &str) -> Result<()> {
+    let source = exact_entry(root, from)?;
+    let pending = exact_entry(root, NOTES_PENDING)?;
+    let target = exact_entry(root, to)?;
+    anyhow::ensure!(!(source && target || pending && (source || target)), "正文目录重名，未覆盖：{from} / {to} / {NOTES_PENDING}");
+    if target { anyhow::ensure!(crate::git::safe_path(root, to)?.is_dir(), "正文路径不是目录：{to}"); }
+    if !source && !pending { return Ok(()) }
+    let intermediate = crate::git::safe_path(root, NOTES_PENDING)?;
+    if source {
+        let source = crate::git::safe_path(root, from)?;
+        anyhow::ensure!(source.is_dir() && !intermediate.exists(), "无法迁移正文目录：{from}");
+        std::fs::rename(source, &intermediate)?;
+    }
+    anyhow::ensure!(intermediate.is_dir() && !root.join(to).exists(), "无法迁移正文目录：{to}");
+    std::fs::rename(intermediate, root.join(to))?;
+    #[cfg(unix)]
+    std::fs::File::open(root)?.sync_all()?;
+    Ok(())
+}
+pub(crate) fn rename_layout(root: &Path, from: u32, to: u32) -> Result<()> {
+    let mut assets = vec![];
+    if (from < PLURAL_RESOURCES_FORMAT) != (to < PLURAL_RESOURCES_FORMAT) {
+        for (old, new) in RESOURCE_RENAMES {
+            let (source, target) = if to >= PLURAL_RESOURCES_FORMAT { (old, new) } else { (new, old) };
+            let src = crate::git::safe_path(root, source)?;
+            let dst = crate::git::safe_path(root, target)?;
+            anyhow::ensure!(!dst.exists() || dst.is_dir(), "资源路径不是目录：{target}");
+            if src.exists() {
+                anyhow::ensure!(src.is_dir() && !dst.exists(), "资源目录重名，未覆盖：{source} / {target}");
+                assets.push((src, dst));
+            }
+        }
+    }
+    if notes_dir(from) != notes_dir(to) { rename_notes(root, notes_dir(from), notes_dir(to))?; }
+    for (src, dst) in assets { std::fs::rename(src, dst)?; }
+    #[cfg(unix)]
+    std::fs::File::open(root)?.sync_all()?;
+    Ok(())
+}
+
 #[derive(Serialize, Deserialize)]
 struct Migration {
     backup: String, originals: Vec<String>, destinations: Vec<String>, folders: Vec<String>,
@@ -19,12 +74,17 @@ impl Store {
         let original_index = self.index.clone();
         anyhow::ensure!(self.trash.is_empty(), "请先手动处理旧版回收站");
         let mut index = original_index.clone(); let trash = HashMap::new();
+        // A physical folder can already have either spelling. Finish the
+        // virtual conversion in place before renaming the lowercase directory.
+        let (notes, format) = if exact_entry(&self.root, OLD_NOTES)? && !exact_entry(&self.root, NOTES)? {
+            (OLD_NOTES, OLD_NOTES_FORMAT)
+        } else { (NOTES, NOTES_FORMAT) };
         let mut paths = HashMap::new();
         for (id, meta) in &mut index {
             if meta.local() { continue }
             if meta.folder.is_some() { meta.rel.clear(); continue }
             meta.name = Some(self.load(id)?.title.text);
-            let rel = format!("{NOTES}/{id}.{}", ext_of(meta));
+            let rel = format!("{notes}/{id}.{}", ext_of(meta));
             paths.insert(meta.rel.clone(), rel.clone()); meta.rel = rel; meta.stable_name = true;
         }
         let mut outputs = vec![];
@@ -32,12 +92,12 @@ impl Store {
         for (id, old) in original_index.iter().filter(|(_, m)| !m.local() && m.folder.is_none()) {
             let text = std::fs::read_to_string(self.path(id))?;
             let out = if old.markdown {
-                super::git_store::rebase_markdown_links(&text, parent_rel(&old.rel), NOTES, &paths, true)
+                super::git_store::rebase_markdown_links(&text, parent_rel(&old.rel), notes, &paths, true)
             } else {
                 let mut doc = self.parse_doc(id, &text)?;
                 layout::each_inline(&mut doc, &mut |inline| {
                     if let Some(link) = inline.doc_link().cloned() && let Some(target) = index.get(&link.id) {
-                        inline.xml = docxml::doc_link_href_xml(&layout::relative(NOTES, &target.rel), &link.title);
+                        inline.xml = docxml::doc_link_href_xml(&layout::relative(notes, &target.rel), &link.title);
                     }
                 });
                 docxml::serialize(&doc)
@@ -65,10 +125,10 @@ impl Store {
         manifest.validate()?;
         save_json(&self.root.join(JOURNAL), &state)?;
         let converted = (|| -> Result<()> {
-            std::fs::create_dir_all(crate::git::safe_path(&self.root, NOTES)?)?;
+            std::fs::create_dir_all(crate::git::safe_path(&self.root, notes)?)?;
             for (_, to, text) in &outputs { write_atomic(&crate::git::safe_path(&self.root, to)?, text.as_bytes())?; }
             save_json(&self.root.join(FILE), &manifest)?;
-            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
+            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format })?)?;
             Ok(())
         })();
         if let Err(error) = converted {
@@ -127,7 +187,7 @@ mod tests {
             let root = std::env::temp_dir().join(format!("quiet-migration-recovery-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(root.join(".quiet/before-virtual-6-test/Old")).unwrap();
             std::fs::create_dir_all(root.join("Old")).unwrap(); std::fs::create_dir_all(root.join(NOTES)).unwrap();
-            let id = uuid::Uuid::new_v4().to_string(); let to = format!("notes/{id}.xml");
+            let id = uuid::Uuid::new_v4().to_string(); let to = format!("{NOTES}/{id}.xml");
             let body = "<title>Original</title>\n<p>Preserve me.</p>\n";
             std::fs::write(root.join("Old/note.xml"), body).unwrap();
             std::fs::write(root.join(".quiet/before-virtual-6-test/Old/note.xml"), body).unwrap();
@@ -138,7 +198,7 @@ mod tests {
             let state = Migration { backup: ".quiet/before-virtual-6-test".into(), originals: vec!["Old/note.xml".into()],
                 destinations: vec![to.clone()], folders: vec!["Old".into()], marker: b"{\"format\":5}".to_vec(), manifest: None };
             save_json(&root.join(JOURNAL), &state).unwrap();
-            std::fs::write(root.join(".quiet/format.json"), if committed { b"{\"format\":9}" } else { b"{\"format\":5}" }).unwrap();
+            std::fs::write(root.join(".quiet/format.json"), if committed { "{\"format\":10}" } else { "{\"format\":5}" }).unwrap();
             recover(&root).unwrap(); assert!(!root.join(JOURNAL).exists());
             if committed {
                 assert!(!root.join("Old").exists()); assert_eq!(std::fs::read_to_string(root.join(to)).unwrap(), body);

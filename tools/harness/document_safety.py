@@ -14,7 +14,7 @@ here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-document-safety-"))
 source = work / "source"
 (source / ".quiet").mkdir(parents=True)
-(source / ".quiet/format.json").write_text('{"format":9}')
+(source / ".quiet/format.json").write_text('{"format":11}')
 (source / "quiet.json").write_text('{"version":2,"folders":[],"notes":[],"trash":[]}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False, "onboarding_done": True,
@@ -76,5 +76,5 @@ assert {n["title"] for n in notes} == {"Preview safety", "Loose", "SidebarLoose"
 assert len(notes) == 7, notes
 assert any(t["title"] == "Imported safety" for t in manifest["trash"]), manifest
 preview = next(n for n in notes if n["title"] == "Preview safety")
-assert "Original from B from A" in (run / "lib/notes" / preview["filename"]).read_text()
+assert "Original from B from A" in (run / "lib/Notes" / preview["filename"]).read_text()
 print(f"Document safety checks passed: {run}")

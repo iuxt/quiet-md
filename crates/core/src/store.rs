@@ -1,4 +1,4 @@
-//! Library storage: virtual folders in quiet.json, fixed notes/<UUID> bodies.
+//! Library storage: virtual folders in quiet.json, fixed Notes/<UUID> bodies.
 //! FORMAT 4/5 physical folders and older layouts remain readable for migration.
 
 use crate::docxml;
@@ -20,6 +20,7 @@ pub use migrate::{MigrationState, ConsentReason, DeviceHint, MigrationReport, Re
 #[path = "git_store.rs"] mod git_store;
 #[path = "virtual_store.rs"] mod virtual_store;
 #[path = "virtual_migrate.rs"] mod virtual_migrate;
+pub(crate) use virtual_migrate::rename_layout;
 #[cfg(test)] #[path = "virtual_tests.rs"] mod virtual_tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -327,19 +328,42 @@ struct Batch { lock: Option<WriteLock>, depth: u32, index: std::cell::Cell<bool>
 /// with shared metadata for Git. 6: virtual folders, one quiet.json,
 /// fixed notes/<UUID> body paths regardless of Git. 7: trash changes only
 /// metadata; deleted bodies keep their notes/ paths. 8: visible assets/.
-/// 9: separate Image/, Files/ and Drawing/ directories.
-pub const FORMAT: u32 = 9;
-pub(crate) fn virtual_format(format: u32) -> bool { format == FORMAT }
+/// 9: separate Image/, Files/ and Drawing/ directories. 10: Notes/ casing.
+/// 11: plural resource directories.
+pub const FORMAT: u32 = PLURAL_RESOURCES_FORMAT;
+pub(crate) const PLURAL_RESOURCES_FORMAT: u32 = 11;
+pub(crate) fn virtual_format(format: u32) -> bool { (crate::manifest::OLD_NOTES_FORMAT..=FORMAT).contains(&format) }
 /// The hidden folder holding the library's own data.
 pub const INTERNAL: &str = ".quiet";
-pub const IMAGE: &str = "Image";
+pub const IMAGE: &str = "Images";
 pub const FILES: &str = "Files";
-pub const DRAWING: &str = "Drawing";
-pub(crate) const RESOURCE_DIRS: [&str; 3] = [IMAGE, FILES, DRAWING];
+pub const DRAWING: &str = "Drawings";
+const OLD_IMAGE: &str = "Image";
+const OLD_DRAWING: &str = "Drawing";
+pub(crate) const RESOURCE_RENAMES: [(&str, &str); 2] = [(OLD_IMAGE, IMAGE), (OLD_DRAWING, DRAWING)];
 const LEGACY_ASSETS: &str = "assets";
 
+pub(crate) fn resource_dirs(format: u32) -> [&'static str; 3] {
+    if format >= PLURAL_RESOURCES_FORMAT { [IMAGE, FILES, DRAWING] }
+    else { [OLD_IMAGE, FILES, OLD_DRAWING] }
+}
+
+pub(crate) fn resource_dir_at(name: &str, format: u32) -> Option<&'static str> {
+    if name == FILES { return Some(FILES) }
+    RESOURCE_RENAMES.iter().find(|&&(old, new)| name == old || name == new)
+        .map(|&(old, new)| if format >= PLURAL_RESOURCES_FORMAT { new } else { old })
+}
+
 fn reserved_resource_dir(name: &str) -> bool {
-    RESOURCE_DIRS.into_iter().chain([LEGACY_ASSETS]).any(|dir| name.eq_ignore_ascii_case(dir))
+    resource_dirs(crate::manifest::NOTES_FORMAT).into_iter().chain([LEGACY_ASSETS]).any(|dir| name.eq_ignore_ascii_case(dir))
+}
+
+pub fn image_dir(root: &Path) -> &'static str {
+    if asset_format_at(root) >= PLURAL_RESOURCES_FORMAT { IMAGE } else { OLD_IMAGE }
+}
+
+fn asset_format_at(root: &Path) -> u32 {
+    Store::format_at(root).unwrap_or_else(|| if Store::flat_at(root) { 0 } else { FORMAT })
 }
 
 #[path = "folders.rs"]
@@ -529,7 +553,25 @@ pub fn image_path_in(root: &Path, src: &str) -> Option<PathBuf> {
         return Some(moved_asset(root, &p).unwrap_or(p));
     }
     // Relative to the library; not a URI or a cloud token.
-    (!src.is_empty() && !src.contains(':') && src.contains('/')).then(|| root.join(p))
+    (!src.is_empty() && !src.contains(':') && src.contains('/')).then(|| relative_asset(root, &p))
+}
+
+fn relative_asset(root: &Path, p: &Path) -> PathBuf {
+    let direct = root.join(p);
+    let mut parts = p.components();
+    if let Some(std::path::Component::Normal(dir)) = parts.next() && let Some(dir) = dir.to_str()
+        && let Some(alias) = resource_alias(dir)
+        && parts.clone().all(|c| matches!(c, std::path::Component::Normal(_))) && !direct.exists() {
+        let alternate = root.join(alias).join(parts);
+        if alternate.is_file() { return alternate }
+    }
+    direct
+}
+
+fn resource_alias(dir: &str) -> Option<&'static str> {
+    RESOURCE_RENAMES.iter().find_map(|&(old, new)| {
+        if dir == old { Some(new) } else if dir == new { Some(old) } else { None }
+    })
 }
 
 /// Find a missing absolute asset path after the library has moved.
@@ -541,8 +583,8 @@ fn moved_asset(root: &Path, p: &Path) -> Option<PathBuf> {
     (0..parts.len()).rev().find_map(|i| {
         let dir = parts[i].as_os_str().to_str()?;
         let rest = &parts[i + 1..];
-        if !RESOURCE_DIRS.contains(&dir) || rest.is_empty() || !rest.iter().all(|c| matches!(c, Component::Normal(_))) { return None; }
-        let path = root.join(dir).join(rest.iter().collect::<PathBuf>());
+        if resource_dir_at(dir, FORMAT).is_none() || rest.is_empty() || !rest.iter().all(|c| matches!(c, Component::Normal(_))) { return None; }
+        let path = relative_asset(root, &Path::new(dir).join(rest.iter().collect::<PathBuf>()));
         path.exists().then_some(path)
     })
 }
@@ -555,7 +597,7 @@ pub fn export_path(src: &str) -> Option<PathBuf> {
 pub fn export_path_in(root: &std::path::Path, src: &str) -> Option<PathBuf> {
     let root = root.canonicalize().ok()?;
     let raw = std::path::Path::new(src.strip_prefix("file://").unwrap_or(src));
-    let path = if raw.is_absolute() { moved_asset(&root, raw).unwrap_or_else(|| raw.to_path_buf()) } else { root.join(raw) }.canonicalize().ok()?;
+    let path = if raw.is_absolute() { moved_asset(&root, raw).unwrap_or_else(|| raw.to_path_buf()) } else { relative_asset(&root, raw) }.canonicalize().ok()?;
     (path.starts_with(root) && path.is_file()).then_some(path)
 }
 
@@ -655,7 +697,7 @@ impl Store {
     /// writing a note), not when one is saved. Cheap enough to poll.
     pub fn shape_at(root: &Path) -> u64 {
         use std::hash::{Hash, Hasher};
-        let notes = if Self::format_at(root).is_some_and(virtual_format) { root.join(crate::manifest::NOTES) }
+        let notes = if let Some(format) = Self::format_at(root).filter(|&f| virtual_format(f)) { root.join(crate::manifest::notes_dir(format)) }
             else if Self::flat_at(root) { root.join("docs") } else { root.to_path_buf() };
         let found = layout::scan(&notes);
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -692,11 +734,12 @@ impl Store {
 
     /// A drawing save writes a new source asset for undo and history.
     pub fn save_drawing(root: &Path, source: &[u8], width: u32, height: u32) -> Result<crate::model::Drawing> {
-        let dir = root.join(DRAWING);
+        let folder = if asset_format_at(root) >= PLURAL_RESOURCES_FORMAT { DRAWING } else { OLD_DRAWING };
+        let dir = root.join(folder);
         let id = uuid::Uuid::new_v4();
         std::fs::create_dir_all(&dir)?;
         write_atomic(&dir.join(format!("{id}.excalidraw")), source)?;
-        Ok(crate::model::Drawing { source: format!("{DRAWING}/{id}.excalidraw"), preview: String::new(), width, height })
+        Ok(crate::model::Drawing { source: format!("{folder}/{id}.excalidraw"), preview: String::new(), width, height })
     }
 
     /// The library at `root_dir`, moved to the new layout first when that
@@ -744,8 +787,11 @@ impl Store {
         if Self::format_at(root).is_some() { return Ok(()); }
         let existing = layout::scan(root);
         let manifest = root.join(crate::manifest::FILE);
-        let format = if std::fs::read(&manifest).is_ok_and(|b| crate::manifest::Manifest::parse(&b).is_ok())
-            || (existing.docs.is_empty() && existing.dirs.is_empty() && !manifest.exists()) { FORMAT } else { 5 };
+        let format = if std::fs::read(&manifest).is_ok_and(|b| crate::manifest::Manifest::parse(&b).is_ok()) {
+            if virtual_migrate::has_old_notes(root)? { crate::manifest::OLD_NOTES_FORMAT }
+            else if RESOURCE_RENAMES.iter().any(|(old, _)| root.join(old).exists()) { crate::manifest::NOTES_FORMAT }
+            else { FORMAT }
+        } else if existing.docs.is_empty() && existing.dirs.is_empty() && !manifest.exists() { FORMAT } else { 5 };
         if format == FORMAT && !manifest.exists() { save_json(&manifest, &crate::manifest::Manifest::default())?; }
         write_atomic(&internal.join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format })?)
     }
@@ -753,7 +799,7 @@ impl Store {
     /// The backup of the old layout, while there is one.
     pub fn backup_dir(root: &Path) -> Option<PathBuf> { Some(root.join(INTERNAL).join(migrate::BACKUP)).filter(|p| p.is_dir()) }
 
-    /// Open the library at `root` in the layout it has; never moves it.
+    /// Open the library at `root`, applying the virtual notes directory upgrade if needed.
     pub fn open_at(root: PathBuf) -> Result<Self> {
         std::fs::create_dir_all(&root)?;
         match Self::format_at(&root) {
@@ -961,7 +1007,11 @@ impl Store {
             let Some(l) = i.doc_link().cloned() else { return };
             let Some(href) = docxml::doc_link_href(&i.xml) else { return };
             let by_rel = by_rel.get_or_insert_with(|| self.index.iter().filter(|(_, m)| !m.local() && m.folder.is_none()).map(|(k, m)| (m.rel.as_str(), k.as_str())).collect());
-            if let Some(id) = layout::resolve(dir, &href).and_then(|rel| by_rel.get(rel.as_str()).copied()) {
+            if let Some(id) = layout::resolve(dir, &href).and_then(|rel| by_rel.get(rel.as_str()).copied().or_else(|| {
+                if !self.virtual_folders() { return None }
+                let (_, file) = rel.split_once('/').filter(|(dir, _)| *dir == crate::manifest::OLD_NOTES)?;
+                by_rel.get(format!("{}/{file}", crate::manifest::NOTES).as_str()).copied()
+            })) {
                 *i = docxml::to_inline(crate::model::InlineKind::DocLink(crate::model::InlineDocLink { id: id.to_string(), title: l.title }));
             }
         });
@@ -1051,7 +1101,7 @@ impl Store {
         if self.flat {
             if let Some(index) = reread(&self.index_file()) { self.index = index; }
         } else if virtual_format(marker.format) {
-            self.reload_virtual()?;
+            self.reload_virtual(marker.format)?;
         } else if let Some(disk) = reread::<DiskIndex>(&self.index_file()) {
             let local = self.read_local();
             self.index = self.from_disk(&disk, &local);
@@ -1816,10 +1866,10 @@ impl Store {
         d
     }
 
-    /// Virtual libraries always keep trashed bodies at their fixed notes/ paths.
+    /// Virtual libraries always keep trashed bodies at their fixed Notes/ paths.
     fn trash_path(&self, id: &str) -> PathBuf {
         let meta = self.trash.get(id).map(|t| &t.meta).or_else(|| self.index.get(id));
-        if self.virtual_folders() { return self.abs(&format!("notes/{id}.{}", if meta.is_some_and(|m| m.markdown) { "md" } else { "xml" })) }
+        if self.virtual_folders() { return self.abs(&format!("{}/{id}.{}", crate::manifest::NOTES, if meta.is_some_and(|m| m.markdown) { "md" } else { "xml" })) }
         let dir = self.internal().join("trash");
         match meta {
             Some(m) if m.folder.is_some() => dir.join(id),
@@ -2544,8 +2594,8 @@ mod tests {
         std::fs::write(&file, "text\n").unwrap();
         let mut s = lib.open();
         std::fs::create_dir_all(lib.0.join(IMAGE)).unwrap();
-        let pasted = lib.0.join("Image/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
-        let picked = lib.0.join("Image/1a2b3c4d-截图说明.png");
+        let pasted = lib.0.join("Images/3e5c9916-7c1f-4f7d-af25-74dd4a8a241e.png");
+        let picked = lib.0.join("Images/1a2b3c4d-截图说明.png");
         std::fs::write(&pasted, b"p").unwrap();
         std::fs::write(&picked, b"q").unwrap();
         // Something already there keeps its name.
@@ -3415,27 +3465,27 @@ mod tests {
         let mut old = Old::new(&lib, 3);
         let abs = |rel: &str| lib.0.join(rel).to_string_lossy().into_owned();
         let image = |src: String| Block::new(BlockKind::Image { src_kind: "src".into(), src, width: None, height: None, caption: None, crop: None }, RichText::default());
-        let moved = std::env::temp_dir().join("elsewhere/Quiet.md/Image/p.png").to_string_lossy().into_owned();
+        let moved = std::env::temp_dir().join("elsewhere/Quiet.md/Images/p.png").to_string_lossy().into_owned();
         let d = Document { title: RichText::plain("图"), blocks: vec![
-            image(abs("Image/p.png")),
+            image(abs("Images/p.png")),
             Block::new(BlockKind::File(FileBlock { src_kind: "path".into(), src: abs("Files/1234/报告.pdf"), name: "报告.pdf".into(), view: FileView::Card }), RichText::default()),
             image(moved.clone()),
-            image(abs("Image/gone.png")),
+            image(abs("Images/gone.png")),
             // The fallback must not follow a path outside the asset directory.
-            image(std::env::temp_dir().join("elsewhere/Quiet.md/Image/x/../../secret.png").to_string_lossy().into_owned()),
+            image(std::env::temp_dir().join("elsewhere/Quiet.md/Images/x/../../secret.png").to_string_lossy().into_owned()),
         ], ..Default::default() };
         let id = old.put(&d, Meta::default());
         old.write();
         std::fs::create_dir_all(lib.0.join(IMAGE)).unwrap();
         std::fs::create_dir_all(lib.0.join("Files/1234")).unwrap();
-        std::fs::write(lib.0.join("Image/p.png"), b"png").unwrap();
+        std::fs::write(lib.0.join("Images/p.png"), b"png").unwrap();
         std::fs::write(lib.0.join("Files/1234/报告.pdf"), b"pdf").unwrap();
         std::fs::write(lib.0.join("secret.png"), b"s").unwrap();
         let s = lib.migrated();
-        std::fs::create_dir_all(lib.0.join("Image/x")).unwrap();
+        std::fs::create_dir_all(lib.0.join("Images/x")).unwrap();
         let srcs = s.load(&id).unwrap().asset_sources();
         let found: Vec<Option<PathBuf>> = srcs.iter().map(|src| image_path_in(&lib.0, src).filter(|p| p.is_file())).collect();
-        assert_eq!(found, [Some(lib.0.join("Image/p.png")), Some(lib.0.join("Files/1234/报告.pdf")), Some(lib.0.join("Image/p.png")), None, None]);
+        assert_eq!(found, [Some(lib.0.join("Images/p.png")), Some(lib.0.join("Files/1234/报告.pdf")), Some(lib.0.join("Images/p.png")), None, None]);
         assert!(export_path_in(&lib.0, &srcs[0]).is_some() && export_path_in(&lib.0, &srcs[1]).is_some());
         assert!(export_path_in(&lib.0, &srcs[3]).is_none() && export_path_in(&lib.0, &srcs[4]).is_none());
         // A path that still exists is used as it is.

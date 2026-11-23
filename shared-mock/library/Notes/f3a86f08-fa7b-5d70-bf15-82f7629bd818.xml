@@ -12,12 +12,12 @@
 <h2>Print</h2><p>Use the print command from the document menu to open the system print dialog. Choose a printer there, or save a PDF.</p>
 <h1>Your documents folder</h1><p>The default location is <code>~/Documents/Quiet.md</code>; you can choose another the first time Quiet.md opens. Settings › Documents shows where it is. The sidebar hierarchy is stored in <code>quiet.json</code>; folders are virtual, and document files have fixed UUID names.</p><pre lang="plaintext" caption="~/Documents/Quiet.md"><code>Quiet.md/
 ├── quiet.json         Titles, dates, folder hierarchy and display settings
-├── notes/             All document bodies, independent of the sidebar folders
+├── Notes/             All document bodies, independent of the sidebar folders
 │   ├── &lt;uuid&gt;.xml     DocxXML document
 │   └── &lt;uuid&gt;.md      Markdown document
-├── Image/             Images and covers
+├── Images/             Images and covers
 ├── Files/             Attachments
-├── Drawing/           Editable Excalidraw drawings
+├── Drawings/           Editable Excalidraw drawings
 └── .quiet/            Quiet.md's own data (hidden)
     ├── history/       Earlier versions of each document
     ├── themes/        Custom CSS themes

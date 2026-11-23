@@ -42,15 +42,15 @@ line = [element("line", "line", 100, 100, 400, 200, points=[[0, 0], [200, 0], [4
 
 def source(name, elements, files=None, *, english=True):
     lib = work / (name + "-source")
-    for part in [".quiet", "notes", "Drawing"]:
+    for part in [".quiet", "Notes", "Drawings"]:
         (lib / part).mkdir(parents=True)
-    (lib / ".quiet/format.json").write_text('{"format":9}')
+    (lib / ".quiet/format.json").write_text('{"format":11}')
     (lib / ".quiet/preferences.json").write_text(json.dumps(dict(theme="craft", appearance="light", english=english, quick_hotkey=False)))
     (lib / "quiet.json").write_text(json.dumps(dict(version=2, folders=[], trash=[], notes=[dict(
         id=note, title="Drawing regression", filename=note + ".xml", folderId=None, options=dict(opened=1))])))
-    (lib / f"notes/{note}.xml").write_text('<title>Drawing regression</title>\n<p>Local drawing</p>\n'
-        '<drawing path="Drawing/test.excalidraw" width="1200" height="600"/>\n<p>End</p>\n')
-    (lib / "Drawing/test.excalidraw").write_text(json.dumps(dict(type="excalidraw", version=2,
+    (lib / f"Notes/{note}.xml").write_text('<title>Drawing regression</title>\n<p>Local drawing</p>\n'
+        '<drawing path="Drawings/test.excalidraw" width="1200" height="600"/>\n<p>End</p>\n')
+    (lib / "Drawings/test.excalidraw").write_text(json.dumps(dict(type="excalidraw", version=2,
         elements=elements, files=files or {}, appState=dict(viewBackgroundColor="#ffffff"))))
     return lib
 
@@ -63,7 +63,7 @@ def run(name, steps, elements=None, files=None, *, english=True):
     folder = work / name
     subprocess.run([sys.executable, str(here / "run.py"), str(script), str(lib), str(folder)],
                    check=True, timeout=90, env=dict(os.environ, FDL_NOBLINK="1"))
-    body = ET.fromstring("<doc>" + (folder / "lib" / f"notes/{note}.xml").read_text() + "</doc>")
+    body = ET.fromstring("<doc>" + (folder / "lib" / f"Notes/{note}.xml").read_text() + "</doc>")
     drawing = body.find("drawing")
     assert drawing is not None, name
     scene = json.loads((folder / "lib" / drawing.attrib["path"]).read_text())

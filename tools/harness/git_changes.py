@@ -20,13 +20,13 @@ source = work / "source"
 shutil.copytree(seed["lib"], source)
 doc_id = seed["doc_id"]
 body = "<title>Git regression</title>\n<p>Review this updated body.</p>\n<p>A new paragraph.</p>\n"
-(source / f"notes/{doc_id}.xml").write_text(body)
+(source / f"Notes/{doc_id}.xml").write_text(body)
 metadata = json.loads((source / "quiet.json").read_text())
 new = dict(metadata["notes"][0])
 new.update(id="bbbbbbbb-0000-4000-8000-000000000002", filename="bbbbbbbb-0000-4000-8000-000000000002.md", title="发布检查清单")
 metadata["notes"].append(new)
 (source / "quiet.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
-(source / "notes" / new["filename"]).write_text("# 发布检查清单\n\n- 检查文档和资源\n- 验证 Git 文件对比\n")
+(source / "Notes" / new["filename"]).write_text("# 发布检查清单\n\n- 检查文档和资源\n- 验证 Git 文件对比\n")
 (source / "Files").mkdir(exist_ok=True)
 (source / "Files/attachment.bin").write_bytes(b"\0binary attachment")
 prefs = source / ".quiet/preferences.json"
@@ -80,7 +80,7 @@ run = work / "native-git-changes"
 subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), str(run)],
                check=True, timeout=60, env=dict(os.environ, FDL_NOBLINK="1"))
 lib = run / "lib"
-assert (lib / f"notes/{doc_id}.xml").read_text() == body, "Diff must stay read-only"
+assert (lib / f"Notes/{doc_id}.xml").read_text() == body, "Diff must stay read-only"
 assert (lib / ".git/refs/heads/main").read_text() != head_before, "Panel commit did not advance HEAD"
 for name in ("text-diff", "source-diff", "added-markdown", "metadata-diff", "binary-change", "narrow-diff", "clean-worktree"):
     assert (run / f"{name}.png").is_file(), name
@@ -144,8 +144,8 @@ wait 1200
 shot selected-committed
 """)
 files = committed_files(selected / "lib/.git")
-assert files[f"notes/{doc_id}.xml"].decode() == body, "The + button must stage the selected body"
-assert f"notes/{new['filename']}" not in files, "Unstaged Markdown must stay uncommitted"
+assert files[f"Notes/{doc_id}.xml"].decode() == body, "The + button must stage the selected body"
+assert f"Notes/{new['filename']}" not in files, "Unstaged Markdown must stay uncommitted"
 assert "Files/attachment.bin" not in files, "Unstaged attachment must stay uncommitted"
 assert len(json.loads(files["quiet.json"])["notes"]) == 1, "Unstaged metadata must stay uncommitted"
 print(f"Git staging: +, unstage and selected-file commit verified; screenshots: {selected}")
@@ -163,9 +163,9 @@ move 1220 800
 wait 900
 shot discarded
 """)
-assert (discarded / f"lib/notes/{doc_id}.xml").read_text() == seed["body"], "Discard must restore the indexed body"
+assert (discarded / f"lib/Notes/{doc_id}.xml").read_text() == seed["body"], "Discard must restore the indexed body"
 assert (discarded / "lib/.git/refs/heads/main").read_text() == head_before, "Discard must not change HEAD"
-assert (discarded / f"lib/notes/{new['filename']}").is_file(), "Discard must leave other files alone"
+assert (discarded / f"lib/Notes/{new['filename']}").is_file(), "Discard must leave other files alone"
 
 removed = replay("discard-new-note", """click 504 347
 wait 300
@@ -174,7 +174,7 @@ move 1220 800
 wait 900
 shot removed-new-note
 """)
-assert not (removed / f"lib/notes/{new['filename']}").exists(), "Discard must delete an untracked note"
+assert not (removed / f"lib/Notes/{new['filename']}").exists(), "Discard must delete an untracked note"
 assert len(json.loads((removed / "lib/quiet.json").read_text())["notes"]) == 1, "Discard must remove the new manifest entry"
-assert (removed / f"lib/notes/{doc_id}.xml").read_text() == body, "Discard must preserve other edits"
+assert (removed / f"lib/Notes/{doc_id}.xml").read_text() == body, "Discard must preserve other edits"
 print(f"Git discard: confirmation, tracked restore and new-note removal verified; screenshots: {discarded}, {removed}")

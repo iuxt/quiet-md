@@ -45,7 +45,7 @@
 
 **⚡ Fast, the native kind of fast.** The whole interface is drawn on the GPU by Rust and [GPUI](https://www.gpui.rs/). No WebView, no Electron. In a one-million-character document, typing, deleting and scrolling all stay under 6 ms per frame at P95.
 
-**🔒 Local-first. Your files are yours.** No account, no cloud, and nothing goes over the network by default. Your library is an ordinary folder on your computer: `quiet.json` manages virtual folders and display titles, while document bodies stay at fixed `notes/<UUID>.xml` (or `.md`) paths. Images, attachments and drawing sources are stored in `Image/`, `Files/` and `Drawing/` at the library root. Moving, renaming or trashing an entry only changes metadata. Manage it with Git, iCloud or any sync tool you like; if you ever stop using Quiet.md, your files are still there.
+**🔒 Local-first. Your files are yours.** No account, no cloud, and nothing goes over the network by default. Your library is an ordinary folder on your computer: `quiet.json` manages virtual folders and display titles, while document bodies stay at fixed `Notes/<UUID>.xml` (or `.md`) paths. Images, attachments and drawing sources are stored in `Images/`, `Files/` and `Drawings/` at the library root. Moving, renaming or trashing an entry only changes metadata. Manage it with Git, iCloud or any sync tool you like; if you ever stop using Quiet.md, your files are still there.
 
 **📝 A full rich-text editor that speaks Feishu (Lark) DocxXML.** Notes are saved in the DocxXML format used by Feishu (Lark) Docs, so copy-paste, import and export keep their structure. Headings, to-dos, tables, columns, callouts, code, math, images and attachments — the blocks you reach for when writing documents are all there.
 

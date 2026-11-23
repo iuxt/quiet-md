@@ -98,7 +98,7 @@ def main():
     roots = [library, output / "quiet-md-local"]
     files_before = snapshot_files(roots)
     watch = [library / "quiet.json"]
-    watch += [library / name for name in args.watch] if args.watch else sorted((library / "notes").glob("*"))[:4]
+    watch += [library / name for name in args.watch] if args.watch else sorted((library / "Notes").glob("*"))[:4]
     stamps, hashes, writes = {}, {}, []
     for path in watch:
         if path.is_file():

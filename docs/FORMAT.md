@@ -1,22 +1,22 @@
 # 存储格式
 
-当前布局为 FORMAT 9，清单版本为 2。文件夹和标题由根目录 `quiet.json` 管理；所有正文集中在 `notes/<UUID>.xml` 或 `notes/<UUID>.md`。Git 是可选功能，不改变目录布局。详见 [GIT.md](GIT.md)。
+当前布局为 FORMAT 11，清单版本为 2。文件夹和标题由根目录 `quiet.json` 管理；所有正文集中在 `Notes/<UUID>.xml` 或 `Notes/<UUID>.md`。Git 是可选功能，不改变目录布局。详见 [GIT.md](GIT.md)。
 
-## 文档库目录（FORMAT 9）
+## 文档库目录（FORMAT 11）
 
 默认位置：`~/Documents/Quiet.md`。首次启动可以另选位置，本机应用数据目录的 `quiet-md/library.json` 记住所选路径。测试一律用临时目录和 `QUIET_MD_HOME`，不操作真实文档库。
 
 ```text
 Quiet.md/
 ├── quiet.json                标题、虚拟文件夹层级、日期、排序等共享元数据
-├── notes/
+├── Notes/
 │   ├── <uuid-1>.xml          DocxXML 正文
 │   └── <uuid-2>.md           Markdown 正文
-├── Image/                    图片和封面
+├── Images/                   图片和封面
 ├── Files/                    文件附件
-├── Drawing/                  画板源文件（.excalidraw）
+├── Drawings/                 画板源文件（.excalidraw）
 └── .quiet/
-    ├── format.json           {"format": 9}：布局版本（store::FORMAT）
+    ├── format.json           {"format": 11}：布局版本（store::FORMAT）
     ├── .lock                 跨进程写锁
     ├── history/<id>/         本地自动快照
     ├── history-trash/<id>/   随文档进入回收站的快照
@@ -54,25 +54,26 @@ Quiet.md/
 
 `createdAt` / `updatedAt` 写成 RFC 3339；读取也兼容 Unix 秒。`options` 可选，保存 `pinned`、`starred`、`order`、`root_order`、`width`、`catalogue_closed`、`reading`、`info`、`refs_hidden`，缺省值沿用 `Meta`。未知字段保留，例如 `sourcePath`。同级显示顺序由 `Meta::place()` 和顺序字段决定，JSON 数组按 ID 排序以减少 Git 差异。
 
-`trash` 保存删除时间 `deletedAt`、原父级 `folderId` 和分组 `rootId`。有 `filename` 的条目是文章，没有的是虚拟文件夹。回收站内可以逐层打开文件夹、只读查看文章及其本地快照与 Git 历史；编辑正文或恢复历史版本前须先恢复文章。恢复时原父级不存在则放在顶层；恢复整个文件夹时先恢复父级，再恢复子级。回收站文章的正文仍在 `notes/<UUID>.xml|md`；移入回收站和恢复只更新 JSON，正文路径、字节及修改时间不变。扫描 `notes/` 时同时排除清单中的活动文章和回收站文章，避免重新导入。不读取或迁移旧版 `.quiet/trash/` 中的正文，旧数据由用户手动处理。回收站状态及正文均受 Git 管理，文件一直保留，不提供清空、彻底删除或自动过期清理。
+`trash` 保存删除时间 `deletedAt`、原父级 `folderId` 和分组 `rootId`。有 `filename` 的条目是文章，没有的是虚拟文件夹。回收站内可以逐层打开文件夹、只读查看文章及其本地快照与 Git 历史；编辑正文或恢复历史版本前须先恢复文章。恢复时原父级不存在则放在顶层；恢复整个文件夹时先恢复父级，再恢复子级。回收站文章的正文仍在 `Notes/<UUID>.xml|md`；移入回收站和恢复只更新 JSON，正文路径、字节及修改时间不变。扫描 `Notes/` 时同时排除清单中的活动文章和回收站文章，避免重新导入。不读取或迁移旧版 `.quiet/trash/` 中的正文，旧数据由用户手动处理。回收站状态及正文均受 Git 管理，文件一直保留，不提供清空、彻底删除或自动过期清理。
 
-清单是标题和层级的唯一来源，应与正文、资源一起备份。正文缺失时保留条目并在打开时报告错误，不因一次扫描丢掉元数据。只扫描 `notes/` 直属的 `.xml` / `.md`；手工放入的正文转换为 UUID 文件名并加到顶层。导入文件夹通过清单建立虚拟层级，不在磁盘重建该目录树。
+清单是标题和层级的唯一来源，应与正文、资源一起备份。正文缺失时保留条目并在打开时报告错误，不因一次扫描丢掉元数据。只扫描 `Notes/` 直属的 `.xml` / `.md`；手工放入的正文转换为 UUID 文件名并加到顶层。导入文件夹通过清单建立虚拟层级，不在磁盘重建该目录树。
 
 ### 链接与图片
 
 - 文档链接使用相对于正文文件的路径：XML 的 `<cite type="doc" href="<uuid>.xml">`，以及 Markdown 标准链接。读入转换成运行期 ID，写出再转为路径；虚拟层级改变不影响链接。兼容旧 `doc-id`。
-- XML 的图片、附件和画板可以用相对于文档库根目录的路径（`Image/…`、`Files/…`、`Drawing/…`）；Markdown 图片相对于正文文件（`../Image/…`）。附件缩略图缓存在 `.quiet/thumbs/`。
+- XML 的图片、附件和画板可以用相对于文档库根目录的路径（`Images/…`、`Files/…`、`Drawings/…`）；Markdown 图片相对于正文文件（`../Images/…`）。附件缩略图缓存在 `.quiet/thumbs/`。
 - 最近打开时间、窗口状态、本机文件路径和缓存属于本机应用数据，不进共享清单。
 
 ### 迁移与可靠性
 
-- `Store::open` 将 FORMAT 4/5 的物理文件夹库转换为 FORMAT 9；`Store::open_at` 仍能打开旧布局供兼容和迁移使用。FORMAT 3 及更早的布局沿用原有迁移判断和同步盘确认流程，再转换为 9。FORMAT 6 库不自动升级，需用户手动整理旧版回收站并更新格式标记；FORMAT 4/5 库如仍有回收站条目，也须先手动处理。
+- FORMAT 9 和 10 的库会在打开时把 `Image/` 和 `Drawing/` 改为 `Images/` 和 `Drawings/`。FORMAT 9 还会把 `notes/` 改为 `Notes/`。改名完成后写入 FORMAT 11 标记。若过程中断，再次打开会继续完成。正文、清单和版本快照保留原样，Quiet.md 仍能解析其中的旧资源路径。
+- `Store::open` 将 FORMAT 4/5 的物理文件夹库转换为 FORMAT 11；`Store::open_at` 仍能打开旧布局供兼容和迁移使用。FORMAT 3 及更早的布局沿用原有迁移判断和同步盘确认流程，再转换为 11。FORMAT 6 库不自动升级，需用户手动整理旧版回收站并更新格式标记；FORMAT 4/5 库如仍有回收站条目，也须先手动处理。
 - FORMAT 7 和 FORMAT 8 文档库已停止支持。
 - 先把原正文和索引复制到 `.quiet/before-virtual-6-<uuid>/`，再发布集中正文、清单和格式标记。转换会重写 XML 文档链接，以及 Markdown 链接、图片和引用定义；代码文本与 front matter 保留。
 - `.quiet/virtual-migration.json` 记录未完成的转换。重开时在写锁下恢复：已发布虚拟文件夹清单和格式标记则完成清理，否则恢复原文件和标记。只删除已备份、已迁移的旧正文及空目录，不删除其他文件；备份不会自动清除。
 - 删除、恢复直接原子更新 `quiet.json`，正文不参与文件移动，无需文件移动事务或恢复日志。
-- 文件先写临时文件、同步，再原子替换。FORMAT 9 的清单缺失、无法读取或校验失败时，打开文档库会报错，已有文件保留原样。旧版本留下的 `quiet.json.bak` 可作为手动恢复时的参考。
-- 清单校验拒绝重复 / 非法 UUID、父级缺失、文件夹循环及任意正文路径。正文路径不接受符号链接。旧版应用遇到 FORMAT 9 会拒绝打开，避免 Git 同步遗漏新目录里的资源。
+- 文件先写临时文件、同步，再原子替换。FORMAT 11 的清单缺失、无法读取或校验失败时，打开文档库会报错，已有文件保留原样。旧版本留下的 `quiet.json.bak` 可作为手动恢复时的参考。
+- 清单校验拒绝重复 / 非法 UUID、父级缺失、文件夹循环及任意正文路径。正文路径不接受符号链接。旧版应用遇到 FORMAT 11 会拒绝打开。
 - 跨实例写操作在 `.quiet/.lock` 下重新读取清单；批量导入在完成时发布清单。保存冲突仍按正文打开时的基线检测。
 
 ## DocxXML
@@ -99,7 +100,7 @@ DocxXML 是飞书 / Lark 的文档 XML 格式。`crates/core/tests/fixtures/all-
 
 DocxXML 里没有、本应用自己加的写法。别的工具不认识这些写法，按上一节的规则它们只会被当作未知元素或属性：
 
-- `<drawing path="Drawing/….excalidraw" width="…" height="…"/>` 表示画板。宽高为预览像素尺寸，每次保存写入一份新图源，文档版本和撤销引用各自的图源。旧画板的可选 `preview="Image/….png"` 属性仍可读取。预览像素缓存于内存。导出含图片的 Markdown 时把 PNG 和图源写到导出位置，PDF 从内存嵌入 PNG。
+- `<drawing path="Drawings/….excalidraw" width="…" height="…"/>` 表示画板。宽高为预览像素尺寸，每次保存写入一份新图源，文档版本和撤销引用各自的图源。旧画板的可选 `preview="Images/….png"` 属性仍可读取。预览像素缓存于内存。导出含图片的 Markdown 时把 PNG 和图源写到导出位置，PDF 从内存嵌入 PNG。
 - `<countdown duration start-time notify color timing/>`：倒计时。云端的倒计时是小组件，不在 DocxXML 里。
 - `<time … is-whole-day="true">`：全天提醒。模型里有 `isWholeDay`，但 XML 里没有这个属性。没有此属性、且时间是本地 23:59 的提醒，也按全天处理。
 - 图片和附件的本地文件写成 `path="…"`（云端用 `token` / `href`）。`<figure><source path=… name=…/></figure>` 表示视频或文件。
@@ -123,8 +124,8 @@ DocxXML 里没有、本应用自己加的写法。别的工具不认识这些写
 - **每行的改动量**：抽屉里每份快照后面跟 `+N 行 −M 行`，由相邻两版的行级 LCS 算出（`diff`），最旧的一份没有前一份可比较，标「最早的一份」。
 - **失败不影响正文**：写快照失败只记一条警告，文档的保存照常成功。
 - **兼容性**：旧版本不读取 `.quiet/history/`，也不会因为多出这个目录而误读索引或正文，所以 `store::FORMAT` 不必加一。旧版本写入含历史的新库时，历史只是停止更新，不会损坏正文。
-- **对应关系**：快照按索引里的运行期 `id` 对应文档，所以重命名、移动文件夹后历史仍在；FORMAT 9 的 ID 与正文文件名固定对应；清单仍必须与正文一起保留，以保住标题和层级。
-- **资源**：`Image/`、`Files/` 和 `Drawing/` 中的文件没有自动清理机制，历史正文仍可引用它们。将来若引入 GC，必须同时扫描所有历史快照、回收站文档与恢复副本。
+- **对应关系**：快照按索引里的运行期 `id` 对应文档，所以重命名、移动文件夹后历史仍在；FORMAT 11 的 ID 与正文文件名固定对应；清单仍必须与正文一起保留，以保住标题和层级。
+- **资源**：`Images/`、`Files/` 和 `Drawings/` 中的文件没有自动清理机制，历史正文仍可引用它们。将来若引入 GC，必须同时扫描所有历史快照、回收站文档与恢复副本。
 
 ## 保存失败与恢复
 

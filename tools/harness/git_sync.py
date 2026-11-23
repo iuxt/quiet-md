@@ -93,7 +93,7 @@ assert metadata["notes"][0]["title"] == "Git regression"
 assert not (lib / "Git regression.xml").exists()
 backups = list((lib / ".quiet").glob("before-virtual-6-*"))
 assert len(backups) == 1 and (backups[0] / "Git regression.xml").read_text() == body
-assert (lib / f"notes/{doc_id}.xml").read_text() == body
+assert (lib / f"Notes/{doc_id}.xml").read_text() == body
 repo = lib / ".git"
 config = (repo / "config").read_text()
 assert "ui-secret-token" not in config and "ui-secret-passphrase" not in config

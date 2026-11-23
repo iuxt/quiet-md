@@ -16,7 +16,7 @@ seed = runpy.run_path(str(here / "git_sync.py"))
 work = Path(tempfile.mkdtemp(prefix="quiet-git-formatting-"))
 source = work / "source"
 shutil.copytree(seed["lib"], source)
-note = Path(f"notes/{seed['doc_id']}.xml")
+note = Path(f"Notes/{seed['doc_id']}.xml")
 body = '''<title>Git regression</title>
 <p><b>Keep this body.</b></p>
 <h2>Formatted comparison</h2>

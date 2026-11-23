@@ -224,7 +224,10 @@ impl<'a> Writer<'a> {
         let raw = Path::new(src.strip_prefix("file://").unwrap_or(src));
         let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
         // Relative sources left after `parse_file` belong to the library.
-        let abs = if raw.is_absolute() { raw.to_path_buf() } else { root.join(raw) };
+        let abs = if raw.is_absolute() || raw.components().next().and_then(|p| p.as_os_str().to_str())
+            .is_some_and(|p| crate::store::resource_dir_at(p, crate::store::FORMAT).is_some()) {
+            crate::store::image_path_in(&root, src).unwrap_or_else(|| root.join(raw))
+        } else { root.join(raw) };
         if let Some(from) = self.opts.relative_from && let Ok(rel) = abs.strip_prefix(&root) {
             let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
             return crate::store::relative(from, &rel);
@@ -234,7 +237,8 @@ impl<'a> Writer<'a> {
             return rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
         }
         // The library's own image or attachment: a copy beside the file.
-        match self.opts.name.filter(|_| crate::store::RESOURCE_DIRS.iter().any(|dir| abs.starts_with(root.join(dir))) && abs.is_file()) {
+        match self.opts.name.filter(|_| abs.strip_prefix(&root).ok().and_then(|p| p.components().next()).and_then(|p| p.as_os_str().to_str())
+            .is_some_and(|dir| crate::store::resource_dir_at(dir, crate::store::FORMAT).is_some()) && abs.is_file()) {
             Some(name) => self.beside(&abs, base, name, image),
             None => abs.to_string_lossy().into_owned(),
         }
@@ -836,10 +840,10 @@ mod tests {
             Block::new(BlockKind::Heading { level: 2, seq_auto: false }, RichText::plain("小节")),
             Block::new(BlockKind::Todo { done: true }, RichText::plain("done")),
             Block::new(BlockKind::Text, eq),
-            Block::new(BlockKind::Image { src_kind: "path".into(), src: "Image/a b.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default()),
+            Block::new(BlockKind::Image { src_kind: "path".into(), src: "Images/a b.png".into(), width: None, height: None, caption: None, crop: None }, RichText::default()),
         ];
         let md = clipboard(Some("T"), &blocks, &root);
-        let img = root.join("Image/a b.png").to_string_lossy().replace(' ', "%20");
+        let img = root.join("Images/a b.png").to_string_lossy().replace(' ', "%20");
         assert!(md.starts_with("# T\n\n## 小节\n\n- [x] done\n\ne: $X_t$\n\n![]("), "{md}");
         assert!(md.contains(&img), "{md}");
         assert!(!clipboard(None, &blocks[..1], &root).contains("# T"));

@@ -1,4 +1,4 @@
-//! Virtual folders, one shared manifest, fixed notes/<UUID> files.
+//! Virtual folders, one shared manifest, fixed Notes/<UUID> files.
 use super::*;
 use crate::manifest::{Deleted, Manifest, FILE, NOTES};
 
@@ -15,15 +15,20 @@ impl Store {
         let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.internal().join(".lock"))?;
         file.lock()?;
         let _lock = WriteLock(Some(file));
-        self.reload_virtual()?;
+        self.reload_virtual(Self::format_at(&self.root).context("无法读取文档库格式标记")?)?;
         self.load_parsed();
         Ok(())
     }
 
-    pub(super) fn reload_virtual(&mut self) -> Result<()> {
+    pub(super) fn reload_virtual(&mut self, format: u32) -> Result<()> {
         let path = crate::git::safe_path(&self.root, FILE)?;
         let manifest = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Manifest::parse(&b))
             .with_context(|| format!("无法载入文档库清单 {}", path.display()))?;
+        if format < FORMAT {
+            virtual_migrate::rename_layout(&self.root, format, FORMAT)?;
+            if self.root.join(".git").is_dir() { crate::git::write_rules(&self.root, FORMAT)?; }
+            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
+        }
         let local = self.read_local();
         self.index = manifest.index();
         for (id, m) in &mut self.index { m.opened = local.opened.get(id).copied().unwrap_or(0); }

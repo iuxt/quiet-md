@@ -10,12 +10,12 @@ here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-trash-ui-"))
 source = work / "source"
 (source / ".quiet").mkdir(parents=True)
-(source / "notes").mkdir()
+(source / "Notes").mkdir()
 folder = "11111111-1111-4111-8111-111111111111"
 nested = "22222222-2222-4222-8222-222222222222"
 xml = "33333333-3333-4333-8333-333333333333"
 md = "44444444-4444-4444-8444-444444444444"
-(source / ".quiet/format.json").write_text('{"format":9}')
+(source / ".quiet/format.json").write_text('{"format":11}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False,
 }))
@@ -29,8 +29,8 @@ trash = [deleted(folder, "Deleted folder"), deleted(nested, "Nested", folder, ro
 (source / "quiet.json").write_text(json.dumps(dict(version=2, folders=[], notes=[], trash=trash)))
 xml_body = "<title>Old stored title</title>\n<p>Current deleted document.</p>\n"
 md_body = "# Markdown in Trash\n\nCurrent Markdown body.\n"
-(source / "notes" / f"{xml}.xml").write_text(xml_body)
-(source / "notes" / f"{md}.md").write_text(md_body)
+(source / "Notes" / f"{xml}.xml").write_text(xml_body)
+(source / "Notes" / f"{md}.md").write_text(md_body)
 old_xml = "<title>Earlier title</title>\n<p>Earlier XML body.</p>\n"
 for id, ext, old in [(xml, "xml", old_xml), (md, "md", "# Earlier Markdown\n\nEarlier Markdown body.\n")]:
     history = source / ".quiet/history-trash" / id
@@ -99,12 +99,12 @@ subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), 
 lib = run / "lib"
 manifest = json.loads((lib / "quiet.json").read_text())
 assert {t["id"] for t in manifest["trash"]} == {folder, nested, xml}, manifest
-assert (lib / "notes" / f"{xml}.xml").read_text() == xml_body, "Viewing Trash must not write the original"
+assert (lib / "Notes" / f"{xml}.xml").read_text() == xml_body, "Viewing Trash must not write the original"
 copies = [n for n in manifest["notes"] if n["id"] != md]
 assert len(copies) == 1 and "Before deletion" in copies[0]["title"], copies
-copy_body = (lib / "notes" / copies[0]["filename"]).read_text()
+copy_body = (lib / "Notes" / copies[0]["filename"]).read_text()
 assert "Earlier XML body." in copy_body and "Current deleted document." not in copy_body, copy_body
-restored = (lib / "notes" / f"{md}.md").read_text().replace("\\_", "_")
+restored = (lib / "Notes" / f"{md}.md").read_text().replace("\\_", "_")
 assert "RESTORED_EDIT" in restored and "SHOULD_NOT_WRITE" not in restored, restored
 for path in lib.rglob("*.xml"):
     assert "SHOULD_NOT_WRITE" not in path.read_text(), path

@@ -15,9 +15,9 @@ note = "33333333-3333-4333-8333-333333333333"
 colors = dict(a=(170, 55, 55), b=(50, 150, 75), c=(50, 90, 180), d=(180, 145, 40))
 source = work / "source"
 (source / ".quiet").mkdir(parents=True)
-(source / "notes").mkdir()
-(source / "Image").mkdir()
-(source / ".quiet/format.json").write_text('{"format":6}')
+(source / "Notes").mkdir()
+(source / "Images").mkdir()
+(source / ".quiet/format.json").write_text('{"format":11}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "theme": "craft", "appearance": "light", "english": True, "quick_hotkey": False,
 }))
@@ -26,11 +26,11 @@ source = work / "source"
     "options": {"opened": 1},
 }], "trash": []}))
 for name, color in colors.items():
-    Image.new("RGB", (240, 120), color).save(source / f"Image/{name}.png")
+    Image.new("RGB", (240, 120), color).save(source / f"Images/{name}.png")
 body = '<title>Image layout</title>\n<p>Arrange images</p>\n'
-body += ''.join(f'<img src="Image/{name}.png" width="240" height="120" align="left"/>\n' for name in colors)
+body += ''.join(f'<img src="Images/{name}.png" width="240" height="120" align="left"/>\n' for name in colors)
 body += '<p>End</p>\n'
-(source / f"notes/{note}.xml").write_text(body)
+(source / f"Notes/{note}.xml").write_text(body)
 
 
 def run(name, lib, steps="", width=1200):
@@ -57,7 +57,7 @@ def boxes(folder, frame="after", width=1200):
 
 
 def layout(folder):
-    xml = (folder / "lib" / f"notes/{note}.xml").read_text()
+    xml = (folder / "lib" / f"Notes/{note}.xml").read_text()
     doc = ET.fromstring("<doc>" + xml + "</doc>")
 
     def node(b):
@@ -71,7 +71,7 @@ def layout(folder):
         return b.tag
 
     tree = [node(b) for b in doc if b.tag in ("img", "grid")]
-    assert sorted(b.attrib["src"] for b in doc.findall(".//img")) == [f"Image/{n}.png" for n in colors]
+    assert sorted(b.attrib["src"] for b in doc.findall(".//img")) == [f"Images/{n}.png" for n in colors]
     return tree
 
 
