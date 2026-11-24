@@ -607,12 +607,13 @@ impl DrawingEditor {
     pub(super) fn preview_scene(&self) -> Option<Scene> {
         match &self.gesture {
             Some(Gesture::Move { delta, .. }) if delta.length() > MOVE_THRESHOLD => {}
-            Some(Gesture::Crop { .. } | Gesture::CropPan { .. } | Gesture::Label { .. } | Gesture::Endpoint { .. } | Gesture::Vertex { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. }) => {}
+            Some(Gesture::Label { start, .. }) if self.label_dragged(*start) => {}
+            Some(Gesture::Crop { .. } | Gesture::CropPan { .. } | Gesture::Endpoint { .. } | Gesture::Vertex { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. }) => {}
             _ => return None,
         }
         let mut doc = self.doc.scene.clone();
         match &self.gesture {
-            Some(Gesture::Label { index,position,.. }) => place_label(&mut doc,*index,*position),
+            Some(Gesture::Label { index, path, offset, .. }) => place_label(&mut doc, *index, project_label(path, self.pointer + *offset)),
             Some(Gesture::CropPan { index,delta,.. }) => pan_crop(&mut doc.elements[*index],*delta),
             Some(Gesture::Crop { start, rect, index, .. }) => crop_image(&mut doc.elements[*index], *start, *rect, self.image_dimensions(*index)),
             Some(Gesture::Endpoint { index, endpoint, start, end, .. }) if start.distance(*end) > 0.5 => move_endpoint_binding(&mut doc, *index, *endpoint, *end, self.arrow_snap(!self.binding_disabled)),

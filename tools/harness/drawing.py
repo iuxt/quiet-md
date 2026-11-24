@@ -78,6 +78,41 @@ def live(scene, kind=None):
 
 arrow = [element("arrow", "arrow", 100, 100, 400, 200, points=[[0, 0], [400, 200]],
                  startBinding=None, endBinding=None, startArrowhead=None, endArrowhead="arrow", elbowed=False)]
+labelled_arrow = [dict(arrow[0], height=0, points=[[0, 0], [400, 0]], boundElements=[dict(id="label", type="text")]),
+                  dict(shapes[-1], x=270, y=87.5, containerId="arrow")]
+# Move once before comparing screenshots so Save and Undo are enabled in both.
+scene = run("drag-arrow-label", """click 480 499
+pointer drag 600 499 660 499
+pointer down 675 499
+pointer dragto 735 499
+shot dragging
+pointer up 735 499
+shot settled
+""", labelled_arrow)
+label, = live(scene, "text")
+connection, = live(scene, "arrow")
+assert connection["points"] == [[0, 0], [400, 0]]
+assert label["containerId"] == connection["id"] and math.isclose(label["labelPosition"], 0.8), label
+assert math.isclose(label["x"] + label["width"] / 2, 420)
+shots = work / "drag-arrow-label"
+assert (shots / "dragging.png").read_bytes() == (shots / "settled.png").read_bytes()
+
+labelled_line = [dict(line[0], height=0, angle=math.pi / 2, strokeStyle="dashed", points=[[0, 0], [400, 0]],
+                      boundElements=[dict(id="label", type="text")]),
+                 dict(labelled_arrow[1], containerId="line")]
+scene = run("drag-line-label-directly", """pointer down 600 511
+pointer dragto 600 571
+pointer up 600 611
+key cmd-z
+key cmd-shift-z
+""", labelled_line)
+label, = live(scene, "text")
+connector, = live(scene, "line")
+assert (connector["x"], connector["y"]) == (100, 100)
+assert connector["points"] == [[0, 0], [400, 0]] and connector["angle"] == math.pi / 2
+assert label["containerId"] == connector["id"] and math.isclose(label["labelPosition"], 0.75), label
+assert math.isclose(label["x"] + label["width"] / 2, 300) and math.isclose(label["y"] + label["height"] / 2, 200)
+
 scene = run("arrow-endpoints", "click 600 499\nwait 100\nshot arrow-selected\ndrag 800 599 900 649\ndrag 400 399 450 349\npointer down 562 424\npointer dragto 587 444\nshot arrow-moving\npointer up 587 444\n", arrow)
 assert (live(scene)[0]["x"], live(scene)[0]["y"]) == (175, 70)
 assert live(scene)[0]["points"] == [[0, 0], [450, 300]]

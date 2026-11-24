@@ -9,12 +9,16 @@ impl Store {
     pub(super) fn initialize_library_git(&mut self) -> Result<()> {
         let path = self.root.join(".git");
         let _lock = self.begin_write()?;
-        match path.symlink_metadata() {
-            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => crate::git::update_internal_ignore(&self.root),
-            Ok(_) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => crate::git::LibraryRepo::init(&self.root).map(|_| ()),
-            Err(e) => Err(e.into()),
-        }
+        let repo = match path.symlink_metadata() {
+            Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() => {
+                crate::git::update_internal_ignore(&self.root)?;
+                crate::git::LibraryRepo::open(&self.root)?
+            },
+            Ok(_) => return Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => crate::git::LibraryRepo::init(&self.root)?,
+            Err(e) => return Err(e.into()),
+        };
+        repo.migrate_config()
     }
 
     pub fn git_commit(&mut self, message: &str) -> Result<Option<String>> {

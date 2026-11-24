@@ -299,7 +299,7 @@ fn parsed_cache_path(root: &Path) -> PathBuf {
 /// (builds tested side by side), so this is a short mutex, not a
 /// single-instance guard. Released when the write is done.
 /// `None`: the lock a batch already holds.
-struct WriteLock(Option<std::fs::File>);
+pub(crate) struct WriteLock(Option<std::fs::File>);
 
 impl Drop for WriteLock {
     fn drop(&mut self) { if let Some(f) = &self.0 { let _ = f.unlock(); } }
@@ -344,11 +344,15 @@ static ROOT: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
 /// Write `bytes` to `path` through a temporary file, so a crash leaves
 /// either the old or the new contents.
-pub(crate) fn write_atomic(path: &std::path::Path, bytes: &[u8]) -> Result<()> { write_atomic_then(path, bytes, true) }
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> { write_atomic_then(path, bytes, true, || Ok(())) }
+
+pub(crate) fn write_atomic_after(path: &Path, bytes: &[u8], before_replace: impl FnOnce() -> Result<()>) -> Result<()> {
+    write_atomic_then(path, bytes, true, before_replace)
+}
 
 /// `write_atomic`; without `sync_dir` the folder's entry is left for the
 /// caller to sync (a batch syncs each folder once, before its index).
-fn write_atomic_then(path: &std::path::Path, bytes: &[u8], sync_dir: bool) -> Result<()> {
+fn write_atomic_then(path: &Path, bytes: &[u8], sync_dir: bool, before_replace: impl FnOnce() -> Result<()>) -> Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(format!(".{}.tmp", uuid::Uuid::new_v4()));
     let tmp = PathBuf::from(tmp);
@@ -356,6 +360,7 @@ fn write_atomic_then(path: &std::path::Path, bytes: &[u8], sync_dir: bool) -> Re
         let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes)?;
         file.sync_all()?;
+        before_replace()?;
         std::fs::rename(&tmp, path)?;
         #[cfg(unix)]
         if sync_dir && let Some(parent) = path.parent() { std::fs::File::open(parent)?.sync_all()?; }
@@ -374,7 +379,7 @@ fn reread<T: serde::de::DeserializeOwned>(path: &std::path::Path) -> Option<T> {
 }
 
 /// Atomically replace a JSON file if its contents changed.
-fn save_json<T: Serialize>(path: &Path, v: &T) -> Result<()> {
+pub(crate) fn save_json<T: Serialize>(path: &Path, v: &T) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(v)?;
     if std::fs::read(path).is_ok_and(|old| old == bytes) { return Ok(()); }
     write_atomic(path, &bytes)
@@ -546,7 +551,7 @@ impl Store {
         Ok(store)
     }
 
-    fn lock(root: &Path) -> Result<WriteLock> {
+    pub(crate) fn lock(root: &Path) -> Result<WriteLock> {
         let path = crate::git::safe_path(root, ".quiet/.lock")?;
         std::fs::create_dir_all(path.parent().unwrap())?;
         let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
@@ -824,7 +829,7 @@ impl Store {
     /// Write a document's file; in a batch its folder is synced at the end.
     fn write_file(&self, path: &Path, bytes: &[u8]) -> Result<()> {
         if self.batch.lock.is_none() { return write_atomic(path, bytes); }
-        write_atomic_then(path, bytes, false)?;
+        write_atomic_then(path, bytes, false, || Ok(()))?;
         if let Some(dir) = path.parent() {
             let mut dirs = self.batch.dirs.borrow_mut();
             if !dirs.iter().any(|d| d == dir) { dirs.push(dir.to_path_buf()); }

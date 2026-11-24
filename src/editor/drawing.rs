@@ -172,7 +172,7 @@ enum Gesture {
     Text { start: World, end: World, target: TextTarget },
     Laser,
     Lasso { path: Vec<World>, previous: Vec<usize> },
-    Label { index: usize, path: Vec<World>, position: f64, start: World },
+    Label { index: usize, line: usize, path: Vec<World>, start: World, offset: World },
     CropPan { index: usize, pointer: World, delta: World },
     Crop { pointer: World, corner: usize, start: scene::bounds::Bounds, rect: scene::bounds::Bounds, index: usize },
     Box { start: World, end: World, previous: Vec<usize>, deep: bool },
@@ -611,6 +611,20 @@ impl DrawingEditor {
             if !t.base.is_deleted && t.container_id.as_deref() == Some(shape.id())))
     }
 
+    fn start_label_drag(&mut self, line: usize, index: usize, start: World) -> bool {
+        let e = &self.doc.scene.elements[line];
+        let label = &self.doc.scene.elements[index];
+        let Some(points) = linear_points(e) else { return false };
+        if e.base().locked || label.base().locked { return false; }
+        // Bound text is laid out on the connector's points, before stroke styling.
+        let pivot = element_center(e);
+        let path = points.iter().map(|p| p.rotate(e.base().angle, pivot)).collect();
+        self.gesture = Some(Gesture::Label { index, line, path, start, offset: element_center(label) - start });
+        true
+    }
+
+    fn label_dragged(&self, start: World) -> bool { start.distance(self.pointer) * self.zoom > 1. }
+
     fn down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.discard || self.reset_confirmation { return; }
         if self.fit { self.fit_view(); }
@@ -642,12 +656,11 @@ impl DrawingEditor {
                 }
                 self.crop = None;
             }
-            if let Some(i) = self.selected() && linear_points(&self.doc.scene.elements[i]).is_some()
+            if event.click_count == 1 && let Some(i) = self.selected() && self.doc.scene.elements[i].is_linear()
                 && let Some(index) = self.bound_text_index(&self.doc.scene.elements[i])
-                && scene::collision::hit_test_rectangle(&self.doc.scene.elements[index],p) && event.click_count == 1 {
-                let e = &self.doc.scene.elements[i]; let path = linear_path(e).into_iter().map(|q| q.rotate(e.base().angle,element_center(e))).collect();
-                let position = if let Element::Text(t) = &self.doc.scene.elements[index] { t.label_position.unwrap_or(0.5) } else { 0.5 };
-                self.gesture = Some(Gesture::Label { index, path, position, start: p }); cx.notify(); return;
+                && scene::collision::hit_test_rectangle(&self.doc.scene.elements[index], p)
+                && self.start_label_drag(i, index, p) {
+                cx.notify(); return;
             }
             let node_index = self.line_edit.or_else(|| self.selected().filter(|i| linear_points(&self.doc.scene.elements[*i]).is_some()));
             if let Some(index) = node_index.filter(|_| self.line_edit.is_some() || !event.modifiers.shift) {
@@ -714,6 +727,10 @@ impl DrawingEditor {
                     else if matches!(self.doc.scene.elements[i], Element::Line(_)) || event.modifiers.secondary() && linear_points(&self.doc.scene.elements[i]).is_some() {
                         self.line_edit = Some(i); self.selected_points.clear();
                     } else { self.edit_selection_text(window, cx); }
+                } else if event.click_count == 1 && !event.modifiers.shift && !event.modifiers.alt && let Some(line) = self.selected()
+                    && matches!(&self.doc.scene.elements[i], Element::Text(t) if t.container_id.as_deref() == Some(self.doc.scene.elements[line].id()))
+                    && self.start_label_drag(line, i, p) {
+                    cx.notify(); return;
                 } else if !event.modifiers.shift && let Some(index) = self.selected()
                     && let Some((endpoint, start)) = endpoint_at(&self.doc.scene.elements[index], p, self.zoom) {
                     self.gesture = Some(Gesture::Endpoint { pointer: p, start, end: start, endpoint, index });
@@ -779,7 +796,7 @@ impl DrawingEditor {
                 if self.laser.last().is_none_or(|(q, _)| q.distance(p) * self.zoom >= 2.) { self.laser.push((p, std::time::Instant::now())); }
                 if self.laser.len() > 1000 { self.laser.remove(0); }
             }
-            Some(Gesture::Label { path, position, .. }) => *position = edit::project_label(path,p),
+            Some(Gesture::Label { .. }) => {}
             Some(Gesture::CropPan { pointer, delta, index }) => {
                 let e = &self.doc.scene.elements[*index]; *delta = p.rotate(-e.base().angle,element_center(e)) - *pointer;
             }
@@ -905,7 +922,10 @@ impl DrawingEditor {
         }
         let mut next = self.doc.scene.clone();
         let changed = match &gesture {
-            Some(Gesture::Label { index, start, position, .. }) if start.distance(self.pointer)*self.zoom > 1. => { edit::place_label(&mut next,*index,*position); touch(&mut next.elements[*index]); true }
+            Some(Gesture::Label { index, path, start, offset, .. }) if self.label_dragged(*start) => {
+                edit::place_label(&mut next, *index, edit::project_label(path, self.pointer + *offset));
+                touch(&mut next.elements[*index]); true
+            }
             Some(Gesture::CropPan { index, delta, .. }) if delta.length() > 0. => { edit::pan_crop(&mut next.elements[*index],*delta); true }
             Some(Gesture::Crop { start, rect, index, .. }) if start != rect => { edit::crop_image(&mut next.elements[*index], *start, *rect, self.image_dimensions(*index)); true }
             Some(Gesture::Endpoint { start, end, endpoint, index, .. }) if start.distance(*end) > 0.5 => {
@@ -977,6 +997,7 @@ impl DrawingEditor {
 
     fn up_at(&mut self, event: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
         let p = self.world(event.position);
+        if matches!(self.gesture, Some(Gesture::Label { .. })) { self.pointer = p; }
         if let Some(Gesture::Text { end, .. }) = &mut self.gesture { *end = p; }
         if let Some(Gesture::Ink { points, pressures, limit }) = &mut self.gesture
             && points.len() < *limit && points.last() != Some(&p) {
@@ -1952,7 +1973,8 @@ impl Render for DrawingEditor {
         if preview.is_some() {
             let lookup = scene.non_deleted().map(|e| (e.id(), e)).collect();
             for (i, e) in scene.elements.iter().enumerate() {
-                if !e.is_deleted() && *e != self.doc.scene.elements[i] { transformed.insert(i, render_element_with_lookup(e, &lookup)); }
+                let label_moved = matches!(self.gesture, Some(Gesture::Label { line, .. }) if line == i);
+                if !e.is_deleted() && (label_moved || *e != self.doc.scene.elements[i]) { transformed.insert(i, render_element_with_lookup(e, &lookup)); }
             }
         }
         let fit = self.fit;
@@ -1981,7 +2003,7 @@ impl Render for DrawingEditor {
             if let Some((size, step)) = grid { paint_grid(bounds, origin, size, step, zoom, window); }
             for (i, (drawables, (extent, pivot, angle))) in art.iter().zip(geometry).enumerate() {
                 if hidden_frames[i] { continue; }
-                if drawables.is_empty() || erasing.contains(&i) || editing_text == Some(i) { continue; }
+                if drawables.is_empty() && !transformed.contains_key(&i) || erasing.contains(&i) || editing_text == Some(i) { continue; }
                 let screen = |p: World| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32));
                 let box_bounds = Bounds::from_corners(screen(World::new(extent.min_x, extent.min_y)), screen(World::new(extent.max_x, extent.max_y)));
                 if copy_preview && selection.contains(&i) {

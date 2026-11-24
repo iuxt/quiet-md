@@ -299,6 +299,7 @@ fn local_push_clone_pull_and_divergence_keep_documents_and_resources_safe() {
     assert!(drawing.source.starts_with("Drawings/"));
     configure(&first.git(), &server.0); first.git().commit("initial").unwrap(); first.git().push(&Auth::default()).unwrap();
     let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
+    assert_eq!(LibraryRepo::settings_at(&second.0).unwrap().remote, server.0.to_str().unwrap());
     let mut b = second.store();
     assert_eq!(b.load(&id).unwrap().title.text, "Original");
     assert_eq!(std::fs::read(second.0.join("Images/test.png")).unwrap(), b"original image");
@@ -307,6 +308,9 @@ fn local_push_clone_pull_and_divergence_keep_documents_and_resources_safe() {
     assert!(!second.0.join("Images/remote/fetch.part").exists());
     assert!(!second.0.join(".quiet/thumbs").exists());
     assert!(second.git().status().unwrap().changes.is_empty());
+    // Built-in sync still uses the configured remote if a Git client edits the mirror.
+    let wrong_remote = server.0.join("missing");
+    for lib in [&first, &second] { lib.git().repo.remote_set_url("origin", wrong_remote.to_str().unwrap()).unwrap(); }
     a.rename(&id, "Remote update").unwrap();
     std::fs::write(first.0.join("Images/test.png"), b"changed image").unwrap();
     first.git().commit("remote").unwrap(); first.git().push(&Auth::default()).unwrap();
@@ -589,22 +593,79 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
 }
 
 #[test]
+fn legacy_git_settings_are_imported_once_and_saved_with_the_mirror() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let repo = lib.git();
+    let remote = "ssh://git@git.example.invalid:2222/notes.git";
+    let endpoint = "https://lfs.example.invalid:8443/notes.git/info/lfs";
+    let ca = "http.https://lfs.example.invalid:8443.sslCAInfo";
+    let ca_slash = "http.https://lfs.example.invalid:8443/.sslCAInfo";
+    repo.repo.remote("origin", remote).unwrap();
+    let mut local = repo.repo.config().unwrap().open_level(git2::ConfigLevel::Local).unwrap();
+    for (key, value) in [("user.name", "Original"), ("user.email", "notes@example.invalid"), ("quiet.sshKey", "~/.ssh/notes"),
+        ("lfs.url", endpoint), (ca, "/tmp/notes-ca.crt"), ("filter.lfs.process", "git-lfs filter-process")] {
+        local.set_str(key, value).unwrap();
+    }
+    let settings = lib.0.join(".quiet/git.json");
+    assert!(!settings.exists());
+    let store = Store::open_library_at(lib.0.clone()).unwrap();
+    assert!(store.warnings.is_empty());
+    let original = std::fs::read(&settings).unwrap();
+    let mut saved = LibraryRepo::settings_at(&lib.0).unwrap();
+    assert_eq!((saved.name.as_str(), saved.remote.as_str(), saved.lfs_url.as_str()), ("Original", remote, endpoint));
+    assert_eq!((saved.ssh_key.as_str(), saved.lfs_ca_info.as_str()), ("~/.ssh/notes", "/tmp/notes-ca.crt"));
+    local.set_str("user.name", "External").unwrap();
+    local.set_str("lfs.url", "https://other.example.invalid/notes.git").unwrap();
+    repo.repo.remote_set_url("origin", "https://other.example.invalid/notes.git").unwrap();
+    let mut store = Store::open_library_at(lib.0.clone()).unwrap();
+    assert_eq!(std::fs::read(&settings).unwrap(), original);
+    assert_eq!(repo.status().unwrap().remote, remote);
+    store.create_from(&doc("A note")).unwrap();
+    store.git_commit("From Quiet.md").unwrap().unwrap();
+    assert_eq!(repo.repo.head().unwrap().peel_to_commit().unwrap().author().name().unwrap(), "Original");
+
+    saved.name = " Updated ".into();
+    let lock = repo.repo.path().join("config.lock");
+    std::fs::write(&lock, "").unwrap();
+    assert!(repo.configure(&saved).is_err());
+    assert_eq!(std::fs::read(&settings).unwrap(), original);
+    std::fs::remove_file(lock).unwrap();
+    repo.configure(&saved).unwrap();
+    assert_eq!(LibraryRepo::settings_at(&lib.0).unwrap().name, "Updated");
+    for (key, expected) in [("user.name", "Updated"), ("remote.origin.url", remote), ("lfs.url", endpoint),
+        (ca, "/tmp/notes-ca.crt"), (ca_slash, "/tmp/notes-ca.crt"), ("filter.lfs.process", "git-lfs filter-process")] {
+        assert_eq!(local.get_string(key).unwrap(), expected);
+    }
+}
+
+#[test]
 fn ssh_and_ca_configuration_round_trip_without_saving_secrets() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let repo = lib.git();
-    // The escaped colon is also accepted in existing Git config files.
     let path = repo.repo.path().join("config");
-    let original = std::fs::read_to_string(&path).unwrap();
-    std::fs::write(&path, format!("{original}\n[http \"https\\://git.example.invalid\"]\n\tsslCAInfo = /tmp/quiet-test-ca.crt\n")).unwrap();
     let mut config = Config { remote: "ssh://git@git.example.invalid:2222/iuxt/notebook.git".into(),
         name: "Test".into(), email: "test@example.invalid".into(), ssh_key: "~/.ssh/notes_key".into(), lfs_ca_info: "/tmp/quiet-test-ca.crt".into(), ..Default::default() };
     repo.configure(&config).unwrap();
+    let bare = "http.https://git.example.invalid.sslCAInfo";
+    let slash = "http.https://git.example.invalid/.sslCAInfo";
+    let bare_section = "[http \"https://git.example.invalid\"]\n\tsslCAInfo = /tmp/quiet-test-ca.crt\n";
+    let slash_section = "[http \"https://git.example.invalid/\"]\n\tsslCAInfo = /tmp/quiet-test-ca.crt\n";
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains(bare_section) && text.contains(slash_section));
+
+    // An unchanged save fills in the missing spelling in an older config, including escaped colons.
+    std::fs::write(&path, text.replace(slash_section, "").replacen(bare_section, &bare_section.replace("https:", "https\\:"), 1)).unwrap();
     let saved = repo.config().unwrap();
     assert_eq!(saved.remote, config.remote); assert_eq!(saved.ssh_key, config.ssh_key); assert_eq!(saved.lfs_ca_info, config.lfs_ca_info);
+    repo.configure(&saved).unwrap();
+    assert!(std::fs::read_to_string(&path).unwrap().contains(slash_section));
+
     config.lfs_ca_info = "/tmp/replacement-ca.crt".into(); repo.configure(&config).unwrap();
-    assert_eq!(repo.config().unwrap().lfs_ca_info, config.lfs_ca_info);
+    let local = repo.repo.config().unwrap().open_level(git2::ConfigLevel::Local).unwrap();
+    for key in [bare, slash] { assert_eq!(local.get_string(key).unwrap(), config.lfs_ca_info); }
     config.ssh_key.clear(); config.lfs_ca_info.clear(); repo.configure(&config).unwrap();
     assert!(repo.config().unwrap().ssh_key.is_empty()); assert!(repo.config().unwrap().lfs_ca_info.is_empty());
+    for key in [bare, slash] { assert_eq!(local.get_string(key).unwrap_err().code(), git2::ErrorCode::NotFound); }
     let text = std::fs::read_to_string(path).unwrap();
     assert!(!text.contains("passphrase") && !text.contains("token"));
 }
@@ -639,7 +700,7 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
     let endpoint = std::env::var("QUIET_MD_TEST_TLS").unwrap();
     let mut tls_config = git2::Config::open(&source.0.join(".git/test-tls-config")).unwrap();
     let tls_check = url::Url::parse(&endpoint).unwrap().join("/tls-check").unwrap();
-    let check_tls = |config: &git2::Config, url: &url::Url| transport::http_agent(config, url.as_str()).unwrap().get(url.as_str()).call();
+    let check_tls = |config: &git2::Config, url: &url::Url| transport::http_agent(&Config::default(), config, url.as_str()).unwrap().get(url.as_str()).call();
     assert!(check_tls(&tls_config, &tls_check).is_err());
     tls_config.set_str("http.sslCAInfo", &config.lfs_ca_info).unwrap();
     check_tls(&tls_config, &tls_check).unwrap();

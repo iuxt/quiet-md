@@ -1,6 +1,6 @@
 //! Library Git settings. All repository and network work runs off the UI thread.
 use crate::{app::{Confirm, Workspace}, editor::core::Core, input::TextField, settings::tr, theme::{self, Theme}, ui};
-use fdl_core::{git::{Auth, Config, LibraryRepo, Status}, store::Store};
+use fdl_core::git::{Auth, Config, LibraryRepo, Status};
 use gpui::{prelude::FluentBuilder, *};
 use std::collections::BTreeSet;
 
@@ -19,7 +19,10 @@ pub(crate) enum Action { Enable, Refresh, Configure, Commit, Push, Pull, StageAl
 impl Workspace {
     pub(crate) fn init_git_panel(&mut self, cx: &mut Context<Self>) {
         if self.git.is_some() { return }
-        let config = LibraryRepo::open(&Store::root_dir()).and_then(|r| r.config()).unwrap_or_default();
+        let (config, error) = match self.store.with(|store| LibraryRepo::settings_at(store.library_root())) {
+            Ok(config) => (config, None),
+            Err(error) => (Config::default(), Some(crate::settings::diagnostic(&format!("{error:#}")))),
+        };
         let auth = Auth::environment();
         let (y, m, d, _, _) = crate::time::civil(crate::time::now());
         let message = format!("{y}-{m:02}-{d:02}");
@@ -35,7 +38,7 @@ impl Workspace {
             ssh_passphrase: field(tr("私钥密码（仅本次会话）", "Key passphrase (this session only)"), &auth.ssh_passphrase, true),
             lfs_ca_info: field(tr("PEM CA 证书路径（可选）", "PEM CA certificate path (optional)"), &config.lfs_ca_info, false),
             message: field(tr("提交说明", "Commit message"), &message, false),
-            status: None, settings_feedback: false, error: None, notice: None,
+            status: None, settings_feedback: error.is_some(), error, notice: None,
             selected: None, preview: None, loading: false, source: false, request: 0,
         });
     }

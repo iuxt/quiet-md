@@ -72,7 +72,7 @@ impl Lfs {
         let ssh_auth = transport::lfs_auth(config, auth, upload)?;
         let base = ssh_auth.href.unwrap_or(transport::lfs_endpoint(config)?);
         let batch_url = format!("{}/objects/batch", base.trim_end_matches('/'));
-        let agent = transport::http_agent(git_config, &batch_url)?;
+        let agent = transport::http_agent(config, git_config, &batch_url)?;
         for chunk in pointers.chunks(100) {
             let mut request = agent.post(&batch_url).header("Accept", "application/vnd.git-lfs+json");
             if !auth.token.is_empty() && !ssh_auth.header.keys().any(|k| k.eq_ignore_ascii_case("authorization")) {
@@ -95,12 +95,12 @@ impl Lfs {
                 if upload {
                     if let Some(action) = object.actions.get("upload") {
                         let bytes = self.read(pointer)?;
-                        let agent = transport::http_agent(git_config, &action.href)?;
+                        let agent = transport::http_agent(config, git_config, &action.href)?;
                         let mut request = agent.put(&action.href).header("Content-Type", "application/octet-stream");
                         for (key, value) in &action.header { request = request.header(key, value); }
                         request.send(&bytes[..]).context("上传 LFS 对象失败")?;
                         if let Some(verify) = object.actions.get("verify") {
-                            let agent = transport::http_agent(git_config, &verify.href)?;
+                            let agent = transport::http_agent(config, git_config, &verify.href)?;
                             let mut request = agent.post(&verify.href).header("Accept", "application/vnd.git-lfs+json");
                             for (key, value) in &verify.header { request = request.header(key, value); }
                             request.send_json(pointer).context("LFS 上传确认失败")?;
@@ -108,7 +108,7 @@ impl Lfs {
                     }
                 } else if self.read(pointer).is_err() {
                     let action = object.actions.get("download").context("LFS 服务器未提供下载地址")?;
-                    let agent = transport::http_agent(git_config, &action.href)?;
+                    let agent = transport::http_agent(config, git_config, &action.href)?;
                     let mut request = agent.get(&action.href);
                     for (key, value) in &action.header { request = request.header(key, value); }
                     let bytes = request.call()?.body_mut().with_config().limit(pointer.size + 1).read_to_vec()?;

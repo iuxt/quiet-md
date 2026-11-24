@@ -1,7 +1,7 @@
 //! Embedded Git for libraries. No Git executable, hooks or credential helpers.
 use anyhow::{Context, Result, ensure};
 use git2::{Index, IndexEntry, IndexTime, Oid, Repository, Signature};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}};
 use crate::manifest::{Manifest, NOTES};
 use crate::store::{INTERNAL, RESOURCE_DIRS, Store};
@@ -9,6 +9,7 @@ use crate::store::{INTERNAL, RESOURCE_DIRS, Store};
 mod lfs;
 mod transport;
 mod changes;
+mod settings;
 mod staging;
 pub use changes::ChangePreview;
 pub use lfs::Pointer;
@@ -82,8 +83,13 @@ impl Auth {
     } }
 }
 
-#[derive(Clone, Default)]
-pub struct Config { pub name: String, pub email: String, pub remote: String, pub branch: String, pub lfs_url: String, pub ssh_key: String, pub lfs_ca_info: String }
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Config {
+    pub name: String, pub email: String, pub remote: String,
+    #[serde(skip)] pub branch: String,
+    pub lfs_url: String, pub ssh_key: String, pub lfs_ca_info: String,
+}
 #[derive(Clone, Debug)]
 pub struct Change { pub path: String, pub kind: char, pub staged: bool, pub unstaged: bool, pub blank_only: bool }
 #[derive(Clone, Debug, Default)]
@@ -133,7 +139,7 @@ impl LibraryRepo {
         let repo = Self::init(root)?;
         repo.configure(config)?;
         {
-            let mut origin = repo.repo.find_remote("origin")?;
+            let mut origin = repo.remote(config)?;
             let connection = origin.connect_auth(git2::Direction::Fetch, Some(callbacks(auth, config)), None)?;
             if let Ok(branch) = connection.default_branch() && let Ok(branch) = branch.as_str() { repo.repo.set_head(branch)?; }
         }
@@ -147,48 +153,6 @@ impl LibraryRepo {
         let root = root.canonicalize()?;
         ensure!(repo.workdir().and_then(|p| p.canonicalize().ok()).as_ref() == Some(&root), "Git 仓库根目录与文档库不一致");
         Ok(Self { root, repo })
-    }
-
-    pub fn config(&self) -> Result<Config> {
-        let config = self.repo.config()?;
-        let mut result = Config {
-            name: config.get_string("user.name").unwrap_or_default(), email: config.get_string("user.email").unwrap_or_default(),
-            remote: self.repo.find_remote("origin").ok().and_then(|r| r.url().ok().map(str::to_string)).unwrap_or_default(),
-            branch: self.repo.head().ok().and_then(|h| h.shorthand().ok().map(str::to_string))
-                .or_else(|| self.repo.find_reference("HEAD").ok().and_then(|h| h.symbolic_target().ok().flatten().and_then(|s| s.strip_prefix("refs/heads/")).map(str::to_string)))
-                .unwrap_or_else(|| "main".into()),
-            lfs_url: config.get_string("lfs.url").unwrap_or_default(),
-            ssh_key: config.get_string("quiet.sshKey").unwrap_or_default(),
-            lfs_ca_info: String::new(),
-        };
-        if let Ok(endpoint) = transport::lfs_endpoint(&result) {
-            result.lfs_ca_info = transport::ca_info(&config, &endpoint)?.map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        }
-        Ok(result)
-    }
-
-    pub fn configure(&self, config: &Config) -> Result<()> {
-        if !config.remote.is_empty() { validate_remote(&config.remote)?; }
-        if !config.lfs_url.is_empty() { http_url(&config.lfs_url)?; }
-        let previous = self.config()?;
-        let mut local = self.repo.config()?.open_level(git2::ConfigLevel::Local)?;
-        if config.ssh_key.is_empty() { let _ = local.remove("quiet.sshKey"); } else { local.set_str("quiet.sshKey", &config.ssh_key)?; }
-        if (config.lfs_ca_info != previous.lfs_ca_info || config.remote != previous.remote || config.lfs_url != previous.lfs_url)
-            && let Ok(endpoint) = transport::lfs_endpoint(config) {
-            let url = url::Url::parse(&endpoint)?;
-            let key = if config.remote == previous.remote && config.lfs_url == previous.lfs_url {
-                transport::ca_info_key(&self.repo.config()?, &endpoint)?
-            } else { None }.unwrap_or_else(|| format!("http.{}.sslCAInfo", url.origin().ascii_serialization()));
-            if config.lfs_ca_info.is_empty() { let _ = local.remove(&key); } else { local.set_str(&key, &config.lfs_ca_info)?; }
-        }
-        local.set_str("user.name", config.name.trim())?;
-        local.set_str("user.email", config.email.trim())?;
-        if config.lfs_url.is_empty() { let _ = local.remove("lfs.url"); } else { local.set_str("lfs.url", &config.lfs_url)?; }
-        if config.remote.is_empty() {
-            if self.repo.find_remote("origin").is_ok() { self.repo.remote_delete("origin")?; }
-        } else if self.repo.find_remote("origin").is_ok() { self.repo.remote_set_url("origin", &config.remote)?; }
-        else { self.repo.remote("origin", &config.remote)?; }
-        Ok(())
     }
 
     fn files(&self) -> Result<BTreeSet<String>> {
@@ -327,7 +291,7 @@ impl LibraryRepo {
         validate_tree(&self.repo, &tree_files(&self.repo, &head)?)?;
         let pointers = self.pointers(Some(commit.id()), &head)?;
         lfs::Lfs::new(self.repo.path()).transfer(&config, &self.repo.config()?, &pointers, true, auth)?;
-        let mut remote = self.repo.find_remote("origin")?;
+        let mut remote = self.remote(&config)?;
         let mut options = git2::PushOptions::new(); options.remote_callbacks(callbacks(auth, &config));
         remote.push(&[&format!("{}:refs/heads/{}", commit.id(), config.branch)], Some(&mut options))?;
         Ok(())
@@ -337,7 +301,7 @@ impl LibraryRepo {
     pub fn pull(&self, auth: &Auth) -> Result<bool> {
         ensure!(self.ready_to_pull()?, "请先提交本地变更，再拉取远端版本");
         let config = self.config()?; validate_remote(&config.remote)?;
-        let mut remote = self.repo.find_remote("origin")?;
+        let mut remote = self.remote(&config)?;
         let mut options = git2::FetchOptions::new(); options.remote_callbacks(callbacks(auth, &config));
         remote.fetch(&[&format!("refs/heads/{}:refs/remotes/origin/{}", config.branch, config.branch)], Some(&mut options), None)?;
         let target = self.repo.find_reference(&format!("refs/remotes/origin/{}", config.branch))?.peel_to_commit()?;

@@ -6,23 +6,25 @@ Git 由 `git2` 和编入应用的 libgit2 实现；图片和附件由应用实�
 
 ## 使用
 
-1. 如需设置提交作者，填写名称和邮箱后点击「保存配置」。应用可沿用已有 Git 作者配置。需要同步时另填远端仓库地址。
+1. 如需设置提交作者，填写名称和邮箱。需要同步时另填远端仓库地址，然后点击「保存配置」。
 2. HTTPS 远端认证填写用户名和访问令牌。令牌显示为掩码，仅在本次窗口会话中保留，不写进笔记库、JSON 元数据或 Git 配置。也可通过 `QUIET_MD_GIT_USERNAME` / `QUIET_MD_GIT_TOKEN` 提供。
 3. 写完文章后，打开侧栏「Git 变更」，确认提交说明并点击「提交本地变更」或工具栏的提交按钮；提交说明默认填写当天日期。操作前保存所有窗口中的文章。有可见的已暂存变更时只提交暂存区，否则提交整个文档库。
 4. 「推送」先上传所提交历史引用的 LFS 对象，成功后再推送 Git 引用。「拉取」只允许快进；本地有未提交改动或历史已经分叉时停止，不自动丢弃或合并文章。
 5. 在另一台电脑填写远端后使用「克隆到空文件夹…」，完成后按应用原有的切换文档库流程打开。克隆会读取远端默认分支，并下载文章历史引用的 LFS 对象。
 
+每个文档库的 `.quiet/git.json` 保存 Quiet.md 使用的 Git 作者、远端、LFS 地址、SSH 私钥路径和 LFS CA 路径。首次打开旧文档库时，应用从已有 Git 配置导入这些设置。点「保存配置」时，会同时更新 `.git/config` 中供系统 Git 和 Git LFS 使用的配置项。应用内的设置和同步操作以 `.quiet/git.json` 为准，当前分支仍从 Git 的 `HEAD` 读取。
+
 远端支持 HTTPS、SSH（`ssh://git@host:2222/team/notes.git` 或 `git@host:team/notes.git`）和独立本地仓库路径（也支持 `file://`）；回环地址的 HTTP 可用于本地服务。当前不支持系统凭据助手、自动提交、定时拉取或分叉历史合并。可选 LFS 地址用于服务商单独部署的 LFS 端点。没有上传动作的 LFS 对象表示服务器已持有；提供 verify 动作时，上传后执行确认。
 
 ## SSH 私钥与 LFS CA
 
-设置中的「SSH 私钥路径」可填写自定义私钥（支持 `~/`），路径保存在本机仓库的 `quiet.sshKey` 中；也可通过 `QUIET_MD_GIT_SSH_KEY` 提供。留空时使用 SSH agent。加密私钥的密码在「私钥密码」中填写，或通过 `QUIET_MD_GIT_SSH_PASSPHRASE` 提供；密码与访问令牌一样只在内存中保留。SSH URL 中的用户名优先，未指定时使用 `git`。
+设置中的「SSH 私钥路径」可填写自定义私钥（支持 `~/`），保存时也写入本机仓库的 `quiet.sshKey`。也可通过 `QUIET_MD_GIT_SSH_KEY` 提供路径，两处都为空时使用 SSH agent。加密私钥的密码在「私钥密码」中填写，或通过 `QUIET_MD_GIT_SSH_PASSPHRASE` 提供；密码与访问令牌一样只在内存中保留。SSH URL 中的用户名优先，未指定时使用 `git`。
 
 Git 与 LFS 的 SSH 连接都会核对 `~/.ssh/known_hosts`，不自动接受未知或已变更的主机密钥。使用非标准端口时，记录为 `[host]:2222`。可用 `QUIET_MD_GIT_KNOWN_HOSTS` 指定其他已核对的 known_hosts 文件。目前不读取 `~/.ssh/config` 的 Host 别名、IdentityFile 或代理配置，请在远端地址中填写实际主机与端口。
 
 SSH 仓库的 LFS 默认通过 SSH 执行远端 `git-lfs-authenticate <仓库路径> upload|download`，再使用服务器返回的 HTTPS 地址与临时认证头进行 Batch 请求；SSH 端口不会当成 HTTPS 端口。服务器明确表示命令不存在时，回退到推导的 HTTPS LFS 地址，可填写访问令牌。设置显式 LFS 地址时，使用该地址与访问令牌认证。
 
-LFS 的自签证书使用 PEM CA 文件，保持证书链与主机名校验。可以在设置中填写「LFS CA 证书」，也可直接沿用 `.git/config` 或全局 Git 配置中的 `http.sslCAInfo` / `http.<URL>.sslCAInfo`。设置页首次保存 CA 时按 LFS 主机（含 HTTPS 端口）写入标准 HTTP 配置。每个 Batch、上传、下载与 verify 地址分别匹配 CA，地址限定配置优先于全局默认，更具体的主机、路径优先。不同存储域名需分别配置自己的 CA。
+LFS 的自签证书使用 PEM CA 文件，保持证书链与主机名校验。设置中的「LFS CA 证书」用于 LFS 地址的主机和 HTTPS 端口。保存时，应用在 `.git/config` 中同时写入带尾部 `/` 和不带尾部 `/` 的 HTTP 小节。如果 Batch、上传、下载或 verify 地址使用其他主机或端口，应用仍会按该请求地址匹配 Git 配置中的 `http.sslCAInfo` / `http.<URL>.sslCAInfo`。
 
 例如下面的本机配置可使用 SSH 2222 端口同步 Git，并让 LFS 信任该服务的 CA：
 
@@ -33,6 +35,8 @@ LFS 的自签证书使用 PEM CA 文件，保持证书链与主机名校验。�
 [quiet]
     sshKey = /path/to/your/private_key
 [http "https://git.example.com"]
+    sslCAInfo = /path/to/ca.crt
+[http "https://git.example.com/"]
     sslCAInfo = /path/to/ca.crt
 ```
 

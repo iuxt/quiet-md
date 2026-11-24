@@ -80,8 +80,11 @@ pub(super) fn check_host(session: &ssh2::Session, host: &str, port: u16, key: &[
 
 pub(super) fn ssh_key(configured: &str) -> Option<PathBuf> {
     let key = if configured.is_empty() { std::env::var("QUIET_MD_GIT_SSH_KEY").unwrap_or_default() } else { configured.to_string() };
-    if key.is_empty() { return None }
-    Some(if let Some(path) = key.strip_prefix("~/") { dirs::home_dir().unwrap_or_default().join(path) } else { PathBuf::from(key) })
+    (!key.is_empty()).then(|| expand_home(&key))
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if let Some(path) = path.strip_prefix("~/") { dirs::home_dir().unwrap_or_default().join(path) } else { PathBuf::from(path) }
 }
 
 #[derive(Default, Deserialize)]
@@ -97,6 +100,10 @@ pub(super) fn lfs_endpoint(config: &Config) -> Result<String> {
     Ok(format!("{}.git/info/lfs", remote.trim_end_matches('/').trim_end_matches(".git")))
 }
 
+pub(super) fn lfs_origin(config: &Config) -> Result<url::Origin> {
+    Ok(url::Url::parse(&lfs_endpoint(config)?)?.origin())
+}
+
 pub(super) fn lfs_auth(config: &Config, auth: &Auth, upload: bool) -> Result<LfsAuth> {
     if config.lfs_url.is_empty() && let Some(ssh) = SshRemote::parse(&config.remote)? {
         return Ok(ssh.authenticate(config, auth, upload)?.unwrap_or_default());
@@ -108,7 +115,7 @@ pub(super) fn ca_info(config: &git2::Config, target: &str) -> Result<Option<Path
     ca_info_key(config, target)?.map(|name| config.get_path(&name).map_err(Into::into)).transpose()
 }
 
-pub(super) fn ca_info_key(config: &git2::Config, target: &str) -> Result<Option<String>> {
+fn ca_info_key(config: &git2::Config, target: &str) -> Result<Option<String>> {
     let target = url::Url::parse(target)?;
     let mut best = None;
     let mut entries = config.entries(None)?;
@@ -136,12 +143,20 @@ fn ca_match(scope: &str, target: &url::Url) -> Option<(usize, usize, usize)> {
     Some((host.len() - host.matches('*').count(), path.len(), usize::from(!scope.username().is_empty())))
 }
 
-pub(super) fn http_agent(config: &git2::Config, target: &str) -> Result<ureq::Agent> {
+fn request_ca(config: &Config, git: &git2::Config, target: &str) -> Result<Option<PathBuf>> {
+    let origin = url::Url::parse(target)?.origin();
+    if lfs_origin(config).is_ok_and(|configured| configured == origin) {
+        return Ok((!config.lfs_ca_info.is_empty()).then(|| expand_home(&config.lfs_ca_info)));
+    }
+    ca_info(git, target)
+}
+
+pub(super) fn http_agent(config: &Config, git: &git2::Config, target: &str) -> Result<ureq::Agent> {
     super::http_url(target)?;
     // ureq's default ring provider cannot verify ECDSA-SHA512 certificate signatures.
     let mut tls = ureq::tls::TlsConfig::builder()
         .unversioned_rustls_crypto_provider(rustls::crypto::aws_lc_rs::default_provider().into());
-    if let Some(path) = ca_info(config, target)? {
+    if let Some(path) = request_ca(config, git, target)? {
         let pem = crate::store::read_bounded(&path, 4 << 20).with_context(|| format!("无法读取 LFS CA 证书：{}", path.display()))?;
         let mut certificates = vec![];
         for item in ureq::tls::parse_pem(&pem) {
@@ -191,13 +206,19 @@ mod tests {
             ("https://storage.example.invalid/object", "default.crt")] {
             assert_eq!(ca_info(&config, url).unwrap().unwrap(), PathBuf::from(ca));
         }
+        let target = "https://git.example.invalid/team/repo/info/lfs";
+        let mut saved = Config { lfs_url: target.into(), lfs_ca_info: "app.crt".into(), ..Config::default() };
+        assert_eq!(request_ca(&saved, &config, target).unwrap(), Some(PathBuf::from("app.crt")));
+        assert_eq!(request_ca(&saved, &config, "https://git.example.invalid:8443/object").unwrap(), Some(PathBuf::from("port.crt")));
+        saved.lfs_ca_info.clear();
+        assert!(request_ca(&saved, &config, target).unwrap().is_none());
         config.remove("http.sslCAInfo").unwrap();
         assert!(ca_info(&config, "https://storage.example.invalid/object").unwrap().is_none());
         let missing = root.join("missing.crt"); config.set_str("http.sslCAInfo", missing.to_str().unwrap()).unwrap();
-        assert!(http_agent(&config, "https://git.example.invalid/team/object").is_err());
+        assert!(http_agent(&Config::default(), &config, "https://git.example.invalid/team/object").is_err());
         std::fs::write(root.join("invalid.crt"), "not a PEM certificate").unwrap();
         config.set_str("http.https://git.example.invalid/team.sslCAInfo", root.join("invalid.crt").to_str().unwrap()).unwrap();
-        assert!(http_agent(&config, "https://git.example.invalid/team/object").is_err());
+        assert!(http_agent(&Config::default(), &config, "https://git.example.invalid/team/object").is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
