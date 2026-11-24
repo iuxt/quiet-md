@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read/bump workspace versions, or release the committed version by pushing its Git tag."""
+"""Read/bump workspace versions, or push the version tag for a manual release."""
 import argparse
 from pathlib import Path
 import re

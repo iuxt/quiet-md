@@ -122,24 +122,37 @@ def https_download(url, path, limit):
             stream.write(chunk)
 
 
-def publish(output, assets, release, notes=None, draft=False):
+def remote_tag_commit(tag):
+    ref = f"refs/tags/{tag}"
+    listing = run("git", "ls-remote", "--tags", f"https://github.com/{REPO}.git", ref, ref + "^{}", capture=True)
+    refs = {}
+    for line in listing.splitlines():
+        sha, name = line.split()
+        refs[name] = sha
+    return refs.get(ref + "^{}", refs.get(ref))
+
+
+def publish(output, assets, release, notes=None, draft=False, create_tag=False):
     if shutil.which("gh") is None:
         raise ValueError("Install and authenticate gh before publishing")
     if run("git", "status", "--porcelain", capture=True):
         raise ValueError("Publish from a clean checkout of the release commit")
     tag = f"v{release}"
     commit = run("git", "rev-parse", "HEAD", capture=True)
-    if run("git", "rev-list", "-n", "1", tag, capture=True) != commit:
+    if not create_tag and run("git", "rev-list", "-n", "1", f"refs/tags/{tag}", capture=True) != commit:
         raise ValueError("The release tag must already exist and point at HEAD")
-    if run("gh", "api", f"repos/{REPO}/commits/{tag}", "--jq", ".sha", capture=True) != commit:
-        raise ValueError("The remote release tag must also point at HEAD")
     run(sys.executable, ROOT / "scripts/check.py")
     # Do not update/overwrite an existing release or its assets.
     notes_args = ["--notes", INSTALL_NOTICE + ("\n" + notes.read_text() if notes is not None else ""),
                   *([] if notes is not None else ["--generate-notes"])]
     flags = ["--prerelease=false", "--latest=false"]
-    title = tag
-    run("gh", "release", "create", tag, "--repo", REPO, "--verify-tag", "--draft", "--title", title, *flags, *notes_args)
+    tagged_commit = remote_tag_commit(tag)
+    if tagged_commit is None and create_tag:
+        run("gh", "api", "--method", "POST", f"repos/{REPO}/git/refs", "--silent",
+            "--raw-field", f"ref=refs/tags/{tag}", "--raw-field", f"sha={commit}")
+    elif tagged_commit != commit:
+        raise ValueError("The remote release tag must also point at HEAD")
+    run("gh", "release", "create", tag, "--repo", REPO, "--verify-tag", "--draft", "--title", tag, *flags, *notes_args)
     run("gh", "release", "upload", tag, "--repo", REPO, *assets)
     with tempfile.TemporaryDirectory(prefix="quiet-release-check-") as temp:
         downloaded = Path(temp)
@@ -173,10 +186,13 @@ def main():
     mode.add_argument("--prepare", type=Path, metavar="NEW_DIRECTORY", help="Prepare assets locally without uploading")
     mode.add_argument("--publish", type=Path, metavar="NEW_DIRECTORY", help="Prepare assets, upload a verified draft, then publish")
     parser.add_argument("--draft", action="store_true", help="With --publish, leave the verified release as a draft")
+    parser.add_argument("--create-tag", action="store_true", help="With --publish, create the release tag at HEAD if missing")
     parser.add_argument("--notes", type=Path, help="Release notes file; omit to generate notes with GitHub")
     args = parser.parse_args()
     if args.draft and not args.publish:
         raise ValueError("--draft requires --publish")
+    if args.create_tag and not args.publish:
+        raise ValueError("--create-tag requires --publish")
     release = version()
     items = inventory(args.packages, release)
     if args.dry_run:
@@ -188,7 +204,8 @@ def main():
     assets = prepare(items, output)
     print(f"Prepared {len(assets)} assets in {output}")
     if args.publish:
-        publish(output, assets, release, args.notes.resolve() if args.notes is not None else None, draft=args.draft)
+        publish(output, assets, release, args.notes.resolve() if args.notes is not None else None,
+                draft=args.draft, create_tag=args.create_tag)
 
 
 if __name__ == "__main__":

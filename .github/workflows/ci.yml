@@ -1,7 +1,7 @@
 name: CI
 
 on:
-  # Validation builds are manual; version tags build and publish via release.yml.
+  # Validation builds are manual. VERSION changes on main trigger release.yml.
   workflow_dispatch:
 
 permissions:

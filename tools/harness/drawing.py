@@ -91,6 +91,27 @@ bound = [element("rectangle", "left", 100, 100, 100, 100), element("rectangle", 
                  startBinding=dict(elementId="left", fixedPoint=[1, 0.5], mode="inside"),
                  endBinding=dict(elementId="right", fixedPoint=[0, 0.5], mode="inside"),
                  startArrowhead=None, endArrowhead="arrow", elbowed=False)]
+click_bound = copy.deepcopy(bound)
+click_bound[1].update(backgroundColor="#ffffff", fillStyle="solid")
+# A legacy binding can preserve a visible gap in the imported arrow geometry.
+click_bound[-1].update(width=380, points=[[0, 0], [380, 0]], endBinding=dict(elementId="right", focus=0, gap=20))
+scene = run("bound-shape-click", """pointer down 850 499
+wait 100
+shot pressed
+pointer up 850 499
+wait 100
+shot released
+wait 500
+drag 850 499 900 549
+""", click_bound)
+shots = work / "bound-shape-click"
+assert (shots / "pressed.png").read_bytes() == (shots / "released.png").read_bytes(), "Clicking the target changed the arrow preview"
+target = live(scene, "rectangle")[1]
+connection, = live(scene, "arrow")
+assert (target["x"], target["y"]) == (650, 150)
+assert connection["endBinding"]["elementId"] == target["id"]
+assert connection["x"] + connection["points"][-1][0] == target["x"]
+
 scene = run("bound-arrow-right-end", "click 600 499\nwait 100\nshot before\npointer down 800 499\npointer dragto 850 649\nshot right-moving\npointer up 850 649\n", bound)
 connection = live(scene, "arrow")[0]
 assert (connection["x"], connection["y"]) == (200, 150)

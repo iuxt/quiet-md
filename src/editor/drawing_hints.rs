@@ -40,7 +40,7 @@ impl DrawingEditor {
             Some(Gesture::Resize { .. }) => Some(hint(
                 tr("按住{}保持宽高比例，按住{}从中心缩放", "Hold {} to keep the aspect ratio, or {} to resize from the center"), &["Shift", "Alt"])),
             Some(Gesture::Box { .. }) => Some(hint(tr("按住{}再拖框，可选中编组内的元素", "Hold {} before dragging a box to select elements inside groups"), &[COMMAND])),
-            Some(Gesture::Move { delta, .. }) if (self.grid || self.objects_snap) && delta.length() > 0.5 => Some(hint(
+            Some(Gesture::Move { delta, .. }) if (self.grid || self.objects_snap) && delta.length() > MOVE_THRESHOLD => Some(hint(
                 tr("按住{}暂时关闭吸附", "Hold {} to temporarily disable snapping"), &[COMMAND])),
             Some(Gesture::Shape { .. } | Gesture::Endpoint { .. }) if self.tool == Tool::Arrow || matches!(selected, Some(Element::Arrow(_))) => Some(hint(
                 tr("按住{}约束角度，按住{}停用箭头绑定", "Hold {} to constrain the angle, or {} to disable arrow binding"), &["Shift", COMMAND])),
@@ -66,7 +66,7 @@ impl DrawingEditor {
             Tool::Laser => hint(tr("拖动留下临时激光轨迹", "Drag to leave a temporary laser trail"), &[]),
             Tool::Eyedropper => hint(tr("点击元素或画布背景取色", "Click an element or the canvas background to sample its color"), &[]),
             Tool::Bucket => hint(tr("点击图形或多段线围出的区域填色", "Click a shape or an area enclosed by a polyline to fill it"), &[]),
-            Tool::Select if matches!(self.gesture, Some(Gesture::Move { delta, .. }) if delta.length() > 0.5) => return None,
+            Tool::Select if matches!(self.gesture, Some(Gesture::Move { delta, .. }) if delta.length() > MOVE_THRESHOLD) => return None,
             Tool::Select => match selected {
                 None if self.selection.is_empty() => hint(tr("按住{}或{}拖动画布，也可以用抓手工具",
                     "Hold {} or {} and drag to pan, or use the hand tool"), &[tr("鼠标中键", "Middle mouse button"), "Space"]),

@@ -54,17 +54,62 @@ class ReleaseTests(unittest.TestCase):
         notes = self.root / "notes.md"
         notes.write_text("Release notes")
         output = self.root / "prepared"
-        for selected in [None, notes]:
+        for selected, create_tag in [(None, False), (notes, True)]:
             command = ["publish-github-release.py", "--publish", str(output), "--draft"]
             if selected is not None:
                 command.extend(["--notes", str(selected)])
+            if create_tag:
+                command.append("--create-tag")
             command.extend(map(str, self.packages))
             with patch.object(sys, "argv", command), patch.object(release, "prepare", return_value=[]) as prepare, \
                     patch.object(release, "publish") as publish:
                 release.main()
             prepare.assert_called_once()
             publish.assert_called_once_with(output.resolve(), [], self.version,
-                                            selected.resolve() if selected is not None else None, draft=True)
+                                            selected.resolve() if selected is not None else None,
+                                            draft=True, create_tag=create_tag)
+
+    def test_remote_tag_resolves_annotated_tag(self):
+        tag = f"v{self.version}"
+        ref = f"refs/tags/{tag}"
+        with patch.object(release, "run", return_value=f"tag-object\t{ref}\nrelease-commit\t{ref}^{{}}") as run:
+            self.assertEqual(release.remote_tag_commit(tag), "release-commit")
+        run.assert_called_once_with("git", "ls-remote", "--tags", f"https://github.com/{release.REPO}.git",
+                                    ref, ref + "^{}", capture=True)
+
+    def test_automatic_tag_creation_checks_the_commit_and_reuses_a_matching_tag(self):
+        tag = f"v{self.version}"
+        commit = "release-commit"
+        output = self.root / "assets"
+        assets = release.prepare(release.inventory(self.packages, self.version), output)
+        for remote_commit in [None, commit, "different-commit"]:
+            commands = []
+
+            def run(*args, capture=False):
+                commands.append(args)
+                if args == ("git", "rev-parse", "HEAD"):
+                    return commit
+                if args[:3] == ("gh", "release", "download"):
+                    shutil.copytree(output, Path(args[args.index("--dir") + 1]), dirs_exist_ok=True)
+
+            with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
+                    patch.object(release, "remote_tag_commit", return_value=remote_commit):
+                if remote_commit == "different-commit":
+                    with self.assertRaisesRegex(ValueError, "remote release tag"):
+                        release.publish(output, assets, self.version, draft=True, create_tag=True)
+                    self.assertFalse(any(command[0] == "gh" for command in commands))
+                    continue
+                release.publish(output, assets, self.version, draft=True, create_tag=True)
+            create = next(command for command in commands if command[:3] == ("gh", "release", "create"))
+            self.assertIn("--verify-tag", create)
+            tag_writes = [command for command in commands if command[:2] == ("gh", "api")]
+            if remote_commit is None:
+                self.assertEqual(tag_writes, [("gh", "api", "--method", "POST", f"repos/{release.REPO}/git/refs", "--silent",
+                                               "--raw-field", f"ref=refs/tags/{tag}", "--raw-field", f"sha={commit}")])
+                self.assertLess(commands.index((sys.executable, release.ROOT / "scripts/check.py")), commands.index(tag_writes[0]))
+                self.assertLess(commands.index(tag_writes[0]), commands.index(create))
+            else:
+                self.assertEqual(tag_writes, [])
 
     def test_missing_or_corrupt_uploaded_asset_keeps_release_draft(self):
         output = self.root / "assets"
@@ -84,7 +129,8 @@ class ReleaseTests(unittest.TestCase):
                     destination = Path(args[args.index("--dir") + 1])
                     (destination / asset.name).write_text("tampered package")
 
-            with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"):
+            with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
+                    patch.object(release, "remote_tag_commit", return_value="release-commit"):
                 with self.assertRaises(ValueError):
                     release.publish(output, [asset], self.version)
             self.assertTrue(any(c[:3] == ("gh", "release", "create") and "--draft" in c for c in commands))
@@ -147,6 +193,7 @@ class ReleaseTests(unittest.TestCase):
                 shutil.copyfile(output / path.name, path)
 
             with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
+                    patch.object(release, "remote_tag_commit", return_value="release-commit"), \
                     patch.object(release, "https_download", side_effect=download) as public_download:
                 if corrupt:
                     with self.assertRaisesRegex(ValueError, "differs"):
@@ -186,6 +233,7 @@ class ReleaseTests(unittest.TestCase):
                     shutil.copytree(output, Path(args[args.index("--dir") + 1]), dirs_exist_ok=True)
 
             with patch.object(release, "run", side_effect=run), patch.object(release.shutil, "which", return_value="gh"), \
+                    patch.object(release, "remote_tag_commit", return_value="release-commit"), \
                     patch.object(release, "https_download") as download:
                 with self.assertRaisesRegex(ValueError, "public and not a prerelease"):
                     release.publish(output, assets, self.version)

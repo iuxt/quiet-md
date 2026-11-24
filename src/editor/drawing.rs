@@ -166,6 +166,8 @@ enum ExportKind { Source, Png, Svg }
 #[derive(Clone, Copy)]
 enum TextTarget { Free, Existing(usize), Container(usize) }
 
+const MOVE_THRESHOLD: f64 = 0.5;
+
 enum Gesture {
     Text { start: World, end: World, target: TextTarget },
     Laser,
@@ -859,7 +861,7 @@ impl DrawingEditor {
         }
         self.snap_guides.clear();
         if self.objects_snap && !self.grid && !event.modifiers.secondary() && !event.modifiers.shift
-            && let Some(Gesture::Move { delta, .. }) = &self.gesture {
+            && let Some(Gesture::Move { delta, .. }) = &self.gesture && delta.length() > MOVE_THRESHOLD {
             let (snapped, guides) = commands::snap_delta(&self.doc.scene, &self.selection, *delta, 6. / self.zoom);
             if let Some(Gesture::Move { delta, .. }) = &mut self.gesture { *delta = snapped; }
             self.snap_guides = guides;
@@ -912,7 +914,7 @@ impl DrawingEditor {
             Some(Gesture::Vertex { start, delta, indices, insert, index }) if insert.is_some() || delta.length() > 0.5 => {
                 edit::move_vertices(&mut next, *index, indices, *insert, *start, *delta, self.arrow_snap(!self.binding_disabled)); true
             }
-            Some(Gesture::Move { delta, copy, .. }) if delta.length() > 0.5 => {
+            Some(Gesture::Move { delta, copy, .. }) if delta.length() > MOVE_THRESHOLD => {
                 if *copy {
                     let old_len = self.doc.scene.elements.len();
                     self.duplicate_offset(false, cx);
@@ -1936,7 +1938,7 @@ impl Render for DrawingEditor {
             if show_frames { e.base().frame_id.as_deref().and_then(|id| scene.get(id)).map(element_bounds) } else { None }
         }).collect();
         let hidden_frames: Vec<_> = scene.elements.iter().map(|e| !show_frames && matches!(e, Element::Frame(_) | Element::MagicFrame(_))).collect();
-        let copy_preview = matches!(self.gesture, Some(Gesture::Move { copy: true, .. }));
+        let copy_preview = preview.is_some() && matches!(self.gesture, Some(Gesture::Move { copy: true, .. }));
         let originals: Vec<_> = self.doc.scene.elements.iter().map(|e| (element_center(e), e.base().angle)).collect();
         let selection = self.selection.clone();
         let lasso = if let Some(Gesture::Lasso { path, .. }) = &self.gesture { path.clone() } else { Vec::new() };

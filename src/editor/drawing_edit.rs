@@ -605,7 +605,11 @@ impl DrawingEditor {
     }
 
     pub(super) fn preview_scene(&self) -> Option<Scene> {
-        if !matches!(self.gesture, Some(Gesture::Crop { .. } | Gesture::CropPan { .. } | Gesture::Label { .. } | Gesture::Endpoint { .. } | Gesture::Vertex { .. } | Gesture::Move { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. })) { return None; }
+        match &self.gesture {
+            Some(Gesture::Move { delta, .. }) if delta.length() > MOVE_THRESHOLD => {}
+            Some(Gesture::Crop { .. } | Gesture::CropPan { .. } | Gesture::Label { .. } | Gesture::Endpoint { .. } | Gesture::Vertex { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. }) => {}
+            _ => return None,
+        }
         let mut doc = self.doc.scene.clone();
         match &self.gesture {
             Some(Gesture::Label { index,position,.. }) => place_label(&mut doc,*index,*position),

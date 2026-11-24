@@ -2,13 +2,10 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: [VERSION]
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Existing tag at main HEAD, matching Cargo.toml (for example v0.1.13)'
-        required: true
-        type: string
       publish:
         description: 'Publish the stable release as Latest (manual download only)'
         required: true
@@ -18,14 +15,14 @@ on:
 permissions:
   contents: read
 
-# Different versions may build together; publishing is serialized below.
+# Queue version changes while another release is building.
 concurrency:
   group: quiet-md-release-${{ github.ref }}
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   preflight:
-    if: github.repository == 'iuxt/quiet-md' && (github.event_name == 'push' || github.ref == 'refs/heads/main')
+    if: github.repository == 'iuxt/quiet-md' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     outputs:
@@ -34,31 +31,27 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Validate release source and tag
+      - name: Validate release source and version
         id: source
         env:
-          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
-          import importlib.util, os, subprocess
+          import importlib.util, os, subprocess, sys
           spec = importlib.util.spec_from_file_location('release', 'scripts/publish-github-release.py')
           release = importlib.util.module_from_spec(spec)
           spec.loader.exec_module(release)
-          version = release.version()
-          tag = os.environ['RELEASE_TAG']
-          if tag != f'v{version}':
-              raise SystemExit(f'Tag must be v{version}, matching both Cargo.toml files')
+          version = release.run(sys.executable, 'scripts/version.py', capture=True)
+          tag = f'v{version}'
           head = release.run('git', 'rev-parse', 'HEAD', capture=True)
-          if release.run('git', 'rev-parse', 'refs/remotes/origin/main', capture=True) != head:
-              raise SystemExit('The release commit must be main HEAD')
-          if release.run('git', 'rev-list', '-n', '1', tag, capture=True) != head:
-              raise SystemExit('The local release tag must point at main HEAD')
-          if release.run('gh', 'api', f'repos/{release.REPO}/commits/{tag}', '--jq', '.sha', capture=True) != head:
-              raise SystemExit('Push the matching release tag before running this workflow')
+          release.run('git', 'merge-base', '--is-ancestor', head, 'refs/remotes/origin/main')
+          tagged_commit = release.remote_tag_commit(tag)
+          if tagged_commit is not None and tagged_commit != head:
+              raise SystemExit(f'Existing tag {tag} points at a different commit')
           exists = subprocess.run(['gh', 'release', 'view', tag, '--repo', release.REPO], capture_output=True)
           if exists.returncode == 0:
               raise SystemExit('This release already exists; assets are never overwritten')
@@ -174,9 +167,6 @@ jobs:
     needs: [preflight, macos, windows, linux]
     runs-on: macos-15
     timeout-minutes: 90
-    concurrency:
-      group: quiet-md-publish
-      cancel-in-progress: false
     permissions:
       contents: write
     env:
@@ -214,7 +204,7 @@ jobs:
           paths = [list(Path('dist/incoming').rglob(name)) for name in names]
           if any(len(matches) != 1 for matches in paths):
               raise SystemExit('Expected exactly one package for each platform')
-          command = [sys.executable, 'scripts/publish-github-release.py', '--publish', 'dist/github']
+          command = [sys.executable, 'scripts/publish-github-release.py', '--publish', 'dist/github', '--create-tag']
           notes = Path(f'docs/releases/{version}.md')
           if notes.is_file():
               command.extend(['--notes', str(notes)])
