@@ -23,7 +23,7 @@ const SAVE_DELAY: Duration = Duration::from_millis(500);
 const SAVE_MAX_DELAY: Duration = Duration::from_secs(2);
 
 actions!(workspace, [NewDoc, OpenFile, ImportDoc, ImportFolder, ToggleSidebar, FocusSearch, FindInDoc, ReplaceInDoc, OpenSettings, OpenAbout, GoHome, CloseWindow, Quit,
-    ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen]);
+    ReplayOnboarding, HideApp, HideOthers, ShowAll, Minimize, Zoom, ToggleFullScreen, NewTab, CloseTab, NextTab, PreviousTab]);
 
 /// The menu bar, in the interface language.
 pub fn set_menus(cx: &mut App) {
@@ -54,6 +54,8 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action(tr("导入为文档…", "Import as Document…"), ImportDoc),
                 MenuItem::action(tr("导入文件夹…", "Import Folder…"), ImportFolder),
                 MenuItem::separator(),
+                MenuItem::action(tr("新建标签页", "New Tab"), NewTab),
+                MenuItem::action(tr("关闭标签页", "Close Tab"), CloseTab),
                 MenuItem::action(tr("关闭窗口", "Close Window"), CloseWindow),
             ],
         },
@@ -101,6 +103,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-o", OpenFile, None),
         KeyBinding::new("cmd-alt-home", GoHome, None),
         KeyBinding::new("cmd-w", CloseWindow, None),
+        KeyBinding::new("cmd-t", NewTab, Some("Workspace")),
+        KeyBinding::new("cmd-shift-w", CloseTab, Some("Workspace")),
+        KeyBinding::new("ctrl-tab", NextTab, Some("Workspace")),
+        KeyBinding::new("ctrl-shift-tab", PreviousTab, Some("Workspace")),
         KeyBinding::new("cmd-]", ToggleSidebar, None),
         KeyBinding::new("cmd-\\", ToggleSidebar, None),
         KeyBinding::new("cmd-j", FocusSearch, None),
@@ -202,6 +208,7 @@ pub struct RowMenu {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Doc,
+    NewTab,
     Home,
     Folder,
     Trash,
@@ -275,6 +282,7 @@ pub struct Workspace {
     pub store: SharedStore,
     pub entries: Vec<Entry>,
     pub current: Option<String>,
+    pub(crate) tabs: crate::tabs::Tabs,
     pub(crate) trash_document: bool,
     pub(crate) trash_folder: Option<String>,
     pub editor: Option<Entity<Editor>>,
@@ -387,7 +395,7 @@ impl Workspace {
             if !handle.is_active(cx).is_some_and(|yes| yes) || handle.entity(cx).is_ok_and(|e| e.entity_id() == me) { continue }
             let (entries, trash) = (entries.to_vec(), trash.map(<[_]>::to_vec));
             let _ = handle.update(cx, |ws, _, cx| {
-                ws.entries = entries; if let Some(trash) = trash { ws.trash = trash; } ws.sort();
+                ws.entries = entries; if let Some(trash) = trash { ws.trash = trash; } ws.prune_tabs(); ws.sort();
                 cx.notify();
             });
         }
@@ -428,7 +436,7 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     if !this.trash_document && let Some(id) = &this.current { crate::quick_note::used(id, cx); }
-                    if !this.store.file_task_busy() { this.entries = this.store.list(); this.sort(); }
+                    if !this.store.file_task_busy() { this.entries = this.store.list(); this.prune_tabs(); this.sort(); }
                     cx.notify();
                 }
                 else if !this.store.file_task_busy() { this.cancel_home_drag(cx); this.end_folder_drag(true, cx); this.cancel_shortcut_recording(cx); this.flush(cx); }
@@ -443,7 +451,7 @@ impl Workspace {
                     TextFieldEvent::Down => this.move_search_sel(1, cx),
                     TextFieldEvent::Submit => {
                         if let Some(ix) = this.search_sel {
-                            this.pick_search(ix, window, cx)
+                            this.pick_search(ix, false, window, cx)
                         }
                     }
                     TextFieldEvent::Cancel => this.close_search(window, cx),
@@ -485,6 +493,7 @@ impl Workspace {
                     // Not mid-rename: the row under the field would be rebuilt.
                     if w.rename.is_some() || w.move_dlg.is_some() || w.store.file_task_busy() { return false }
                     w.entries = w.store.list();
+                    w.prune_tabs();
                     if w.view == View::Trash { w.trash = w.store.list_trash_in(w.trash_folder.as_deref()); }
                     w.sort();
                     cx.notify();
@@ -529,6 +538,7 @@ impl Workspace {
             store,
             entries,
             current: None,
+            tabs: Default::default(),
             trash_document: false,
             trash_folder: None,
             editor: None,
@@ -591,6 +601,7 @@ impl Workspace {
         };
         ws.sort();
         ws.load_home();
+        window.focus(&ws.focus);
         // An empty library opens on 主页's empty state; only a quick note
         // window starts a document of its own.
         match document.or_else(|| (!quick).then(|| ws.entries.first().map(|e| e.id.clone())).flatten()) {
@@ -625,33 +636,42 @@ impl Workspace {
     /// Show `id`; false when it could not be opened (or the open document
     /// could not be saved first, see [`Self::save_before`]).
     pub fn try_open(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.open_target(id, false, window, cx)
+    }
+
+    pub(crate) fn open_target(&mut self, id: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        use crate::editor::core::Core;
         // A snapshot is on screen: back to the live document before anything
         // else touches the editor.
         if self.history.is_some() { self.close_history(cx); }
-        // 阅读位置: remember where the document being left was, before the
-        // editor is swapped out.
-        self.remember_scroll(cx);
         if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.open_folder(id, window, cx); }
         let trash_meta = self.store.trash_meta(id);
         if trash_meta.as_ref().is_some_and(|m| m.folder.is_some()) { return self.open_trash_folder(Some(id), cx); }
         let trashed = trash_meta.is_some();
-        if self.view != View::Doc {
-            self.view = View::Doc;
-            cx.notify();
-        }
         if self.current.as_deref() == Some(id) && self.trash_document == trashed {
+            self.view = View::Doc;
+            if !self.search_open && let Some(ed) = &self.editor { ed.read(cx).focus(window); }
+            cx.notify();
             return true;
         }
         let target = id.to_string();
         if !self.save_before(cx, move |w, window, cx| {
-            w.open(&target, window, cx);
+            w.open_target(&target, new_tab, window, cx);
         }) {
             return false;
         }
-        let peer = self.document_peer_core(id, window, cx);
-        let shared = peer.is_some();
-        let doc = match if trashed { self.store.load_trash(id) } else { self.store.load_for_edit(id, shared) } {
-            Ok(d) => d,
+        let peer = if trashed { None } else { self.document_peer_core(id, window, cx) };
+        let parked = self.tabs.get(id).filter(|_| !trashed).and_then(|t| t.parked.as_ref());
+        // Keep block IDs stable when a sibling opens this note while all its
+        // other views are parked. Verify the parked body before reusing it.
+        let parked_peer = if !trashed && parked.is_none() && peer.is_none() { Self::parked_document_peer(id, window, cx) } else { None };
+        let loaded = match (parked.or(parked_peer.as_ref()), &peer) {
+            (Some(_), Some(_)) => Ok((None, None)),
+            (Some(tab), None) => self.store.resume_for_edit(id, tab.baseline.as_ref(), &tab.core.doc.title.text).map(|(doc, title)| (doc, Some(title))),
+            (None, _) => (if trashed { self.store.load_trash(id) } else { self.store.load_for_edit(id, peer.is_some()) }).map(|doc| (Some(doc), None)),
+        };
+        let (doc, title) = match loaded {
+            Ok(loaded) => loaded,
             Err(e) => {
                 self.show_toast_kind(ToastKind::Error, &crate::localized_format!("无法打开文档：{}", "Could not open document: {}", crate::settings::diagnostic(&e.to_string())), cx);
                 cx.notify();
@@ -662,8 +682,21 @@ impl Workspace {
         let modified = meta.as_ref().map_or_else(crate::time::now, |m| m.modified);
         let width = meta.as_ref().map(|m| m.width).unwrap_or_default();
         let pinned = meta.as_ref().is_some_and(|m| !m.catalogue_closed);
+        let parked = if trashed { None } else { self.tabs.get_mut(id).and_then(|tab| tab.parked.take()) };
+        let (mut core, top) = if let Some(tab) = parked.or(parked_peer) {
+            let mut core = doc.map_or(tab.core, Core::new);
+            if let Some(title) = title && core.doc.title.text != title { core.receive_file_title(&title); }
+            (core, tab.top)
+        } else {
+            (Core::new(doc.expect("new document was loaded")), self.store.scroll_top(id))
+        };
+        if let Some(peer) = peer && core.doc != peer.doc { Editor::receive_core(&mut core, &peer); }
+        if !self.quick_note && !trashed { self.tabs.select_document(id, new_tab); }
+        self.leave_document(window, cx);
+        self.view = View::Doc;
         let editor = cx.new(|cx| {
-            let mut e = Editor::new(doc, modified, width, window, cx);
+            let mut e = Editor::new(core, modified, width, window, cx);
+            e.restore_top = top;
             e.cat_pinned = pinned;
             e.markdown = meta.as_ref().is_some_and(|m| m.markdown);
             if let Some(m) = &meta {
@@ -674,13 +707,6 @@ impl Workspace {
             e.trashed = trashed;
             e
         });
-        // Reuse the live state, including unsaved edits and undo history.
-        if let Some(core) = peer.filter(|_| !trashed) {
-            editor.update(cx, |e, cx| e.receive_document(&core, cx));
-        }
-        // 阅读位置: back to where this document was left, on its first frame.
-        let top = self.store.scroll_top(id);
-        editor.update(cx, |e, _| e.restore_top = top);
         self.editor_sub = Some(cx.subscribe_in(&editor, window, |this, _, ev: &EditorEvent, window, cx| match ev {
             EditorEvent::Changed => {
                 this.file_history.prefer_files = false;
@@ -753,8 +779,6 @@ impl Workspace {
             && let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
                 e.meta.opened = m.opened;
             }
-        if let Some(previous) = &self.current
-            && self.document_peer_core(previous, window, cx).is_none() { self.store.forget_loaded(previous); }
         self.editor = Some(editor);
         self.current = Some(id.to_string());
         self.trash_document = trashed;
@@ -767,6 +791,29 @@ impl Workspace {
         self.mode_menu = false;
         cx.notify();
         true
+    }
+
+    /// Drop the old view after saving, moving its Core into its tab if kept.
+    pub(crate) fn leave_document(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.remember_scroll(cx);
+        self.editor_sub = None;
+        self.save_task = None;
+        self.dirty_since = None;
+        self.unsaved = false;
+        self.status = SaveStatus::Idle;
+        let trashed = std::mem::take(&mut self.trash_document);
+        let (Some(id), Some(ed)) = (self.current.take(), self.editor.take()) else { return };
+        if !trashed {
+            if let Some(tab) = self.tabs.get_mut(&id) {
+                let baseline = self.store.edit_baseline(&id);
+                let (core, top) = ed.update(cx, |e, _| {
+                    e.core.break_coalescing();
+                    (std::mem::replace(&mut e.core, crate::editor::core::Core::new(Default::default())), e.restore_top.or_else(|| e.scroll_top()))
+                });
+                tab.parked = Some(crate::tabs::ParkedTab { core, top, baseline });
+            }
+            if !self.has_document_peer(&id, window, cx) { self.store.forget_loaded(&id); }
+        }
     }
 
     /// ⌘N / the 文件 menu: create the 快捷新建 type (a fixed one, or the last
@@ -850,24 +897,31 @@ impl Workspace {
                 w.store.receive_tree(writer);
                 drop(task_guard);
                 if w.current.as_ref().is_some_and(|c| done.deleted.contains(c)) {
-                    w.save_task = None;
-                    w.unsaved = false;
-                    w.current = None;
-                    w.editor = None;
-                    w.editor_sub = None;
+                    w.close_history(cx);
+                    if let Some(id) = &w.current { w.tabs.remove_document(id); }
+                    w.leave_document(window, cx);
                 }
                 w.sync_peers(cx, &listed.entries, Some(&listed.trash));
                 w.entries = listed.entries; w.trash = listed.trash;
+                w.prune_tabs();
                 if w.folder_current.as_ref().is_some_and(|id| done.deleted.contains(id)) {
                     w.folder_current = None;
                     if w.view == View::Folder { w.view = View::Home; }
                 }
                 w.row_menu = None;
-                if w.current.is_none() && w.view != View::Folder {
+                if w.current.is_none() && !matches!(w.view, View::Folder | View::NewTab) {
                     let view = w.view;
-                    match w.entries.first().map(|e| e.id.clone()) {
-                        Some(next) => { w.open(&next, window, cx); w.view = view; }
-                        None => w.view = if view == View::Doc { View::Home } else { view },
+                    if w.tabs.selected_is_blank() {
+                        if view == View::Doc { w.show_new_tab_page(window, cx); }
+                    } else {
+                        let next = w.tabs.selected_document().map(str::to_string)
+                            .or_else(|| w.entries.iter().find(|e| e.meta.folder.is_none()).map(|e| e.id.clone()));
+                        if next.is_some_and(|id| w.try_open(&id, window, cx)) {
+                            w.view = view;
+                        } else if view == View::Doc {
+                            w.view = View::Home;
+                            window.focus(&w.focus);
+                        }
                     }
                 }
                 w.remember_file_changes(done.changes, crate::settings::tr("删除", "Delete"));
@@ -917,6 +971,7 @@ impl Workspace {
         if self.drawing_open(cx) { return; }
         self.cancel_shortcut_recording(cx);
         self.close_history(cx);
+        self.dismiss_tab_overflow();
         // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
         if view != View::Doc { self.remember_scroll(cx) }
         if view == View::Trash {
@@ -1034,11 +1089,18 @@ impl Workspace {
             }).ok().flatten())
     }
 
+    fn has_document_peer(&self, id: &str, window: &Window, cx: &mut Context<Self>) -> bool {
+        cx.windows().into_iter().filter(|w| w.window_id() != window.window_handle().window_id())
+            .filter_map(|w| w.downcast::<Workspace>())
+            .any(|w| w.update(cx, |ws, _, _| ws.current.as_deref() == Some(id) && !ws.trash_document).unwrap_or(false))
+    }
+
     /// 阅读位置: hand the open document's scroll offset to the library, so
     /// coming back to it lands where it was left.
     fn remember_scroll(&mut self, cx: &mut Context<Self>) {
         let (Some(id), Some(editor)) = (self.current.clone(), self.editor.clone()) else { return };
-        let top = editor.read(cx).scroll_top();
+        let editor = editor.read(cx);
+        let top = editor.restore_top.or_else(|| editor.scroll_top());
         let _ = self.store.remember_scroll(&id, top);
     }
 
@@ -1072,6 +1134,7 @@ impl Workspace {
 
     fn schedule_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.preview.is_some() || self.trash_document { return }
+        let Some(save_id) = self.current.clone() else { return };
         self.status = SaveStatus::Saving;
         if !self.unsaved || self.dirty_since.is_none() {
             self.dirty_since = Some(Instant::now());
@@ -1094,7 +1157,9 @@ impl Workspace {
             while this.update(cx, |w, _| w.store.file_task_busy()).unwrap_or(false) {
                 cx.background_executor().timer(Duration::from_millis(50)).await;
             }
-            let _ = this.update(cx, |w, cx| w.flush(cx));
+            let _ = this.update(cx, |w, cx| {
+                if w.current.as_ref() == Some(&save_id) { w.flush(cx); }
+            });
         }));
         cx.notify();
     }
@@ -1148,6 +1213,7 @@ impl Workspace {
                 self.status = SaveStatus::Saved;
                 self.unsaved = false;
                 self.sort();
+                self.refresh_parked_tabs(&id, &ed, cx);
             }
             Err(e) => self.status = SaveStatus::Failed(crate::localized_format!("保存失败：{}", "Could not save: {}", crate::settings::diagnostic(&e.to_string()))),
         }
@@ -1592,6 +1658,7 @@ impl Render for Workspace {
                 .flex()
                 .flex_col()
                 .child(self.top_bar(f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. }, cx))
+                .children(if self.trash_document { None } else { self.render_document_tabs(window, cx) })
                 .children(self.render_history_banner(cx))
                 .children(self.render_trash_banner(cx))
                 .child(
@@ -1610,6 +1677,7 @@ impl Render for Workspace {
                         .children(self.render_shortcuts(cx)),
                 )
                 .into_any_element(),
+            View::NewTab => self.render_new_tab(window, cx),
             View::Home => self.render_home(window, cx),
             View::Folder => self.render_folder(window, cx),
             View::Trash => self.render_trash(cx),
@@ -1653,11 +1721,15 @@ impl Render for Workspace {
             // Window keys act on the window they were pressed in, not on
             // whichever window macOS considers active.
             .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, window, cx| w.track_sidebar_press(ev, window, cx)))
-            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, window, cx| w.finish_sidebar_click(window, cx)))
+            .on_mouse_up(MouseButton::Left, cx.listener(|w, ev: &MouseUpEvent, window, cx| w.finish_sidebar_click(ev.modifiers, window, cx)))
             .on_action(cx.listener(|w, _: &CloseWindow, window, cx| {
                 crate::quick_note::persist(cx);
                 if w.save_before(cx, |_, window, _| window.remove_window()) { window.remove_window(); }
             }))
+            .on_action(cx.listener(|w, _: &NewTab, window, cx| w.new_tab(window, cx)))
+            .on_action(cx.listener(|w, _: &CloseTab, window, cx| w.close_selected_tab(window, cx)))
+            .on_action(cx.listener(|w, _: &NextTab, window, cx| w.step_tab(1, window, cx)))
+            .on_action(cx.listener(|w, _: &PreviousTab, window, cx| w.step_tab(-1, window, cx)))
             .on_action(|_: &Minimize, window, _| window.minimize_window())
             .on_action(|_: &Zoom, window, _| window.zoom_window())
             .on_action(|_: &ToggleFullScreen, window, _| window.toggle_fullscreen())
@@ -1712,6 +1784,7 @@ impl Render for Workspace {
             .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| {
                 let undo = ev.keystroke.modifiers.secondary() && matches!(ev.keystroke.key.as_str(), "z" | "y");
                 if w.store.file_task_busy() || (w.file_history.busy && !undo) { cx.stop_propagation(); return; }
+                if ev.keystroke.key == "escape" && w.dismiss_tab_overflow() { cx.notify(); cx.stop_propagation(); return; }
                 // 版本历史: the editor keeps the caret, so Esc has to be taken
                 // before it reaches the read-only key handler.
                 if ev.keystroke.key == "escape" && w.preview.is_some() {
@@ -1758,6 +1831,7 @@ impl Render for Workspace {
             .children(resize)
             .children(crate::ui::window_controls(window))
             .children(row_menu)
+            .children(self.render_tab_overflow(window, cx))
             .children(doc_menu)
             .children(mode_menu)
             .children(doc_info)

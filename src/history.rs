@@ -40,6 +40,7 @@ pub struct Preview {
     pub core: Core,
     pub reading: bool,
     pub name: String,
+    top: Option<(usize, f32)>,
 }
 
 impl Preview {
@@ -153,7 +154,7 @@ impl Workspace {
             && let Some(ed) = &self.editor
         {
             let e = ed.read(cx);
-            self.preview = Some(Preview { core: e.core.clone(), reading: e.read_only, name: name.to_string() });
+            self.preview = Some(Preview { core: e.core.clone(), reading: e.read_only, name: name.to_string(), top: e.restore_top.or_else(|| e.scroll_top()) });
         }
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| {
@@ -180,10 +181,11 @@ impl Workspace {
         let Some(p) = self.preview.take() else { return };
         if let Some(ed) = &self.editor {
             ed.update(cx, |e, cx| {
-                e.receive_document(&p.core, cx);
                 e.diff_marks = None;
                 e.set_preview(false, cx);
                 e.set_read_only(p.reading, cx);
+                e.restore_live_core(p.core, cx);
+                e.restore_top = Some(p.top.unwrap_or((0, 0.)));
                 cx.notify();
             });
         }
@@ -545,7 +547,8 @@ impl Workspace {
                 .child(div().text_size(px(11.)).text_color(Theme::text_caption())
                     .child(crate::settings::tr("设置 › 文档库可调份数", "Count in Settings"))));
         Some(
-            div().id("history-drawer").absolute().top(px(HEADER_H)).right_0().bottom_0().w(px(DRAWER_W))
+            div().id("history-drawer").absolute().top(px(HEADER_H + if !self.trash_document && self.tabs.show_bar() { crate::tabs::BAR_H } else { 0. }))
+                .right_0().bottom_0().w(px(DRAWER_W))
                 .flex().flex_col()
                 .bg(crate::theme::raised(Theme::bg_body()))
                 .border_l_1().border_color(Theme::line_divider())

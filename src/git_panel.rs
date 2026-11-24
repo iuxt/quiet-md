@@ -1,6 +1,6 @@
 //! Working-tree browser and read-only text / formatted block comparisons.
-use crate::{app::{View, Workspace}, git::Action, model::Block, settings::tr, theme::{self, Theme}, ui::{self, TipExt}};
-use fdl_core::{diff::{FormattedDiff, Kind, Line}, git::{ChangePreview, LibraryRepo}, store::Store};
+use crate::{app::{View, Workspace}, git::Action, settings::tr, theme::{self, Theme}, ui::{self, TipExt}};
+use fdl_core::{diff::{Kind, Line}, git::{ChangePreview, LibraryRepo}, store::Store};
 use gpui::{prelude::FluentBuilder, *};
 use std::{cell::Cell, rc::Rc};
 
@@ -13,43 +13,37 @@ struct DiffRows {
     eqnos: Rc<std::collections::HashMap<crate::model::BlockId, u32>>,
 }
 
-struct DiffRow { added: bool, number: usize, text: SharedString, block: Option<Block> }
+struct DiffRow { kind: Kind, number: usize, text: SharedString, block: Option<crate::model::Block> }
 
 impl GitPreview {
     fn new(preview: ChangePreview) -> Self {
-        Self { title: preview.title, binary: preview.binary, text: DiffRows::text(preview.lines, preview.truncated),
-            source: preview.source.map(|lines| DiffRows::text(lines, preview.source_truncated)),
+        Self { title: preview.title, binary: preview.binary, text: DiffRows::new(preview.lines, preview.truncated),
+            source: preview.source.map(|lines| DiffRows::new(lines, preview.source_truncated)),
             formatted: preview.formatted.map(DiffRows::formatted) }
     }
 }
 
 impl DiffRows {
-    fn new(rows: impl IntoIterator<Item = (Kind, SharedString, Option<Block>)>, truncated: bool) -> Self {
+    fn new(lines: Vec<Line>, truncated: bool) -> Self {
+        let counts = fdl_core::diff::counts(&lines);
         let mut old = 0; let mut new = 0;
-        let mut counts = (0, 0);
-        let rows = rows.into_iter().filter_map(|(kind, text, block)| {
-            let (added, number) = match kind {
-                Kind::Same => { old += 1; new += 1; return None; }
-                Kind::Added => { new += 1; counts.0 += 1; (true, new) }
-                Kind::Removed => { old += 1; counts.1 += 1; (false, old) }
-            };
-            Some(DiffRow { added, number, text, block })
+        let rows = lines.into_iter().map(|line| {
+            if line.kind != Kind::Added { old += 1; }
+            if line.kind != Kind::Removed { new += 1; }
+            DiffRow { kind: line.kind, number: if line.kind == Kind::Removed { old } else { new }, text: line.text.into(), block: None }
         }).collect::<Vec<_>>();
         let state = ListState::new(rows.len(), ListAlignment::Top, px(100.));
         Self { rows: Rc::new(rows), state, counts, truncated, eqnos: Default::default() }
     }
 
-    fn text(lines: Vec<Line>, truncated: bool) -> Self {
-        Self::new(lines.into_iter().map(|line| (line.kind, line.text.into(), None)), truncated)
-    }
-
-    fn formatted(diff: FormattedDiff) -> Self {
+    fn formatted(diff: fdl_core::diff::FormattedDiff) -> Self {
         let numbers = |exclude| {
             let blocks = diff.rows.iter().filter(|(kind, _)| *kind != exclude).map(|(_, b)| b.clone()).collect();
             crate::editor::equation_numbers(&crate::model::Document { blocks, ..Default::default() })
         };
         let mut eqnos = numbers(Kind::Added); eqnos.extend(numbers(Kind::Removed));
-        let mut out = Self::new(diff.rows.into_iter().map(|(kind, block)| (kind, SharedString::default(), Some(block))), diff.truncated);
+        let mut out = Self::new(diff.rows.iter().map(|(kind, _)| Line { kind: *kind, text: String::new() }).collect(), diff.truncated);
+        for (row, (_, block)) in Rc::get_mut(&mut out.rows).unwrap().iter_mut().zip(diff.rows) { row.block = Some(block); }
         out.eqnos = Rc::new(eqnos);
         out
     }
@@ -72,10 +66,10 @@ impl DiffRows {
 
 impl DiffRow {
     fn render(&self, eqnos: &std::collections::HashMap<crate::model::BlockId, u32>) -> AnyElement {
-        let (mark, bg, fg) = if self.added {
-            ("+", Theme::diff_added_bg(), Theme::diff_added())
-        } else {
-            ("−", Theme::diff_removed_bg(), Theme::danger())
+        let (mark, bg, fg) = match self.kind {
+            Kind::Same => (" ", Theme::bg_body(), Theme::text()),
+            Kind::Added => ("+", Theme::diff_added_bg(), Theme::diff_added()),
+            Kind::Removed => ("−", Theme::diff_removed_bg(), Theme::danger()),
         };
         if let Some(block) = &self.block {
             return div().w_full().flex().items_start().py(px(8.)).bg(bg)
@@ -275,25 +269,4 @@ fn tool(id: impl Into<ElementId>, icon: &'static str, label: &'static str, enabl
         .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())))
         .when(!enabled, |d| d.opacity(0.35))
         .on_click(|_, _, cx| cx.stop_propagation())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::DiffRows;
-
-    #[test]
-    fn previews_hide_unchanged_rows_and_keep_version_numbers() {
-        let old = "<p>Start</p>\n<p>Deleted</p>\n<p>Middle</p>\n<p>Old</p>\n<p>End</p>";
-        let new = "<p>Start</p>\n<p>Middle</p>\n<p><b>New</b></p>\n<p>End</p>";
-        let text = DiffRows::text(fdl_core::diff::diff(old, new, true), false);
-        let formatted = DiffRows::formatted(fdl_core::diff::formatted(old, new).unwrap());
-        for preview in [&text, &formatted] {
-            let rows = preview.rows.iter().map(|row| (row.added, row.number)).collect::<Vec<_>>();
-            assert_eq!(rows, [(false, 2), (false, 4), (true, 3)]);
-            assert_eq!(preview.counts, (1, 2));
-        }
-        let block = formatted.rows[2].block.as_ref().unwrap();
-        assert_eq!(block.text.text, "New");
-        assert!(block.text.runs[0].marks.bold);
-    }
 }

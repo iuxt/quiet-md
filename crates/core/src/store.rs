@@ -7,6 +7,7 @@ use std::io::Write;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use crate::time::now;
 #[path = "file_history.rs"] mod file_history;
 pub use file_history::{FileState, FileDelta, FileChanges};
@@ -233,7 +234,7 @@ pub struct Entry {
 
 pub struct Store {
     file_changes: Vec<std::sync::Weak<std::sync::Mutex<Vec<FileDelta>>>>,
-    loaded: std::cell::RefCell<HashMap<String, String>>,
+    loaded: std::cell::RefCell<HashMap<String, Arc<String>>>,
     loaded_titles: std::cell::RefCell<HashMap<String, String>>,
     /// Library images and attachments copied beside each 本机文件 this
     /// session, so autosaves reuse the copy instead of making another.
@@ -962,8 +963,30 @@ impl Store {
         let xml = self.read_doc_text(id)?;
         let mut doc = self.parse_doc(id, &xml)?;
         self.manifest_title(id, &mut doc);
-        if !shared { self.loaded.borrow_mut().insert(id.to_string(), xml); self.loaded_titles.borrow_mut().insert(id.to_string(), doc.title.text.clone()); }
+        if !shared { self.set_edit_baseline(id, xml.into(), &doc.title.text); }
         Ok(doc)
+    }
+
+    pub fn edit_baseline(&self, id: &str) -> Option<Arc<String>> { self.loaded.borrow().get(id).cloned() }
+
+    fn set_edit_baseline(&self, id: &str, text: Arc<String>, title: &str) {
+        self.loaded.borrow_mut().insert(id.to_string(), text);
+        self.loaded_titles.borrow_mut().insert(id.to_string(), title.to_string());
+    }
+
+    /// A background tab keeps its undo stack while the exact body on disk matches.
+    pub fn resume_for_edit(&self, id: &str, baseline: Option<&Arc<String>>, title: &str) -> Result<(Option<Document>, String)> {
+        let xml = self.read_doc_text(id)?;
+        if let Some(baseline) = baseline.filter(|text| text.as_str() == xml) {
+            let title = self.index.get(id).filter(|m| !m.local()).and_then(|m| m.name.as_deref()).unwrap_or(title);
+            self.set_edit_baseline(id, baseline.clone(), title);
+            return Ok((None, title.to_string()));
+        }
+        let mut doc = self.parse_doc(id, &xml)?;
+        self.manifest_title(id, &mut doc);
+        let title = doc.title.text.clone();
+        self.set_edit_baseline(id, xml.into(), &title);
+        Ok((Some(doc), title))
     }
 
     /// Release a closed editor's conflict-detection baseline, after its last window saved.
@@ -1003,7 +1026,7 @@ impl Store {
         if let Some(previous) = self.loaded.borrow().get(id) {
             let disk = disk.as_deref().ok_or_else(|| anyhow::anyhow!("无法读取文档"))?;
             let message = if self.index.get(id).is_some_and(Meta::local) { "文件已在别处被修改，未覆盖磁盘内容。请另存副本或重新打开文件" } else { "文档已被另一个实例修改，未覆盖磁盘内容。请另存副本或重新载入磁盘版本" };
-            anyhow::ensure!(disk == previous || disk == xml, "{message}");
+            anyhow::ensure!(disk == previous.as_str() || disk == xml, "{message}");
         }
         // A Markdown file whose content did not change is left alone: its
         // formatting is the user's.
@@ -1034,7 +1057,7 @@ impl Store {
                 }
             }
         }
-        self.loaded.borrow_mut().insert(id.to_string(), if same { disk.unwrap_or(xml) } else { xml });
+        self.loaded.borrow_mut().insert(id.to_string(), if same { disk.unwrap_or(xml) } else { xml }.into());
         let title = doc.title.text.trim().to_string();
         if same && title == self.markdown_title(id) {
             return self.index.get(id).cloned().ok_or_else(|| anyhow::anyhow!("文档不存在"));

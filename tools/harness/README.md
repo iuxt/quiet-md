@@ -53,6 +53,8 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 `python3 tools/harness/document_safety.py` 验证多窗口历史预览保留最新编辑、导入成功后打开正文、删除后打开下一篇，以及主页和侧栏混合拖入多个文件夹与文件；只使用临时文档库。
 
+`python3 tools/harness/tabs.py` 在临时文档库验证新标签页的最近编辑列表、从侧栏打开、快捷键、滚动位置与撤销、文档去重、跨窗口更新、保存冲突与关闭标签。
+
 `python3 tools/harness/virtual_folders.py` 用临时文档库验证 JSON 标题、侧栏拖动、文件夹重命名和文件夹内新建文章，并检查原正文、UUID 文件名和初始化后的 Git 分支。
 
 每行一条命令；`#` 开头的是注释。完整说明见 `src/devtools.rs` 顶部。

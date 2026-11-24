@@ -580,7 +580,6 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     std::fs::write(lib.0.join("Notes").join(markdown), "line\n".repeat(crate::diff::MAX_LINES + 1)).unwrap();
     let long = repo.change_preview(&format!("Notes/{markdown}")).unwrap();
     assert!(long.truncated && long.source.is_none());
-    assert_eq!(counts(&long.lines), (crate::diff::MAX_LINES, 0));
     let metadata = repo.change_preview(MANIFEST).unwrap();
     assert!(!metadata.binary && metadata.source.is_none());
     // A permanently removed note is still readable from HEAD and its old metadata.

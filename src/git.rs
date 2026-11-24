@@ -110,9 +110,9 @@ impl Workspace {
                 }
                 if reload || !restored.is_empty() {
                     let paths = (!reload).then_some(&restored);
-                    w.refresh_after_git(paths, cx);
+                    w.refresh_after_git(paths, window, cx);
                     for handle in cx.windows().into_iter().filter(|h| h.window_id() != window.window_handle().window_id()).filter_map(|h| h.downcast::<Workspace>()) {
-                        let _ = handle.update(cx, |other, _, cx| other.refresh_after_git(paths, cx));
+                        let _ = handle.update(cx, |other, window, cx| other.refresh_after_git(paths, window, cx));
                     }
                 }
                 if w.view == crate::app::View::Git {
@@ -128,7 +128,7 @@ impl Workspace {
         }).detach();
     }
 
-    fn refresh_after_git(&mut self, restored: Option<&BTreeSet<String>>, cx: &mut Context<Self>) {
+    fn refresh_after_git(&mut self, restored: Option<&BTreeSet<String>>, window: &Window, cx: &mut Context<Self>) {
         self.entries = self.store.list(); self.sort();
         if let Some(id) = self.current.clone() {
             if let Some(entry) = self.entries.iter().find(|e| e.id == id) {
@@ -136,11 +136,13 @@ impl Workspace {
                     && let Ok(doc) = self.store.load_for_edit(&id, false) && let Some(editor) = &self.editor {
                     editor.update(cx, |e, cx| e.receive_document(&Core::new(doc), cx));
                 }
-            } else if restored.is_none() {
-                self.current = None; self.editor = None;
+            } else if restored.is_none() && !self.trash_document {
+                self.tabs.remove_document(&id);
+                self.leave_document(window, cx);
                 if self.view != crate::app::View::Git { self.show_view(crate::app::View::Home, cx); }
             }
         }
+        self.prune_tabs();
         cx.notify();
     }
 

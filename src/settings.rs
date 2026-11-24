@@ -783,7 +783,9 @@ impl Workspace {
 
     /// Back to where 设置 was opened from.
     pub(crate) fn close_settings(&mut self, cx: &mut Context<Self>) {
-        let back = if self.editor.is_some() && self.current.is_some() { View::Doc } else { View::Home };
+        let back = if self.editor.is_some() && self.current.is_some() { View::Doc }
+            else if self.tabs.selected_is_blank() { View::NewTab }
+            else { View::Home };
         self.show_view(back, cx);
     }
 

@@ -73,10 +73,10 @@ impl Workspace {
     }
 
     pub(crate) fn open_folder(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        self.close_history(cx);
         let target = id.to_string();
         if !self.save_before(cx, move |w, window, cx| { w.open_folder(&target, window, cx); }) { return false; }
-        self.editor = None;
-        self.current = None;
+        self.leave_document(window, cx);
         if self.folder_current.as_deref() != Some(id) { self.reset_folder_scroll(); }
         if let Some(meta) = self.store.touch(id) && let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) { entry.meta = meta; }
         if self.manual_home_sort() { self.prepare_manual_order(cx); }
@@ -174,7 +174,8 @@ impl Workspace {
         } else {
             self.render_home_list(&children, true, cx)
         };
-        div().size_full().flex().flex_col().child(header).child(div().h(px(8.)).flex_none()).child(body).into_any_element()
+        div().size_full().flex().flex_col().child(header).children(self.render_document_tabs(window, cx))
+            .child(div().h(px(8.)).flex_none()).child(body).into_any_element()
     }
 
     pub(crate) fn folder_row_menu(&self, m: crate::app::RowMenu, cx: &mut Context<Self>) -> Vec<AnyElement> {

@@ -300,7 +300,7 @@ fn looks_like_url(q: &str) -> bool {
 }
 
 impl Editor {
-    pub fn new(doc: Document, modified: u64, page_width: PageWidth, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(core: Core, modified: u64, page_width: PageWidth, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let link_field = cx.new(|cx| {
             let mut f = TextField::new("粘贴或输入链接", cx);
             f.tab_events = true;
@@ -388,7 +388,7 @@ impl Editor {
         let (rm, rm_subs) = super::reminder::RmUi::new(window, cx);
         subs.extend(rm_subs);
         let mut e = Editor {
-            core: Core::new(doc),
+            core,
             drawing: None,
             focus: cx.focus_handle(),
             cache: Default::default(),
@@ -533,16 +533,17 @@ impl Editor {
     /// Call after every command: emits Changed, keeps menus consistent,
     /// scrolls the caret into view and restarts the caret blink.
     pub fn receive_document(&mut self, core: &Core, cx: &mut Context<Self>) {
-        let sel = self.core.sel;
-        let generation = self.core.generation;
-        self.core = core.clone();
-        self.core.sel = sel;
-        self.core.block_sel = None;
-        self.core.cell_sel = None;
-        self.core.pending_marks = None;
-        self.core.generation = generation.wrapping_add(1);
-        self.core.fix_selection();
-        self.core.break_coalescing();
+        Self::receive_core(&mut self.core, core);
+        self.document_replaced(cx);
+    }
+
+    pub(crate) fn restore_live_core(&mut self, mut core: Core, cx: &mut Context<Self>) {
+        core.generation = self.core.generation.wrapping_add(1);
+        self.core = core;
+        self.document_replaced(cx);
+    }
+
+    fn document_replaced(&mut self, cx: &mut Context<Self>) {
         self.marked = None;
         self.menu = None;
         self.slash = None;
@@ -550,6 +551,19 @@ impl Editor {
         self.ro_doc = self.read_only.then(|| self.core.doc.clone());
         self.refresh_find(false, cx);
         cx.notify();
+    }
+
+    pub(crate) fn receive_core(target: &mut Core, source: &Core) {
+        let sel = target.sel;
+        let generation = target.generation;
+        *target = source.clone();
+        target.sel = sel;
+        target.block_sel = None;
+        target.cell_sel = None;
+        target.pending_marks = None;
+        target.generation = generation.wrapping_add(1);
+        target.fix_selection();
+        target.break_coalescing();
     }
 
     pub fn changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {

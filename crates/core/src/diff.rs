@@ -23,31 +23,20 @@ pub fn readable(text: &str, markdown: bool) -> String {
     crate::docxml::parse(text).map_or_else(|_| text.to_string(), |d| d.plain_text())
 }
 
-fn split<'a>(body: &'a str, notice: Option<&'a str>) -> (Vec<&'a str>, bool) {
-    let mut all = body.lines();
-    let mut lines = all.by_ref().take(MAX_LINES).collect::<Vec<_>>();
-    let truncated = all.next().is_some();
-    if truncated { lines.extend(notice); }
-    (lines, truncated)
+fn split(text: &str, markdown: bool) -> Vec<String> {
+    let body = readable(text, markdown);
+    let mut lines: Vec<String> = body.lines().map(str::to_string).collect();
+    if lines.len() > MAX_LINES {
+        lines.truncate(MAX_LINES);
+        lines.push(format!("… 仅显示前 {MAX_LINES} 行 / only the first {MAX_LINES} lines"));
+    }
+    lines
 }
 
 pub fn diff(old: &str, new: &str, markdown: bool) -> Vec<Line> {
-    let notice = format!("… 仅显示前 {MAX_LINES} 行 / only the first {MAX_LINES} lines");
-    compare_lines(&readable(old, markdown), &readable(new, markdown), Some(&notice)).0
-}
-
-/// The Git panel displays its truncation notice outside the diff rows.
-pub(crate) fn git_lines(old: &str, new: &str) -> (Vec<Line>, bool) {
-    compare_lines(old, new, None)
-}
-
-fn compare_lines(old: &str, new: &str, notice: Option<&str>) -> (Vec<Line>, bool) {
-    let (a, old_truncated) = split(old, notice);
-    let (b, new_truncated) = split(new, notice);
-    let rows = sequence(&a, &b).into_iter().map(|(kind, i)| {
-        Line { kind, text: if kind == Kind::Removed { a[i] } else { b[i] }.to_string() }
-    }).collect();
-    (rows, old_truncated || new_truncated)
+    let a = split(old, markdown);
+    let b = split(new, markdown);
+    sequence(&a, &b).into_iter().map(|(kind, i)| Line { kind, text: if kind == Kind::Removed { a[i].clone() } else { b[i].clone() } }).collect()
 }
 
 fn sequence<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(Kind, usize)> {

@@ -153,8 +153,15 @@ impl Workspace {
                         if let Some(id) = w.current.clone() {
                             if let Some(entry) = w.entries.iter().find(|e| e.id == id) {
                                 if let Some(ed) = &w.editor { let title = entry.title.clone(); let _ = w.store.accept_file_title(&id, &title); ed.update(cx, |e, cx| e.receive_file_title(&title, cx)); }
-                            } else { w.editor = None; w.editor_sub = None; w.current = None; w.view = View::Home; window.focus(&w.focus); }
+                            } else if !w.trash_document {
+                                w.close_history(cx);
+                                w.tabs.remove_document(&id);
+                                w.leave_document(window, cx);
+                                w.view = View::Home;
+                                window.focus(&w.focus);
+                            }
                         }
+                        w.prune_tabs();
                         if w.folder_current.as_ref().is_some_and(|id| !w.entries.iter().any(|e| &e.id == id)) { w.folder_current = None; w.view = View::Home; }
                         w.trash = w.store.list_trash();
                         w.batch = None; w.row_menu = None;

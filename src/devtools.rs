@@ -314,6 +314,10 @@ pub fn start(window: &mut Window, cx: &mut App) {
                 cx.update(|cx| crate::app::check_document_safety(rest.trim(), cx)).unwrap();
                 continue;
             }
+            if cmd == "check-tabs" {
+                cx.update(|cx| crate::tabs::check_tabs(rest.trim(), cx)).unwrap();
+                continue;
+            }
             #[cfg(target_os = "macos")]
             let handled = mouse_step(ns_view, cmd, &nums(rest));
             #[cfg(not(target_os = "macos"))]

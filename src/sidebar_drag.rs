@@ -823,7 +823,7 @@ impl Workspace {
     /// A click on a row. A folder opens its page and unfolds, like a page does;
     /// its chevron (or clicking the folder already shown) only folds and unfolds
     /// it, and ⌥ on the chevron does the same to every folder inside.
-    fn sidebar_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn sidebar_click(&mut self, id: &str, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
         let on_icon = std::mem::take(&mut self.folder_drag.icon_press) && self.folder_drag.has_children(id);
         let all = std::mem::take(&mut self.folder_drag.icon_alt);
         if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) {
@@ -838,7 +838,7 @@ impl Workspace {
             } else if !self.open_folder(id, window, cx) { return; }
             self.folder_drag.kick(id, 3.5);
             cx.notify();
-        } else { self.open(id, window, cx); }
+        } else { self.open_from_click(id, modifiers, window, cx); }
     }
 
     pub(crate) fn track_sidebar_press(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -847,9 +847,9 @@ impl Workspace {
         else { self.folder_drag.active = None; }
     }
 
-    pub(crate) fn finish_sidebar_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn finish_sidebar_click(&mut self, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
         let click = self.folder_drag.active.as_ref().filter(|d| !d.started).map(|d| d.id.clone());
-        if let Some(id) = click { self.folder_drag.active = None; self.sidebar_click(&id, window, cx); }
+        if let Some(id) = click { self.folder_drag.active = None; self.sidebar_click(&id, modifiers, window, cx); }
     }
 
     pub(crate) fn render_folder_drag_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -859,9 +859,9 @@ impl Workspace {
                 if ev.pressed_button != Some(MouseButton::Left) { w.end_folder_drag(true, cx); return; }
                 w.move_folder_drag(ev.position, window, cx);
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|w, _, window, cx| {
+            .on_mouse_up(MouseButton::Left, cx.listener(|w, ev: &MouseUpEvent, window, cx| {
                 let click = w.folder_drag.active.as_ref().filter(|d| !d.started).map(|d| d.id.clone());
-                if let Some(id) = click { w.folder_drag.active = None; w.sidebar_click(&id, window, cx); }
+                if let Some(id) = click { w.folder_drag.active = None; w.sidebar_click(&id, ev.modifiers, window, cx); }
                 else { w.end_folder_drag(false, cx); }
             }));
         if d.started && let Some(e) = self.entries.iter().find(|e| e.id == d.id) {

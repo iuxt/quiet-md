@@ -258,7 +258,6 @@ impl SearchCache {
 impl Workspace {
     pub(crate) fn open_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.search_open = true;
-        self.search_sel = Some(0);
         self.row_menu = None;
         self.doc_menu = false;
         self.doc_sub = None;
@@ -267,8 +266,9 @@ impl Workspace {
             // The dialog's query reads at body size, above the 13pt rows.
             s.size = 15.;
             s.line_height = 22.;
-            s.set_text("", cx)
+            s.set_text("", cx);
         });
+        self.search_sel = self.default_search_sel(cx);
         window.focus(&search.focus_handle(cx));
         self.search_scroll.scroll_to(ListOffset::default());
         cx.notify();
@@ -280,9 +280,9 @@ impl Workspace {
         }
         self.search_open = false;
         self.search_cache.borrow_mut().lower.clear();
-        if let Some(ed) = &self.editor {
+        if self.view == crate::app::View::Doc && let Some(ed) = &self.editor {
             ed.read(cx).focus(window);
-        }
+        } else { window.focus(&self.focus); }
         cx.notify();
     }
 
@@ -291,13 +291,14 @@ impl Workspace {
         (!self.search_results(cx).is_empty()).then_some(0)
     }
 
-    pub(crate) fn pick_search(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.search_results(cx).get(row).map(|e| e.id.clone()) else { return };
+    pub(crate) fn pick_search(&mut self, row: usize, modified: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let results = self.search_results(cx);
+        let Some(entry) = results.get(row) else { return };
+        let id = entry.id.clone();
+        let new_tab = modified && !self.quick_note && entry.meta.folder.is_none();
         self.close_search(window, cx);
-        self.open(&id, window, cx);
-        if let Some(ed) = &self.editor {
-            ed.read(cx).focus(window);
-        }
+        if new_tab { self.open_in_tab(&id, window, cx); }
+        else { self.open(&id, window, cx); }
     }
 
     pub(crate) fn move_search_sel(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -350,7 +351,7 @@ impl Workspace {
                     cx.notify();
                 }
             }))
-            .on_click(cx.listener(move |w, _, window, cx| w.pick_search(row, window, cx)))
+            .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.pick_search(row, ev.modifiers().secondary(), window, cx)))
             .child(entry_icon(e))
             .child(result_info(e, q, summary, INFO_W, window))
     }

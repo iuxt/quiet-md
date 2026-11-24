@@ -72,7 +72,7 @@ impl Store {
     pub fn accept_file_title(&self, id: &str, title: &str) -> Result<()> {
         if self.index.get(id).and_then(|m| m.name.as_deref()) == Some(title) {
             let loaded = self.loaded.borrow();
-            if let Some(previous) = loaded.get(id) && std::fs::read_to_string(self.path(id)).is_ok_and(|disk| disk == *previous) {
+            if let Some(previous) = loaded.get(id) && std::fs::read_to_string(self.path(id)).is_ok_and(|disk| disk == previous.as_str()) {
                 self.loaded_titles.borrow_mut().insert(id.to_string(), title.to_string());
             }
             return Ok(());
@@ -85,7 +85,7 @@ impl Store {
         expected.title = crate::model::RichText::plain(title);
         let disk = std::fs::read_to_string(self.path(id))?;
         // Accept only our title change, never unrelated edits from another instance.
-        if docxml::serialize(&expected) == docxml::serialize(&docxml::parse(&disk)?) { loaded.insert(id.to_string(), disk); }
+        if docxml::serialize(&expected) == docxml::serialize(&docxml::parse(&disk)?) { loaded.insert(id.to_string(), disk.into()); }
         Ok(())
     }
 

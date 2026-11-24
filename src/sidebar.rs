@@ -536,7 +536,7 @@ impl Workspace {
             // A 本机文件 row opens on click, and can be carried up into the tree to import it.
             .when(key == "local", |d| {
                 let (open, drag) = (e.id.clone(), crate::sidebar_drop::LocalRowDrag { id: e.id.clone(), title: crate::settings::display_title(&e.title) });
-                d.on_click(cx.listener(move |w, _, window, cx| w.open(&open, window, cx)))
+                d.on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.open_from_click(&open, ev.modifiers(), window, cx)))
                     .on_drag(drag, |d, _, _, cx| cx.new(|_| d.clone()))
             })
             .on_mouse_down(
@@ -776,9 +776,8 @@ impl Workspace {
         let (dup, mv, path, pin, star, dl, ren, del) = (m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone(), m.id.clone());
         let pdf = m.id.clone();
         let new_window = m.id.clone();
+        let new_tab = m.id.clone();
         let sub_bounds = self.row_sub_bounds.clone();
-        // The row menu leaves out the cloud entries 在新标签页打开, 分享,
-        // 复制链接, 添加快捷方式到, 转移所有权, 设置密级.
         let menu = popover()
             .id("row-menu")
             .occlude()
@@ -791,6 +790,15 @@ impl Workspace {
                     cx.notify();
                 }
             }))
+            .when(!self.quick_note, |d| d.child(
+                item("rm-tab", "doc", crate::settings::tr("在新标签页中打开", "Open in New Tab"))
+                    .on_hover(set_sub(false))
+                    .on_click(cx.listener(move |w, _, window, cx| {
+                        w.row_menu = None;
+                        w.open_in_tab(&new_tab, window, cx);
+                        cx.notify();
+                    })),
+            ))
             .child(
                 item("rm-window", "copy", crate::settings::text("在新窗口中打开"))
                     .on_hover(set_sub(false))
@@ -851,7 +859,8 @@ impl Workspace {
                     .on_click(cx.listener(move |w, _, _, cx| w.ask_delete(&del, cx))),
             );
         let vh = f32::from(window.viewport_size().height);
-        let menu_h = row_menu_height(ROW_ITEMS, ROW_DIVIDERS);
+        let extra = usize::from(!self.quick_note);
+        let menu_h = row_menu_height(ROW_ITEMS + extra, ROW_DIVIDERS);
         // From the "…" button: hang 2px below it, or sit 2px above it when
         // there's no room below. From a right-click: at the pointer.
         let (origin, corner) = if m.pos.x < px(0.) {
@@ -877,7 +886,7 @@ impl Workspace {
             let record = self.row_sub_bounds.clone();
             record.set(None);
             // Level the submenu's first item with 下载.
-            let top = row_sub_top(menu_top);
+            let top = row_sub_top(menu_top) + extra as f32 * ROW_ITEM;
             let left = match corner {
                 Corner::TopRight | Corner::BottomRight => origin.x - px(ROW_MENU_W),
                 _ => origin.x,

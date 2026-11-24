@@ -441,8 +441,8 @@ fn entry_icon(e: &Entry) -> AnyElement {
 
 impl Workspace {
     /// In 批量管理 a click checks or unchecks; otherwise it opens.
-    fn home_click(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if self.batch.is_none() { return self.open(id, window, cx) }
+    fn home_click(&mut self, id: &str, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
+        if self.batch.is_none() { return self.open_from_click(id, modifiers, window, cx) }
         if !self.toggle_check(id) {
             self.show_toast_kind(crate::ui::ToastKind::Error, &crate::localized_format!("一次最多选择 {} 项", "Select up to {} items at a time", crate::sidebar::BATCH_LIMIT), cx);
         }
@@ -755,6 +755,7 @@ impl Workspace {
             .flex()
             .flex_col()
             .child(header)
+            .children(self.render_document_tabs(window, cx))
             .child(toolbar)
             .child(body)
             .into_any_element()
@@ -830,7 +831,7 @@ impl Workspace {
                 .cursor_pointer()
                 .hover(row_hover)
                 .when(menu_on, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
-                .on_click(cx.listener(move |w, _, window, cx| w.home_click(&id, window, cx)))
+                .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.home_click(&id, ev.modifiers(), window, cx)))
                 .when(check.is_none(), |d| d.on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
@@ -961,7 +962,7 @@ impl Workspace {
                     .cursor_pointer()
                     // Inset as the folder card's shadow box is (6 a side, 10 from the top).
                     .child(div().absolute().left(px(6.)).right(px(6.)).top(px(10.)).bottom_0().rounded(px(radius * 0.6)).shadow(theme::shadow_sheet()))
-                    .on_click(cx.listener(move |w, _, window, cx| w.home_click(&id, window, cx)))
+                    .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.home_click(&id, ev.modifiers(), window, cx)))
                     .when(check.is_none(), |d| d.on_mouse_down(
                         MouseButton::Right,
                         cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
