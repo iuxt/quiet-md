@@ -833,7 +833,10 @@ fn library_commits_stop_tracking_internal_metadata() {
 
     // Keep a second checkout on the old commit while the first removes it.
     repo.repo.find_remote("origin").unwrap().push(&["refs/heads/main:refs/heads/main"], None).unwrap();
-    let peer = Library::new(); Repository::clone(remote.0.to_str().unwrap(), &peer.0).unwrap();
+    // Match Quiet.md's byte-for-byte checkout even when Git enables autocrlf.
+    let peer = Library::new(); let mut checkout = git2::build::CheckoutBuilder::new();
+    checkout.disable_filters(true);
+    git2::build::RepoBuilder::new().with_checkout(checkout).clone(remote.0.to_str().unwrap(), &peer.0).unwrap();
     let mut peer_store = Store::open_library_at(peer.0.clone()).unwrap();
     assert!(peer_store.warnings.is_empty());
 
@@ -859,6 +862,7 @@ fn library_commits_stop_tracking_internal_metadata() {
     assert!(peer_store.git_pull(&auth).unwrap());
     assert_eq!(peer.git().status().unwrap().head.as_deref(), Some(commit.as_str()));
     assert!(peer.git().status().unwrap().changes.is_empty());
+    assert_eq!(std::fs::read(peer.0.join(old_path)).unwrap(), b"{\"format\":11}");
     let target = Library::new();
     let clone = LibraryRepo::clone_into(remote.0.to_str().unwrap(), &target.0, &auth).unwrap();
     assert!(!target.0.join(old_path).exists());
