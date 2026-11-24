@@ -39,9 +39,12 @@ impl LibraryRepo {
         let old = std::str::from_utf8(&old)?; let new = std::str::from_utf8(&new)?;
         let xml = path.ends_with(".xml");
         let old_text = diff::readable(old, !xml); let new_text = diff::readable(new, !xml);
-        let exceeds = |a: &str, b: &str| a.lines().count() > diff::MAX_LINES || b.lines().count() > diff::MAX_LINES;
-        Ok(ChangePreview { title, lines: diff::diff(&old_text, &new_text, true),
-            source: xml.then(|| diff::diff(old, new, true)), formatted: if xml { diff::formatted(old, new) } else { None }, binary,
-            truncated: exceeds(&old_text, &new_text), source_truncated: xml && exceeds(old, new) })
+        let (lines, truncated) = diff::git_lines(&old_text, &new_text);
+        let (source, source_truncated) = if xml {
+            let (rows, truncated) = diff::git_lines(old, new);
+            (Some(rows), truncated)
+        } else { (None, false) };
+        Ok(ChangePreview { title, lines, source, formatted: if xml { diff::formatted(old, new) } else { None }, binary,
+            truncated, source_truncated })
     }
 }
