@@ -16,14 +16,18 @@ from PIL import Image
 here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-table-paste-"))
 source = work / "source"
-(source / "docs").mkdir(parents=True)
+(source / "Notes").mkdir(parents=True)
 doc_id = "aaaaaaaa-0000-0000-0000-000000000001"
-(source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
-(source / "preferences.json").write_text(json.dumps({
+(source / ".quiet").mkdir()
+(source / "quiet.json").write_text(json.dumps({
+    "version": 2, "folders": [], "trash": [],
+    "notes": [{"id": doc_id, "title": "Markdown table widths", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
+}))
+(source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 original = "<title>Markdown table widths</title>\n<p>PASTE HERE</p>\n"
-(source / "docs" / f"{doc_id}.xml").write_text(original)
+(source / "Notes" / f"{doc_id}.xml").write_text(original)
 markdown = """| ID | Status | Description |
 | ---: | :---: | --- |
 | 1 | OK | A longer description should get more room than a short identifier or status. |
@@ -51,7 +55,7 @@ shot result
 
 def tables(folder):
     result = []
-    for path in (folder / "lib" / "docs").glob("*.xml"):
+    for path in (folder / "lib" / "Notes").glob("*.xml"):
         doc = ET.fromstring("<doc>" + path.read_text() + "</doc>")
         result.extend(doc.findall("table"))
     return result
@@ -87,12 +91,12 @@ expected = verify(pasted)
 verify(run("reopen", "", pasted / "lib"), expected)
 undone = run("undo", paste + "key cmd-z")
 assert not tables(undone), f"undo left a table; see {undone}"
-doc = ET.fromstring("<doc>" + (undone / "lib" / "docs" / f"{doc_id}.xml").read_text() + "</doc>")
+doc = ET.fromstring("<doc>" + (undone / "lib" / "Notes" / f"{doc_id}.xml").read_text() + "</doc>")
 assert all(not "".join(p.itertext()) for p in doc.findall("p"))
 print("undo: restored empty paste target", flush=True)
 verify(run("redo", paste + "key cmd-z\nwait 200\nkey cmd-shift-z"), expected)
 imported = run("import", f"pick {clipboard}\nkey cmd-shift-i")
-files = list((imported / "lib" / "docs").glob("*.md"))
+files = list((imported / "lib" / "Notes").glob("*.md"))
 assert len(files) == 1 and files[0].read_bytes() == clipboard.read_bytes()
 # Markdown files store text, not column widths. Check the rendered grid's
 # vertical borders in a blank strip below the first data row's text.
@@ -117,7 +121,7 @@ assert [c.get("width") for c in tables(reopened)[0].findall("colgroup/col")] == 
 print("resize: manual width persisted after reopening", flush=True)
 
 # An explicitly sized table remains unchanged by save/reopen.
-explicit = source / "docs" / f"{doc_id}.xml"
+explicit = source / "Notes" / f"{doc_id}.xml"
 explicit.write_text('<title>Explicit widths</title>\n<table><colgroup><col width="85"/><col width="420"/></colgroup>'
                     '<tbody><tr><td><p>Short</p></td><td><p>Long content stays at its saved width.</p></td></tr></tbody></table>\n')
 folder = run("explicit", "")

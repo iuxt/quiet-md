@@ -167,7 +167,7 @@ pub fn switch_library(root: std::path::PathBuf, cx: &mut App) {
     if !ready { return }
     let prefs = crate::store::Store::internal_dir().join("preferences.json");
     if let Err(e) = crate::store::Store::set_root_dir(root) {
-        let msg = format!("{}{e}", crate::settings::tr("无法在这里创建文档库：", "Couldn't create the library here: "));
+        let msg = format!("{}{}", crate::settings::tr("无法在这里创建文档库：", "Couldn't create the library here: "), crate::settings::diagnostic(&e.to_string()));
         if let Some(ws) = cx.windows().into_iter().find_map(|w| w.downcast::<Workspace>()) { let _ = ws.update(cx, |w, _, cx| w.show_toast(&msg, cx)); }
         return;
     }
@@ -224,7 +224,6 @@ pub enum Confirm {
     SaveFailed,
     /// The library should move to real folders, and the user is asked first
     /// (it is synced, or used from another computer): 改用文件夹 / 稍后.
-    Migrate(crate::store::ConsentReason),
     /// 设置 › 文档库 › 更改…: open this folder as the library (#94), after a restart.
     SwitchLibrary(std::path::PathBuf),
     /// Dropped on the sidebar from outside: import it into the library there?
@@ -1158,29 +1157,11 @@ impl Workspace {
         !self.unsaved
     }
 
-    /// Save the open document before something replaces it. When the save
-    /// fails nothing is replaced: the 保存失败 dialog offers 重试 / 放弃修改
-    /// and runs `then` after either.
-    /// 改用文件夹: move the library to real folders, then reopen the main
-    /// window on it at the same place (documents get new ids in the new layout).
-    pub(crate) fn migrate_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.save_before(cx, |w, window, cx| w.migrate_library(window, cx)) { return }
-        let root = crate::store::Store::root_dir();
-        let moved = crate::store::Store::migrate(&root).and_then(|_| crate::store::Store::open_library_at(root));
-        match moved {
-            Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("文档库格式升级未完成：{}", "Library storage upgrade did not finish: {}", crate::settings::diagnostic(&e.to_string())), cx),
-            Ok(store) => {
-                self.store.with(|s| *s = store);
-                crate::open_main_window(crate::devtools::scripted(), Some(window.bounds()), cx);
-                window.remove_window();
-            }
-        }
-    }
-
     pub(crate) fn drawing_open(&self, cx: &App) -> bool {
         self.editor.as_ref().is_some_and(|e| e.read(cx).drawing.is_some())
     }
 
+    /// Resolve save failures before replacing the open document.
     pub fn save_before(&mut self, cx: &mut Context<Self>, then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static) -> bool {
         if self.store.file_task_busy() { return false; }
         if let Some(draft) = self.editor.as_ref().and_then(|e| e.read(cx).drawing.clone())

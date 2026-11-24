@@ -24,20 +24,24 @@ marker = "CARET_MARKER"
 
 def fixture(name, target):
     source = work / (name + "-source")
-    (source / "docs").mkdir(parents=True)
-    (source / "Image").mkdir()
+    (source / "Notes").mkdir(parents=True)
+    (source / "Images").mkdir()
     (source / "Files").mkdir()
-    Image.new("RGB", (300, 120), (70, 140, 180)).save(source / "Image/sample.png")
+    Image.new("RGB", (300, 120), (70, 140, 180)).save(source / "Images/sample.png")
     (source / "Files/sample.txt").write_text("ATTACHMENT PREVIEW\nSecond line\nThird line\n")
-    (source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
-    (source / "preferences.json").write_text(json.dumps({
+    (source / ".quiet").mkdir()
+    (source / "quiet.json").write_text(json.dumps({
+        "version": 2, "folders": [], "trash": [],
+        "notes": [{"id": doc_id, "title": "Pointer property regression", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
+    }))
+    (source / ".quiet/preferences.json").write_text(json.dumps({
         "theme": "craft", "appearance": "light", "english": True, "quick_hotkey": False, "remote_images": False,
     }))
     xml = '<title>Pointer property regression</title>\n<p>CARET_ANCHOR</p>\n'
     xml += ''.join(f'<p>Anchor {i:02d}: Before target paragraph</p>\n' for i in range(20))
     xml += target + '\n'
     xml += ''.join(f'<p>After target paragraph {i:02d}</p>\n' for i in range(40))
-    (source / "docs" / (doc_id + ".xml")).write_text(xml)
+    (source / "Notes" / (doc_id + ".xml")).write_text(xml)
     return source, ET.fromstring("<doc>" + xml + "</doc>")
 
 
@@ -63,7 +67,7 @@ def stable(folder):
 
 
 def read_doc(folder):
-    return ET.fromstring("<doc>" + (folder / "lib/docs" / (doc_id + ".xml")).read_text() + "</doc>")
+    return ET.fromstring("<doc>" + (folder / "lib/Notes" / (doc_id + ".xml")).read_text() + "</doc>")
 
 
 def same_doc(folder, expected, saved=None):
@@ -85,7 +89,7 @@ def setup(activate=""):
 settle = "move 1150 820\nwait 600\n"
 save = "wait 700\nkey cmd-s\nwait 300\n"
 callout = '<callout emoji="💡" background-color="light-orange" border-color="orange"><p>CALLOUT TARGET</p></callout>'
-image = '<img src="Image/sample.png" width="300" height="120" align="left"/>'
+image = '<img src="Images/sample.png" width="300" height="120" align="left"/>'
 file_card = '<figure view-type="Card"><source path="Files/sample.txt" name="sample.txt"/></figure>'
 countdown = '<countdown duration="0" start-time="0" notify="false" color="#FF8800" timing="duration"/>'
 expire = int(datetime(2030, 1, 1, 16).timestamp() * 1000)

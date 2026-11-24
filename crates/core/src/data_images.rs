@@ -15,8 +15,7 @@ use std::path::Path;
 use base64::Engine;
 
 use crate::model::{Block, BlockKind};
-use crate::store::image_dir;
-#[cfg(test)] use crate::store::IMAGE;
+use crate::store::IMAGE;
 
 /// Longest payload that is written out; one image pasted by hand is capped at
 /// the same 20 MB (`src/editor/image.rs`).
@@ -38,13 +37,12 @@ pub fn absorb(blocks: &mut [Block], root: &Path) -> usize {
         let BlockKind::Image { src_kind, src, .. } = &mut b.kind else { continue };
         let Some((bytes, ext)) = inline_image(src) else { continue };
         let name = format!("b64-{:016x}.{ext}", hash(&bytes));
-        let folder = image_dir(root);
-        let dir = root.join(folder);
+        let dir = root.join(IMAGE);
         let path = dir.join(&name);
         if !path.is_file() && (std::fs::create_dir_all(&dir).is_err() || std::fs::write(&path, &bytes).is_err()) {
             continue;
         }
-        *src = format!("{folder}/{name}");
+        *src = format!("{IMAGE}/{name}");
         *src_kind = "src".into();
         n += 1;
     }

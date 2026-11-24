@@ -366,24 +366,6 @@ impl Workspace {
                 false,
             ),
             Confirm::Refs { show: true, .. } => (crate::settings::text("是否显示引用列表？").to_string(), crate::settings::text("选择显示后，协作者可再次查看本文的引用列表。").to_string(), crate::settings::text("显示"), false),
-            Confirm::Migrate(reason) => {
-                use crate::store::{ConsentReason, DeviceHint, SyncService};
-                let why = match reason {
-                    ConsentReason::Synced(SyncService::Provider(p)) => crate::localized_format!("文档库在 {p} 同步的文件夹里。", "The library is in a folder synced by {p}. "),
-                    ConsentReason::Synced(_) => crate::settings::tr("文档库在 iCloud 云盘里。", "The library is in iCloud Drive. ").to_string(),
-                    ConsentReason::OtherDevice(DeviceHint::MissingFile(p)) => crate::localized_format!("这个文档库可能也在别的电脑上使用（打开过的本机文件 {p} 不在这台电脑上）。", "This library may also be used on another computer (a local file it opened, {p}, isn't on this one). "),
-                    ConsentReason::OtherDevice(DeviceHint::SyncCopy(n)) => crate::localized_format!("这个文档库可能也在别的电脑上使用（同步留下了 {n}）。", "This library may also be used on another computer (sync left {n} behind). "),
-                    ConsentReason::Restored => crate::settings::tr("你之前把文档库恢复成了原来的存放方式。", "You went back to the old layout before. ").to_string(),
-                };
-                (
-                    crate::settings::tr("升级文档库存储格式？", "Upgrade library storage?").to_string(),
-                    why + crate::settings::tr(
-                        "升级后，JSON 管理文件夹层级，正文使用固定 UUID 文件名。请先更新其他电脑上的 Quiet.md。迁移前会在文档库的 .quiet 目录中保留原文件备份。",
-                        "After upgrading, JSON manages the folder hierarchy and documents use fixed UUID filenames. Update Quiet.md on other computers first. The original files are backed up in the library’s .quiet directory before migration."),
-                    crate::settings::tr("升级格式", "Upgrade"),
-                    false,
-                )
-            }
             Confirm::SwitchLibrary(root) => (
                 crate::settings::tr("换用这个文档库？", "Switch to this library?").to_string(),
                 crate::localized_format!("Quiet.md 会保存当前文档并重启，然后打开 {}。原来的文档库留在原处，不会移动或删除，之后可以再换回来。", "Quiet.md saves the open document, restarts and opens {}. The current library stays where it is, nothing is moved or deleted, and you can switch back later.", root.display()),
@@ -418,7 +400,7 @@ impl Workspace {
         let ok = primary_button("confirm-ok", action);
         let ok = if danger { ok.bg(Theme::danger()).hover(|s| s.bg(theme::c(craft::R600))).active(|s| s.bg(theme::c(craft::R700))) } else { ok };
         let dialog = dialog("confirm-dialog")
-            .w(px(if matches!(c, Confirm::SaveFailed | Confirm::Migrate(_) | Confirm::SwitchLibrary(_)) { 520. } else { 400. }))
+            .w(px(if matches!(c, Confirm::SaveFailed | Confirm::SwitchLibrary(_)) { 520. } else { 400. }))
             .px(px(24.))
             .pt(px(20.))
             .pb(px(24.))
@@ -448,9 +430,8 @@ impl Workspace {
                             .child(crate::ui::checkbox(on))
                             .child(ui_text(crate::settings::text("不再提示")))
                     })))
-                    .child(secondary_button("confirm-cancel", if matches!(c, Confirm::Migrate(_)) { crate::settings::tr("稍后", "Later") } else { crate::settings::text("取消") }).on_click(cx.listener(|w, _, _, cx| {
+                    .child(secondary_button("confirm-cancel", crate::settings::text("取消")).on_click(cx.listener(|w, _, _, cx| {
                         // 稍后 asks again in a week, not at every launch.
-                        if matches!(w.confirm, Some(Confirm::Migrate(_))) { crate::settings::migrate_later(); }
                         w.confirm = None;
                         w.after_save = None;
                         cx.notify();
@@ -484,7 +465,6 @@ impl Workspace {
                                 w.set_refs_hidden(!show, cx);
                             }
                             Confirm::SaveFailed => w.resolve_save_failed(true, window, cx),
-                            Confirm::Migrate(_) => w.migrate_library(window, cx),
                             Confirm::SwitchLibrary(root) => cx.defer(move |cx| crate::app::switch_library(root, cx)),
                             Confirm::Import { what, target } => w.import_dropped(what, target, window, cx),
                         }

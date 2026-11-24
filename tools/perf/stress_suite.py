@@ -2,7 +2,7 @@
 """Synthetic UI/resource stress suite (macOS, release devtools, Pillow).
 
 python3 tools/perf/stress_suite.py /tmp/quiet-stress [--cases idle,million]
-Each case runs sequentially, with its own disposable FORMAT 11 library.
+Each case runs sequentially, with its own disposable Quiet.md library.
 No system clipboard, focus activation, network or real notes are used.
 """
 import argparse
@@ -24,7 +24,6 @@ OPEN_MIXED = OPEN_FIRST + "key down\nkey end\n"
 def library(root, docs):
     (root / ".quiet").mkdir(parents=True)
     (root / "Notes").mkdir()
-    (root / ".quiet/format.json").write_text('{"format":11}')
     (root / ".quiet/preferences.json").write_text(json.dumps({
         "english": True, "appearance": "light", "theme": "craft", "quick_hotkey": False,
     }))
@@ -48,9 +47,9 @@ def main():
     if (root / "results.json").exists():
         parser.error("results.json already exists; choose a fresh output directory")
     seed = root / "million-seed"
-    if not seed.exists():
+    if not (seed / "quiet.json").is_file():
         subprocess.run([sys.executable, str(HERE / "gen_library.py"), str(seed)], check=True)
-    million = max((seed / "docs").glob("*.xml"), key=lambda p: p.stat().st_size).read_text()
+    million = max((seed / "Notes").glob("*.xml"), key=lambda p: p.stat().st_size).read_text()
     million = re.sub(r"^<title>.*?</title>\s*", "", million)
     small = [("Resource baseline", "<p>Resource stress test baseline.</p>", "xml")]
     cases = {}

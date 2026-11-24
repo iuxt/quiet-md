@@ -4,15 +4,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::store::{InfoRow, Meta, PageWidth};
 
+/// Version of the shared manifest and its on-disk library layout.
 pub const VERSION: u32 = 2;
 pub const FILE: &str = "quiet.json";
 pub const NOTES: &str = "Notes";
-pub(crate) const OLD_NOTES: &str = "notes";
-pub(crate) const OLD_NOTES_FORMAT: u32 = 9;
-pub(crate) const NOTES_FORMAT: u32 = 10;
-
-pub(crate) fn notes_dir(format: u32) -> &'static str { if format == OLD_NOTES_FORMAT { OLD_NOTES } else { NOTES } }
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u32,
@@ -132,7 +127,7 @@ impl Manifest {
             index.insert(f.id.clone(), Meta { folder: Some(f.name.clone()), parent: f.parent.clone(), created: f.created, modified: f.modified, ..f.options.meta() });
         }
         for n in &self.notes {
-            index.insert(n.id.clone(), Meta { parent: n.folder.clone(), created: n.created, modified: n.modified, stable_name: true,
+            index.insert(n.id.clone(), Meta { parent: n.folder.clone(), created: n.created, modified: n.modified,
                 name: Some(n.title.clone()), markdown: n.filename.ends_with(".md"), rel: format!("{NOTES}/{}", n.filename), ..n.options.meta() });
         }
         index
@@ -141,7 +136,7 @@ impl Manifest {
     pub fn deleted_meta(t: &Deleted) -> Meta {
         Meta { parent: t.parent.clone(), created: t.created, modified: t.modified,
             folder: t.filename.is_none().then(|| t.title.clone()), name: Some(t.title.clone()),
-            stable_name: t.filename.is_some(), markdown: t.filename.as_ref().is_some_and(|f| f.ends_with(".md")),
+            markdown: t.filename.as_ref().is_some_and(|f| f.ends_with(".md")),
             rel: t.filename.as_ref().map(|f| format!("{NOTES}/{f}")).unwrap_or_default(), ..t.options.meta() }
     }
 

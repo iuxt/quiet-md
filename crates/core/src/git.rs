@@ -1,10 +1,10 @@
 //! Embedded Git for libraries. No Git executable, hooks or credential helpers.
 use anyhow::{Context, Result, ensure};
 use git2::{Index, IndexEntry, IndexTime, Oid, Repository, Signature};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}};
-use crate::manifest::{NOTES, OLD_NOTES, OLD_NOTES_FORMAT, NOTES_FORMAT, notes_dir};
-use crate::store::{FORMAT, PLURAL_RESOURCES_FORMAT, Store, resource_dir_at, resource_dirs, virtual_format};
+use crate::manifest::{Manifest, NOTES};
+use crate::store::{INTERNAL, RESOURCE_DIRS, Store};
 
 mod lfs;
 mod transport;
@@ -15,25 +15,20 @@ pub use lfs::Pointer;
 pub(crate) use staging::CommitScope;
 #[cfg(test)] mod tests;
 
-pub const MANIFEST: &str = "quiet.json";
-const FORMAT_PATH: &str = ".quiet/format.json";
+pub const MANIFEST: &str = crate::manifest::FILE;
 const RULE_FILES: [&str; 2] = [".gitattributes", ".gitignore"];
 
-fn asset_attributes(format: u32) -> impl Iterator<Item = String> {
-    resource_dirs(format).into_iter().map(|dir| format!("/{dir}/** filter=lfs diff=lfs merge=lfs -text"))
+fn asset_attributes() -> impl Iterator<Item = String> {
+    RESOURCE_DIRS.into_iter().map(|dir| format!("/{dir}/** filter=lfs diff=lfs merge=lfs -text"))
 }
 
-fn is_asset_path_at(path: &str, format: u32) -> bool {
-    path.split_once('/').is_some_and(|(dir, _)| resource_dir_at(dir, format) == Some(dir))
+fn is_asset_path(path: &str) -> bool {
+    path.split_once('/').is_some_and(|(dir, _)| RESOURCE_DIRS.contains(&dir))
 }
 
-fn with_rules(name: &str, mut text: String, format: u32) -> String {
-    let additions = if name == ".gitattributes" { asset_attributes(format).collect::<Vec<_>>().join("\n") }
-        else {
-            let image = resource_dirs(format)[0];
-            let trash = if virtual_format(format) { "/.quiet/trash/" } else { "!.quiet/trash/\n.quiet/trash/*.bak" };
-            format!(".DS_Store\n.quiet/*\n!.quiet/format.json\n{trash}\n/{image}/remote/*.part\n*.tmp\nquiet.json.bak\n/.quiet-notes-format-10/\n")
-        };
+fn with_rules(name: &str, mut text: String) -> String {
+    let additions = if name == ".gitattributes" { asset_attributes().collect::<Vec<_>>().join("\n") }
+        else { ".DS_Store\n.quiet/\n/Images/remote/*.part\n*.tmp\nquiet.json.bak\n".into() };
     for line in additions.lines() {
         if text.lines().any(|existing| existing == line) { continue }
         if !text.is_empty() && !text.ends_with('\n') { text.push('\n'); }
@@ -42,15 +37,38 @@ fn with_rules(name: &str, mut text: String, format: u32) -> String {
     text
 }
 
-pub(crate) fn write_rules(root: &Path, format: u32) -> Result<()> {
+fn write_rules(root: &Path) -> Result<()> {
     for name in RULE_FILES {
         let path = safe_path(root, name)?;
         let text = if path.exists() { std::fs::read_to_string(&path)? } else { String::new() };
-        let len = text.len();
-        let updated = with_rules(name, text, format);
-        if updated.len() != len { crate::store::write_atomic(&path, updated.as_bytes())?; }
+        let updated = with_rules(name, text.clone());
+        if updated != text { crate::store::write_atomic(&path, updated.as_bytes())?; }
     }
     Ok(())
+}
+
+/// Drop the former Git opt-in for internal metadata from existing rule files.
+pub(crate) fn update_internal_ignore(root: &Path) -> Result<()> {
+    let path = safe_path(root, ".gitignore")?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(updated) = updated_internal_ignore(&text) { crate::store::write_atomic(&path, updated.as_bytes())?; }
+    Ok(())
+}
+
+fn updated_internal_ignore(text: &str) -> Option<String> {
+    let mut updated = String::new();
+    for line in text.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) != "!.quiet/format.json" { updated.push_str(line); }
+    }
+    (updated.len() != text.len()).then(|| with_rules(".gitignore", updated))
+}
+
+pub fn is_internal_path(path: &str) -> bool {
+    path.split('/').next().is_some_and(|dir| dir.eq_ignore_ascii_case(INTERNAL))
 }
 
 /// Passwords stay in memory; repository configuration contains no access token.
@@ -93,7 +111,8 @@ impl LibraryRepo {
         let root = root.canonicalize()?;
         Self::check_location(&root)?;
         let existing = root.join(".git").is_dir().then(|| Repository::open(&root)).transpose()?;
-        write_rules(&root, Store::format_at(&root).unwrap_or(FORMAT))?;
+        update_internal_ignore(&root)?;
+        write_rules(&root)?;
         let repo = if let Some(repo) = existing { repo } else {
             let mut options = git2::RepositoryInitOptions::new();
             options.initial_head("main").no_reinit(true).external_template(false);
@@ -110,9 +129,7 @@ impl LibraryRepo {
         validate_remote(&config.remote)?;
         std::fs::create_dir_all(root)?;
         ensure!(std::fs::read_dir(root)?.next().is_none(), "克隆目标必须是空文件夹");
-        std::fs::create_dir_all(root.join(".quiet"))?;
-        crate::store::write_atomic(&root.join(".quiet/format.json"), b"{\"format\":5}")?;
-        crate::store::write_atomic(&root.join(MANIFEST), b"{}")?;
+        Store::prepare_layout(root)?;
         let repo = Self::init(root)?;
         repo.configure(config)?;
         {
@@ -176,23 +193,21 @@ impl LibraryRepo {
 
     fn files(&self) -> Result<BTreeSet<String>> {
         let bytes = crate::store::read_bounded(&safe_path(&self.root, MANIFEST)?, 16 << 20)?;
-        let entries = manifest(&bytes, self.worktree_format())?;
-        let mut files: BTreeSet<_> = [MANIFEST, ".quiet/format.json", ".gitattributes", ".gitignore"].into_iter().map(str::to_string).collect();
-        files.extend(entries.keys().filter(|p| !p.ends_with('/')).cloned());
-        for dir in resource_dirs(self.worktree_format()) { collect(&self.root, dir, &mut files)?; }
-        if serde_json::from_slice::<serde_json::Value>(&bytes)?.get("version").is_none() { collect(&self.root, ".quiet/trash", &mut files)?; }
+        let entries = manifest(&bytes)?;
+        let mut files: BTreeSet<_> = [MANIFEST, ".gitattributes", ".gitignore"].into_iter().map(str::to_string).collect();
+        files.extend(entries.into_keys());
+        for dir in RESOURCE_DIRS { collect(&self.root, dir, &mut files)?; }
         Ok(files)
     }
 
     fn working_tree(&self, cache: bool) -> Result<Oid> {
         let mut index = Index::new()?;
         let lfs = lfs::Lfs::new(self.repo.path());
-        let format = self.worktree_format();
         for path in self.files()? {
             let file = safe_path(&self.root, &path)?;
             if !file.exists() { continue }
             let bytes = crate::store::read_bounded(&file, crate::store::EXPORT_FILE_LIMIT)?;
-            let content = if is_asset_path_at(&path, format) {
+            let content = if is_asset_path(&path) {
                 let pointer = if let Some(p) = Pointer::parse(&bytes)? {
                     lfs.read(&p).context("工作区存在未下载的 LFS 指针，未提交")?; p
                 } else if cache { lfs.store(&bytes)? } else { Pointer::of(&bytes) };
@@ -218,11 +233,9 @@ impl LibraryRepo {
     fn changes_between(&self, before: Option<&git2::Tree<'_>>, index: &git2::Tree<'_>, after: &git2::Tree<'_>) -> Result<Vec<Change>> {
         let mut changes = BTreeMap::new();
         for (staged, from, to) in [(true, before, index), (false, Some(index), after)] {
-            let from_format = from.and_then(|tree| self.tree_format(tree).ok()).unwrap_or_default();
-            let to_format = self.tree_format(to).unwrap_or_default();
             for delta in self.repo.diff_tree_to_tree(from, Some(to), None)?.deltas() {
                 let path = delta.new_file().path().or_else(|| delta.old_file().path()).context("Git 变更缺少路径")?.to_string_lossy().into_owned();
-                let blank_only = !is_asset_path_at(&path, from_format) && !is_asset_path_at(&path, to_format) && self.blank_line_delta(&delta)?;
+                let blank_only = !is_asset_path(&path) && self.blank_line_delta(&delta)?;
                 let change = changes.entry(path.clone()).or_insert(Change { path, kind: 'M', staged: false, unstaged: false, blank_only: true });
                 change.blank_only &= blank_only;
                 change.kind = match delta.status() { git2::Delta::Added => 'A', git2::Delta::Deleted => 'D', _ => 'M' };
@@ -253,9 +266,17 @@ impl LibraryRepo {
         let mut out = vec![];
         for id in walk {
             let commit = self.repo.find_commit(id?)?;
+            let tree = commit.tree()?;
+            let Ok(entries) = self.tree_manifest(&tree) else { continue };
             if let Some(doc) = document {
-                let current = self.document_key(&commit.tree()?, doc)?;
-                let previous = commit.parent(0).ok().map(|p| self.document_key(&p.tree()?, doc)).transpose()?.flatten();
+                let current = Self::document_key(&tree, &entries, doc)?;
+                let previous = if let Ok(parent) = commit.parent(0) {
+                    let tree = parent.tree()?;
+                    match self.tree_manifest(&tree) {
+                        Ok(entries) => Self::document_key(&tree, &entries, doc)?,
+                        Err(_) => None,
+                    }
+                } else { None };
                 if current == previous { continue }
             }
             out.push(Commit { id: commit.id().to_string(), message: commit.summary().ok().flatten().unwrap_or("").to_string(), author: commit.author().name().unwrap_or("").to_string(), time: commit.time().seconds() });
@@ -264,22 +285,17 @@ impl LibraryRepo {
         Ok(out)
     }
 
-    fn document_blob(&self, tree: &git2::Tree<'_>, document: &str) -> Result<Option<Oid>> {
-        Ok(self.document_key(tree, document)?.map(|key| key.0))
-    }
-
-    fn document_key(&self, tree: &git2::Tree<'_>, document: &str) -> Result<Option<(Oid, String, Option<String>)>> {
-        let Some(entry) = tree.get_name(MANIFEST) else { return Ok(None) };
-        let meta = self.repo.find_blob(entry.id())?;
-        let entries = manifest(meta.content(), self.tree_format(tree)?)?;
-        let Some((path, meta)) = entries.iter().find(|(path, meta)| !path.ends_with('/') && meta.id == document) else { return Ok(None) };
+    fn document_key(tree: &git2::Tree<'_>, entries: &BTreeMap<String, Metadata>, document: &str) -> Result<Option<(Oid, String, Option<String>)>> {
+        let Some((path, meta)) = entries.iter().find(|(_, meta)| meta.id == document) else { return Ok(None) };
         let title = Some(serde_json::to_string(meta)?);
         Ok(tree.get_path(Path::new(path)).ok().map(|entry| (entry.id(), path.clone(), title)))
     }
 
     pub fn revision(&self, commit: &str, document: &str) -> Result<String> {
         let commit = self.repo.find_commit(Oid::from_str(commit)?)?;
-        let oid = self.document_blob(&commit.tree()?, document)?.context("这个提交中没有此文章")?;
+        let tree = commit.tree()?;
+        let entries = self.tree_manifest(&tree)?;
+        let (oid, _, _) = Self::document_key(&tree, &entries, document)?.context("这个提交中没有此文章")?;
         Ok(std::str::from_utf8(self.repo.find_blob(oid)?.content())?.to_string())
     }
 
@@ -292,9 +308,9 @@ impl LibraryRepo {
         }
         for tree in trees {
             let tree = self.repo.find_tree(tree)?;
-            let format = self.tree_format(&tree)?;
+            if self.tree_manifest(&tree).is_err() { continue }
             for (path, oid) in tree_files(&self.repo, &tree)? {
-                if !is_asset_path_at(&path, format) { continue }
+                if !is_asset_path(&path) { continue }
                 let blob = self.repo.find_blob(oid)?;
                 let p = Pointer::parse(blob.content())?.context("仓库中的图片未使用 LFS，已停止同步")?;
                 pointers.insert(p.oid.clone(), p);
@@ -308,6 +324,7 @@ impl LibraryRepo {
         validate_remote(&config.remote)?;
         let commit = self.repo.head()?.peel_to_commit()?;
         let head = commit.tree()?;
+        validate_tree(&self.repo, &tree_files(&self.repo, &head)?)?;
         let pointers = self.pointers(Some(commit.id()), &head)?;
         lfs::Lfs::new(self.repo.path()).transfer(&config, &self.repo.config()?, &pointers, true, auth)?;
         let mut remote = self.repo.find_remote("origin")?;
@@ -332,17 +349,14 @@ impl LibraryRepo {
         }
         let tree = target.tree()?;
         let files = tree_files(&self.repo, &tree)?;
-        let format = validate_tree(&self.repo, &files)?;
-        if let Some(head) = &head {
-            ensure!(format >= self.tree_format(&head.tree()?)?, "远端文档库格式低于当前提交");
-        }
+        validate_tree(&self.repo, &files)?;
         let pointers = self.pointers(Some(target.id()), &tree)?;
         let lfs = lfs::Lfs::new(self.repo.path());
         lfs.transfer(&config, &self.repo.config()?, &pointers, false, auth)?;
         let mut content = BTreeMap::new();
         for (path, oid) in files {
             let blob = self.repo.find_blob(oid)?;
-            let bytes = if is_asset_path_at(&path, format) { lfs.read(&Pointer::parse(blob.content())?.context("图片缺少 LFS 指针")?)? } else { blob.content().to_vec() };
+            let bytes = if is_asset_path(&path) { lfs.read(&Pointer::parse(blob.content())?.context("图片缺少 LFS 指针")?)? } else { blob.content().to_vec() };
             content.insert(path, bytes);
         }
         // Re-check after network I/O; callers also hold the Store write lock.
@@ -354,70 +368,53 @@ impl LibraryRepo {
     fn ready_to_pull(&self) -> Result<bool> {
         let status = self.status()?;
         if status.changes.is_empty() { return Ok(true) }
-        // A checkout containing only the automatic format upgrade can still fast-forward.
-        let current = self.worktree_format();
-        if virtual_format(current) && let Some(head) = &status.head {
-            let before = self.repo.find_commit(Oid::from_str(head)?)?.tree()?;
-            let old_format = self.tree_format(&before)?;
-            if virtual_format(old_format) && old_format < current && self.index_tree()?.id() == before.id() {
-                let after = self.repo.find_tree(self.working_tree(false)?)?;
-                let mut old_files = tree_files(&self.repo, &before)?;
-                let mut new_files = tree_files(&self.repo, &after)?;
-                old_files.remove(FORMAT_PATH); new_files.remove(FORMAT_PATH);
-                for name in RULE_FILES {
-                    let original = old_files.get(name).map(|oid| self.repo.find_blob(*oid)).transpose()?;
-                    let text = std::str::from_utf8(original.as_ref().map_or(&[], |blob| blob.content()))?;
-                    let updated = with_rules(name, text.to_owned(), current);
-                    old_files.insert(name.to_owned(), self.repo.blob(updated.as_bytes())?);
-                }
-                return Ok(old_files.into_iter().map(|(path, oid)| (layout_path(&path, old_format, current), oid)).collect::<BTreeMap<_, _>>() == new_files);
-            }
+        if let Some(head) = status.head {
+            // Internal files are excluded from the snapshot. Allow a pull when
+            // the only other difference is the app's update to its ignore rule.
+            let mut changes = status.changes.iter().filter(|c| !is_internal_path(&c.path));
+            let Some(change) = changes.next() else { return Ok(true) };
+            if change.path != ".gitignore" || change.staged || changes.next().is_some() { return Ok(false) }
+            let tree = self.repo.find_commit(Oid::from_str(&head)?)?.tree()?;
+            let Some(entry) = tree.get_name(".gitignore") else { return Ok(false) };
+            let content = self.repo.find_blob(entry.id())?;
+            let Some(updated) = updated_internal_ignore(std::str::from_utf8(content.content())?) else { return Ok(false) };
+            let rules = std::fs::read(safe_path(&self.root, ".gitignore")?)?;
+            return Ok(rules == updated.as_bytes());
         }
         // A fresh empty clone has only bootstrap metadata, not an initial commit.
-        let bytes = std::fs::read(self.root.join(MANIFEST))?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes)?;
-        let empty = if value.get("version").is_some() {
-            let shared = crate::manifest::Manifest::parse(&bytes)?;
-            shared.folders.is_empty() && shared.notes.is_empty() && shared.trash.is_empty()
-        } else { manifest(&bytes, self.worktree_format())?.is_empty() };
-        Ok(status.head.is_none() && empty
-            && self.files()?.iter().all(|p| matches!(p.as_str(), MANIFEST | FORMAT_PATH | ".gitattributes" | ".gitignore")))
+        let shared = Manifest::parse(&std::fs::read(self.root.join(MANIFEST))?)?;
+        let empty = shared.folders.is_empty() && shared.notes.is_empty() && shared.trash.is_empty();
+        Ok(empty
+            && self.files()?.iter().all(|p| matches!(p.as_str(), MANIFEST | ".gitattributes" | ".gitignore")))
     }
 
     pub fn revision_paths(&self, commit: &str) -> Result<BTreeMap<String, String>> {
         let tree = self.repo.find_commit(Oid::from_str(commit)?)?.tree()?;
-        let blob = self.repo.find_blob(tree.get_name(MANIFEST).context("提交中缺少元数据")?.id())?;
-        Ok(manifest(blob.content(), self.tree_format(&tree)?)?.into_iter().filter(|(p, _)| !p.ends_with('/')).map(|(p, m)| (m.id, p)).collect())
+        Ok(self.tree_manifest(&tree)?.into_iter().map(|(p, m)| (m.id, p)).collect())
     }
 
     pub fn revision_title(&self, commit: &str, document: &str) -> Result<Option<String>> {
         let tree = self.repo.find_commit(Oid::from_str(commit)?)?.tree()?;
-        let meta = self.repo.find_blob(tree.get_name(MANIFEST).context("提交中缺少元数据")?.id())?;
-        Ok(manifest(meta.content(), self.tree_format(&tree)?)?.values().find(|m| m.id == document).and_then(|m| m.extra.get("title")).and_then(|v| v.as_str()).map(str::to_string))
+        Ok(self.tree_manifest(&tree)?.values().find(|m| m.id == document).and_then(|m| m.extra.get("title")).and_then(|v| v.as_str()).map(str::to_string))
     }
 
-    fn worktree_format(&self) -> u32 { Store::format_at(&self.root).unwrap_or_default() }
-
-    fn tree_format(&self, tree: &git2::Tree<'_>) -> Result<u32> {
-        let Ok(entry) = tree.get_path(Path::new(FORMAT_PATH)) else { return Ok(0) };
-        parse_format(self.repo.find_blob(entry.id())?.content())
+    fn tree_manifest(&self, tree: &git2::Tree<'_>) -> Result<BTreeMap<String, Metadata>> {
+        let entry = tree.get_name(MANIFEST).context("提交中缺少 quiet.json")?;
+        manifest(self.repo.find_blob(entry.id())?.content())
     }
 
     fn revision_asset_pointer(&self, commit: &str, source: &str) -> Result<Option<(String, Pointer)>> {
         let tree = self.repo.find_commit(Oid::from_str(commit)?)?.tree()?;
         let source = source.strip_prefix("file://").unwrap_or(source).replace('\\', "/");
-        let format = self.tree_format(&tree)?;
-        let mapped = |path: &str| {
-            let (dir, file) = path.split_once('/')?;
-            Some(format!("{}/{file}", resource_dir_at(dir, format)?))
-        };
+        self.tree_manifest(&tree)?;
+        let managed = |path: &str| is_asset_path(path).then(|| path.to_string());
         let absolute = source.starts_with('/') || source.as_bytes().get(1) == Some(&b':');
         let relative = if absolute {
             let root = self.root.to_string_lossy().replace('\\', "/");
-            source.strip_prefix(&root).and_then(|rest| rest.strip_prefix('/')).and_then(mapped)
-                .or_else(|| source.match_indices('/').filter_map(|(i, _)| mapped(&source[i + 1..]))
+            source.strip_prefix(&root).and_then(|rest| rest.strip_prefix('/')).and_then(managed)
+                .or_else(|| source.match_indices('/').filter_map(|(i, _)| managed(&source[i + 1..]))
                     .find(|path| tree.get_path(Path::new(path)).is_ok()))
-        } else { mapped(&source) };
+        } else { managed(&source) };
         let Some(path) = relative else { return Ok(None) };
         let entry = tree.get_path(Path::new(&path))?;
         ensure!(entry.filemode() == 0o100644, "历史资源不是普通文件");
@@ -440,7 +437,7 @@ impl LibraryRepo {
         let Some((path, pointer)) = self.revision_asset_pointer(commit, source)? else { return Ok(None) };
         let bytes = lfs::Lfs::new(self.repo.path()).read(&pointer)?;
         let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("bin");
-        let dir = if preview { ".quiet/git-preview" } else { path.split_once('/').and_then(|(dir, _)| resource_dir_at(dir, self.worktree_format())).context("历史资源目录缺失")? };
+        let dir = if preview { ".quiet/git-preview" } else { path.split_once('/').context("历史资源目录缺失")?.0 };
         let destination = format!("{dir}/{}.{}", pointer.oid, ext);
         let target = safe_path(&self.root, &destination)?;
         std::fs::create_dir_all(target.parent().unwrap())?;
@@ -449,25 +446,6 @@ impl LibraryRepo {
     }
 
     fn apply(&self, content: &BTreeMap<String, Vec<u8>>, tree: &git2::Tree<'_>, target: Oid, branch: &str, previous: Oid) -> Result<()> {
-        let current_format = self.worktree_format();
-        let target_format = parse_format(content.get(FORMAT_PATH).context("缺少格式标记")?)?;
-        let old_entries = manifest(&std::fs::read(self.root.join(MANIFEST))?, current_format)?;
-        let entries = manifest(content.get(MANIFEST).context("缺少 quiet.json")?, target_format)?;
-        // Use the old layout for backups and conflict checks, then write to the destination layout.
-        let virtual_update = virtual_format(current_format) && virtual_format(target_format);
-        let mut content: BTreeMap<_, std::borrow::Cow<'_, [u8]>> = content.iter().map(|(path, bytes)| {
-            let path = if virtual_update { layout_path(path, target_format, current_format) } else { path.clone() };
-            (path, bytes.as_slice().into())
-        }).collect();
-        let upgrading = virtual_update && current_format < target_format;
-        let keep_marker = virtual_update && current_format > target_format;
-        if keep_marker {
-            for name in RULE_FILES {
-                let original = std::str::from_utf8(content.get(name).map_or(&[], |bytes| bytes.as_ref()))?;
-                let updated = with_rules(name, original.to_owned(), current_format);
-                content.insert(name.to_owned(), updated.into_bytes().into());
-            }
-        }
         let reference = format!("refs/heads/{branch}");
         let index_path = self.repo.path().join("index");
         let old_index = std::fs::read(&index_path).ok();
@@ -484,30 +462,24 @@ impl LibraryRepo {
                 std::fs::copy(file, copy)?; existed.insert(path.clone());
             }
         }
-        if upgrading { crate::store::rename_layout(&self.root, current_format, target_format)?; }
         let result = (|| -> Result<()> {
-            for path in entries.keys().filter(|p| p.ends_with('/')) { std::fs::create_dir_all(safe_path(&self.root, path.trim_end_matches('/'))?)?; }
-            for path in all.iter().filter(|p| p.as_str() != FORMAT_PATH) {
-                let target = if upgrading { layout_path(path, current_format, target_format) } else { path.clone() };
-                let file = safe_path(&self.root, &target)?;
+            for path in &all {
+                let file = safe_path(&self.root, path)?;
                 if let Some(bytes) = content.get(path) {
                     std::fs::create_dir_all(file.parent().unwrap())?;
                     crate::store::write_atomic(&file, bytes)?;
                 } else if file.exists() { std::fs::remove_file(file)?; }
             }
-            if !keep_marker { crate::store::write_atomic(&safe_path(&self.root, FORMAT_PATH)?, &content[FORMAT_PATH])?; }
             let mut index = self.repo.index()?; index.read_tree(tree)?; index.write()?;
             self.repo.reference_matching(&reference, target, true, previous, "Quiet.md: fast-forward")?;
             Ok(())
         })();
         if let Err(error) = result {
-            let mut rollback = !upgrading || crate::store::rename_layout(&self.root, target_format, current_format).is_ok();
-            if rollback {
-                for path in &all {
-                    let file = self.root.join(path);
-                    if existed.contains(path) { rollback &= std::fs::copy(backup.join(path), file).is_ok(); }
-                    else if file.exists() { rollback &= std::fs::remove_file(file).is_ok(); }
-                }
+            let mut rollback = true;
+            for path in &all {
+                let file = self.root.join(path);
+                if existed.contains(path) { rollback &= std::fs::copy(backup.join(path), file).is_ok(); }
+                else if file.exists() { rollback &= std::fs::remove_file(file).is_ok(); }
             }
             match &old_index {
                 Some(bytes) => rollback &= crate::store::write_atomic(&index_path, bytes).is_ok(),
@@ -518,10 +490,6 @@ impl LibraryRepo {
             return Err(error.context(format!("拉取应用失败；恢复备份位置：{}", backup.display())));
         }
         let _ = std::fs::remove_dir_all(backup);
-        // Empty physical folders otherwise reappear as new metadata on the next scan.
-        let mut obsolete: Vec<_> = old_entries.keys().filter(|p| p.ends_with('/') && !entries.contains_key(*p)).collect();
-        obsolete.sort_by_key(|p| std::cmp::Reverse(p.len()));
-        for path in obsolete { let _ = std::fs::remove_dir(self.root.join(path)); }
         Ok(())
     }
 }
@@ -596,43 +564,22 @@ pub(crate) fn safe_path(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
-fn layout_path(path: &str, from: u32, to: u32) -> String {
-    let Some((dir, file)) = path.split_once('/') else { return path.to_owned() };
-    let target = if dir == notes_dir(from) { notes_dir(to) } else { resource_dir_at(dir, to).unwrap_or(dir) };
-    if target == dir { path.to_owned() } else { format!("{target}/{file}") }
-}
+#[derive(Serialize)]
+struct Metadata { id: String, extra: BTreeMap<String, serde_json::Value> }
 
-#[derive(Serialize, Deserialize)]
-struct Metadata { id: String, #[serde(flatten)] extra: BTreeMap<String, serde_json::Value> }
-fn manifest(bytes: &[u8], format: u32) -> Result<BTreeMap<String, Metadata>> {
+fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, Metadata>> {
     ensure!(bytes.len() <= 16 << 20, "文档库元数据过大");
-    let value: serde_json::Value = serde_json::from_slice(bytes)?;
-    if value.get("version").is_some() {
-        let shared = crate::manifest::Manifest::parse(bytes)?;
-        let mut entries = BTreeMap::new();
-        let dir = notes_dir(format);
-        for note in shared.notes {
-            let mut extra = note.extra; extra.insert("title".into(), note.title.into());
-            extra.insert("folderId".into(), note.folder.into());
-            entries.insert(format!("{dir}/{}", note.filename), Metadata { id: note.id, extra });
-        }
-        for deleted in shared.trash {
-            if let Some(filename) = deleted.filename {
-                let mut extra = deleted.extra; extra.insert("title".into(), deleted.title.into());
-                entries.insert(format!("{dir}/{filename}"), Metadata { id: deleted.id, extra });
-            }
-        }
-        return Ok(entries);
+    let shared = Manifest::parse(bytes)?;
+    let mut entries = BTreeMap::new();
+    for note in shared.notes {
+        let mut extra = note.extra; extra.insert("title".into(), note.title.into());
+        extra.insert("folderId".into(), note.folder.into());
+        entries.insert(format!("{NOTES}/{}", note.filename), Metadata { id: note.id, extra });
     }
-    let entries: BTreeMap<String, Metadata> = serde_json::from_slice(bytes).context("quiet.json 元数据无效")?;
-    let mut ids = BTreeSet::new();
-    for (path, meta) in &entries {
-        let name = path.trim_end_matches('/');
-        ensure!(!name.split('/').any(|p| p.starts_with('.') || p.is_empty()), "元数据中存在非法文件路径");
-        ensure!(uuid::Uuid::parse_str(&meta.id).is_ok() && ids.insert(&meta.id), "元数据中存在无效或重复 id");
-        if !path.ends_with('/') {
-            ensure!(Path::new(name).file_stem().and_then(|s| s.to_str()) == Some(&meta.id), "文章文件名必须使用唯一 UUID");
-            ensure!(name.ends_with(".xml") || name.ends_with(".md"), "不支持的文章格式");
+    for deleted in shared.trash {
+        if let Some(filename) = deleted.filename {
+            let mut extra = deleted.extra; extra.insert("title".into(), deleted.title.into());
+            entries.insert(format!("{NOTES}/{filename}"), Metadata { id: deleted.id, extra });
         }
     }
     Ok(entries)
@@ -644,7 +591,7 @@ fn collect(root: &Path, dir: &str, out: &mut BTreeSet<String>) -> Result<()> {
     for entry in std::fs::read_dir(dir_path)? {
         let entry = entry?;
         let name = entry.file_name().into_string().map_err(|_| anyhow::anyhow!("资源文件名不是 UTF-8"))?;
-        if name.starts_with('.') || name.ends_with(".bak") || name.ends_with(".tmp") || (dir.split_once('/').is_some_and(|(folder, sub)| sub == "remote" && resource_dir_at(folder, FORMAT) == Some(crate::store::IMAGE)) && name.ends_with(".part")) { continue }
+        if name.starts_with('.') || name.ends_with(".bak") || name.ends_with(".tmp") || (dir == "Images/remote" && name.ends_with(".part")) { continue }
         let path = format!("{dir}/{name}");
         ensure!(!entry.file_type()?.is_symlink(), "资源不能使用符号链接：{path}");
         if entry.file_type()?.is_dir() { collect(root, &path, out)?; } else { out.insert(path); }
@@ -668,30 +615,20 @@ fn tree_files(repo: &Repository, tree: &git2::Tree<'_>) -> Result<BTreeMap<Strin
     let mut out = BTreeMap::new(); visit(repo, tree, "", &mut out)?; Ok(out)
 }
 
-fn parse_format(bytes: &[u8]) -> Result<u32> {
-    #[derive(Deserialize)]
-    struct Marker { format: u32 }
-    Ok(serde_json::from_slice::<Marker>(bytes)?.format)
-}
-
-fn validate_tree(repo: &Repository, files: &BTreeMap<String, Oid>) -> Result<u32> {
+fn validate_tree(repo: &Repository, files: &BTreeMap<String, Oid>) -> Result<()> {
     let bytes = repo.find_blob(*files.get(MANIFEST).context("远端缺少 quiet.json")?)?;
-    let virtual_manifest = serde_json::from_slice::<serde_json::Value>(bytes.content())?.get("version").is_some();
-    let marker = repo.find_blob(*files.get(FORMAT_PATH).context("远端缺少格式标记")?)?;
-    let format = parse_format(marker.content())?;
-    let entries = manifest(bytes.content(), format)?;
-    ensure!(if virtual_manifest { virtual_format(format) } else { format == 5 }, "远端文档库格式不兼容");
+    let entries = manifest(bytes.content()).context("远端文档库格式不兼容")?;
     for path in files.keys() {
-        let allowed = matches!(path.as_str(), MANIFEST | ".gitattributes" | ".gitignore" | ".quiet/format.json")
-            || entries.contains_key(path) || is_asset_path_at(path, format) || (!virtual_manifest && path.starts_with(".quiet/trash/"));
+        let allowed = matches!(path.as_str(), MANIFEST | ".gitattributes" | ".gitignore")
+            || entries.contains_key(path) || is_asset_path(path);
         ensure!(allowed && !path.split('/').any(|p| p == ".." || p.eq_ignore_ascii_case(".git")), "远端包含不属于文档库的路径：{path}");
     }
-    for path in entries.keys().filter(|p| !p.ends_with('/')) {
+    for path in entries.keys() {
         let oid = files.get(path).with_context(|| format!("远端缺少文章：{path}"))?;
         let blob = repo.find_blob(*oid)?;
         ensure!(blob.size() as u64 <= crate::store::EXPORT_FILE_LIMIT, "远端文章过大");
         let text = std::str::from_utf8(blob.content()).context("远端文章不是 UTF-8")?;
         if path.ends_with(".xml") { crate::docxml::parse(text).context("远端 DocxXML 文章无效")?; }
     }
-    Ok(format)
+    Ok(())
 }

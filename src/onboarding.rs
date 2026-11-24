@@ -275,32 +275,6 @@ fn found_name(app: &str, path: &Path, mobile: &Path) -> String {
     path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
 }
 
-// ---- syncing
-
-/// Whether macOS keeps `path` (or the nearest folder above it that exists)
-/// in iCloud; this also covers Documents with 桌面与文稿 syncing on.
-#[cfg(target_os = "macos")]
-pub(crate) fn ubiquitous(path: &Path) -> bool {
-    use objc::runtime::{BOOL, NO, Object};
-    use objc::{class, msg_send, sel, sel_impl};
-    #[link(name = "Foundation", kind = "framework")]
-    unsafe extern "C" { static NSURLIsUbiquitousItemKey: *mut Object; }
-    let mut p = path;
-    while !p.exists() { match p.parent() { Some(q) => p = q, None => return false } }
-    let s = p.to_string_lossy();
-    unsafe {
-        let ns: *mut Object = msg_send![class!(NSString), alloc];
-        let ns: *mut Object = msg_send![ns, initWithBytes:s.as_ptr() length:s.len() encoding:4usize];
-        let url: *mut Object = msg_send![class!(NSURL), fileURLWithPath:ns];
-        let _: () = msg_send![ns, release];
-        let mut value: *mut Object = std::ptr::null_mut();
-        let ok: BOOL = msg_send![url, getResourceValue:&mut value forKey:NSURLIsUbiquitousItemKey error:std::ptr::null_mut::<*mut Object>()];
-        if ok == NO || value.is_null() { return false }
-        let on: BOOL = msg_send![value, boolValue];
-        on != NO
-    }
-}
-
 /// A path as people know it: 文稿 › Quiet.md, iCloud 云盘 › Notes, Dropbox › …;
 /// deep ones keep their first and last two names.
 /// Where a found folder lives, in a few words: its app's iCloud container
@@ -547,7 +521,7 @@ impl Onboarding {
             return cx.emit(Done);
         }
         if let Err(e) = crate::store::Store::set_root_dir(self.root.clone()) {
-            self.error = Some(format!("{}{e}", tr("无法在这里创建文档库：", "Couldn't create the library here: ")));
+            self.error = Some(format!("{}{}", tr("无法在这里创建文档库：", "Couldn't create the library here: "), crate::settings::diagnostic(&e.to_string())));
             return cx.notify();
         }
         PENDING.store(false, Ordering::Relaxed);

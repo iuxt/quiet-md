@@ -9,9 +9,9 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 依赖只能从应用指向 core。core 里的模块只引用 core 里的模块。
 
-文档库采用 FORMAT 11：`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据，`virtual_migrate.rs` 负责带备份和恢复记录的旧库转换。文件夹只存 ID 和父 ID；正文固定在 `Notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。图片、文件附件和画板源文件分别存入库根的 `Images/`、`Files/` 和 `Drawings/`。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
+文档库布局由共享清单的版本定义。`manifest.rs` 定义根目录 `quiet.json`（version 2，`folders` / `notes` / `trash`），`virtual_store.rs` 管理虚拟树及回收站元数据。文件夹只存 ID 和父 ID；正文固定在 `Notes/<UUID>.xml|md`，移动、重命名及移入回收站只更新清单，正文路径不变。图片、文件附件和画板源文件分别存入库根的 `Images/`、`Files/` 和 `Drawings/`。标题、父级、排序等共享字段都来自 JSON，本机状态不写入其中。见 [FORMAT.md](FORMAT.md)。
 
-打开文档库时，`Store::open_library_at` 在存储布局就绪后，用 Store 写锁初始化缺失的本地 Git 仓库。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。旧 FORMAT 5 的路径索引 Git 历史仍可读取。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行）。手动 Git 操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
+打开文档库时，`Store::open_library_at` 在存储布局就绪后，用 Store 写锁初始化缺失的本地 Git 仓库。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。打开文档库和同步 Git 时校验 `quiet.json` 的 `version` 字段。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行）。手动 Git 操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
 
 ```
 main.rs ─ 窗口
@@ -185,6 +185,6 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 
 ## 文件夹与文件操作撤销
 
-文件夹是索引中的 `Meta::folder` 条目，只允许文件夹作为父级。Core 的 `store/folders.rs` 负责旧树迁移、层级校验和同级排序；应用的 `folders.rs`、`sidebar_drag.rs`、`home_folder.rs` 负责文件夹页面、拖拽和动画。
+文件夹是索引中的 `Meta::folder` 条目，只允许文件夹作为父级。Core 的 `store/folders.rs` 负责层级校验和同级排序；应用的 `folders.rs`、`sidebar_drag.rs`、`home_folder.rs` 负责文件夹页面、拖拽和动画。
 
 新建、复制、重命名、移动、删除和恢复的撤销与文档正文撤销分开。存储层在写锁内记录实际成功的文件操作，避免将其他实例的变化纳入当前操作；异步拖拽落盘后用实际记录替换预览记录。撤销前检查文件状态和层级，正文读自当前磁盘，不恢复旧正文快照。管理操作修改标题时同步修正编辑器及其历史快照中的光标边界。

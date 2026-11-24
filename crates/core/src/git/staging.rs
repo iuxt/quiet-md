@@ -81,9 +81,14 @@ impl LibraryRepo {
             &working
         };
         let mut snapshot = Index::new()?; snapshot.read_tree(source)?;
+        let local: Vec<_> = snapshot.iter().filter_map(|entry| {
+            let path = std::str::from_utf8(&entry.path).ok()?;
+            is_internal_path(path).then(|| PathBuf::from(path))
+        }).collect();
+        for path in local { snapshot.remove_path(&path)?; }
         let mut restore = Vec::new();
         if let Some(before) = &before {
-            for change in changes.iter().filter(|c| c.blank_only) {
+            for change in changes.iter().filter(|c| c.blank_only && !is_internal_path(&c.path)) {
                 let path = Path::new(&change.path);
                 let original = before.get_path(path)?;
                 let current = working.get_path(path)?;
@@ -97,16 +102,13 @@ impl LibraryRepo {
         let tree = self.repo.find_tree(snapshot.write_tree_to(&self.repo)?)?;
         let changed = !parent.as_ref().is_some_and(|p| p.tree_id() == tree.id());
         if staged && changed {
-            let format = validate_tree(&self.repo, &tree_files(&self.repo, &tree)?)
-                .context("暂存区中的文档库不完整，请同时暂存相关的 quiet.json、正文和格式标记")?;
-            ensure!(format >= self.tree_format(&working)?, "请先暂存文档库格式标记，再提交");
-            let previous = before.as_ref().map(|t| self.tree_format(t)).transpose()?.unwrap_or_default();
-            if (format >= OLD_NOTES_FORMAT && previous < OLD_NOTES_FORMAT)
-                || (format >= PLURAL_RESOURCES_FORMAT && previous < PLURAL_RESOURCES_FORMAT) {
+            validate_tree(&self.repo, &tree_files(&self.repo, &tree)?)
+                .context("暂存区中的文档库不完整，请同时暂存相关的 quiet.json 和正文")?;
+            if before.as_ref().is_none_or(|t| self.tree_manifest(t).is_err()) {
                 let attr = tree.get_path(Path::new(".gitattributes")).context("请同时暂存 Git LFS 规则")?;
                 let attr = self.repo.find_blob(attr.id())?;
                 let rules = std::str::from_utf8(attr.content())?;
-                ensure!(asset_attributes(format).all(|rule| rules.lines().any(|line| line == rule)), "请同时暂存 Git LFS 规则");
+                ensure!(asset_attributes().all(|rule| rules.lines().any(|line| line == rule)), "请同时暂存 Git LFS 规则");
             }
             for pointer in self.pointers(None, &tree)? { lfs::Lfs::new(self.repo.path()).read(&pointer)?; }
         }
@@ -128,61 +130,42 @@ impl LibraryRepo {
 
     /// Like checkout -- <path>: restore the index snapshot, leaving staged changes intact.
     pub fn discard(&self, path: &str) -> Result<()> {
+        ensure!(!is_internal_path(path), "文档库本机文件不通过 Git 恢复");
         let target = safe_path(&self.root, path)?;
         let status = self.status()?;
         ensure!(status.changes.iter().any(|c| c.path == path && c.unstaged), "这个文件没有未暂存的修改");
         let index = self.index_tree()?;
-        let worktree_format = self.worktree_format();
-        let dir = notes_dir(worktree_format);
-        if let Some((prefix, file)) = path.split_once('/') {
-            let renamed = if worktree_format >= NOTES_FORMAT && [OLD_NOTES, NOTES].contains(&prefix) { Some((OLD_NOTES, NOTES)) }
-                else if worktree_format >= PLURAL_RESOURCES_FORMAT {
-                    crate::store::RESOURCE_RENAMES.into_iter().find(|(old, new)| [*old, *new].contains(&prefix))
-                } else { None };
-            if let Some((old, new)) = renamed && index.get_path(Path::new(&format!("{old}/{file}"))).is_ok() {
-                ensure!(prefix == new && index.get_path(Path::new(path)).is_ok(), "不能丢弃文档库目录升级");
-            }
-        }
         if let Ok(entry) = index.get_path(Path::new(path)) {
             ensure!(entry.filemode() == 0o100644, "Git 文档库不允许符号链接或可执行文件");
             let blob = self.repo.find_blob(entry.id())?;
-            let bytes = if is_asset_path_at(path, self.tree_format(&index).unwrap_or_default()) {
+            let bytes = if is_asset_path(path) {
                 lfs::Lfs::new(self.repo.path()).read(&Pointer::parse(blob.content())?.context("图片缺少 LFS 指针")?)?
             } else { blob.content().to_vec() };
-            if path == FORMAT_PATH {
-                ensure!(parse_format(&bytes)? >= Store::format_at(&self.root).unwrap_or_default(), "不能丢弃文档库格式升级");
-            }
-            if RULE_FILES.contains(&path) && worktree_format >= PLURAL_RESOURCES_FORMAT && self.tree_format(&index)? < PLURAL_RESOURCES_FORMAT {
-                let text = std::str::from_utf8(&bytes)?;
-                ensure!(with_rules(path, text.to_owned(), worktree_format) == text, "不能丢弃文档库格式升级");
-            }
             if path == MANIFEST {
-                let restored = manifest(&bytes, worktree_format)?;
-                let current = manifest(&std::fs::read(&target)?, worktree_format)?;
-                for file in current.keys().filter(|p| p.split_once('/').is_some_and(|(prefix, _)| prefix == dir) && !restored.contains_key(*p)) {
+                let restored = manifest(&bytes)?;
+                let current = manifest(&std::fs::read(&target)?)?;
+                for file in current.keys().filter(|p| !restored.contains_key(*p)) {
                     ensure!(!safe_path(&self.root, file)?.exists(), "请先丢弃新增文章，再恢复清单：{file}");
                 }
-                for file in restored.keys().filter(|p| !p.ends_with('/')) {
+                for file in restored.keys() {
                     ensure!(safe_path(&self.root, file)?.is_file(), "请先恢复清单引用的正文：{file}");
                 }
             }
             std::fs::create_dir_all(target.parent().unwrap())?;
             crate::store::write_atomic(&target, &bytes)?;
         } else {
-            ensure!(!matches!(path, MANIFEST | ".quiet/format.json" | ".gitattributes" | ".gitignore"), "文档库必需文件不能丢弃");
+            ensure!(!matches!(path, MANIFEST | ".gitattributes" | ".gitignore"), "文档库必需文件不能丢弃");
             // New notes must also leave the manifest, otherwise their missing body breaks the library.
             let manifest_path = safe_path(&self.root, MANIFEST)?;
             let bytes = std::fs::read(&manifest_path)?;
             let mut value: serde_json::Value = serde_json::from_slice(&bytes)?;
-            if value.get("version").is_some() {
-                for key in ["notes", "trash"] {
-                    if let Some(entries) = value[key].as_array_mut() {
-                        entries.retain(|e| e["filename"].as_str().is_none_or(|f| format!("{dir}/{f}") != path));
-                    }
+            for key in ["notes", "trash"] {
+                if let Some(entries) = value[key].as_array_mut() {
+                    entries.retain(|e| e["filename"].as_str().is_none_or(|f| format!("{NOTES}/{f}") != path));
                 }
-            } else if let Some(entries) = value.as_object_mut() { entries.remove(path); }
+            }
             let updated = serde_json::to_vec_pretty(&value)?;
-            manifest(&updated, worktree_format)?;
+            manifest(&updated)?;
             if target.exists() {
                 let original = std::fs::read(&target)?;
                 std::fs::remove_file(&target)?;

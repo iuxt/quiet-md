@@ -72,7 +72,7 @@ impl Workspace {
                 if matches!(action, Action::Enable) { writer.enable_git()?; }
                 let repo = LibraryRepo::open(writer.library_root())?;
                 let notice = match action {
-                    Action::Enable => { repo.configure(&config)?; tr("已启用 Git，原文件备份已保留", "Git enabled; original files backed up").to_string() },
+                    Action::Enable => { repo.configure(&config)?; tr("已启用 Git", "Git enabled").to_string() },
                     Action::Configure => { repo.configure(&config)?; tr("Git 配置已保存", "Git configuration saved").to_string() },
                     Action::Commit => {
                         // Commit under the same library lock as autosaves and tree operations.

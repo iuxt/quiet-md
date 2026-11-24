@@ -70,7 +70,7 @@ impl Store {
 
 impl Store {
     pub fn accept_file_title(&self, id: &str, title: &str) -> Result<()> {
-        if self.virtual_folders() && self.index.get(id).and_then(|m| m.name.as_deref()) == Some(title) {
+        if self.index.get(id).and_then(|m| m.name.as_deref()) == Some(title) {
             let loaded = self.loaded.borrow();
             if let Some(previous) = loaded.get(id) && std::fs::read_to_string(self.path(id)).is_ok_and(|disk| disk == *previous) {
                 self.loaded_titles.borrow_mut().insert(id.to_string(), title.to_string());
@@ -113,7 +113,7 @@ impl Store {
             match (from, to) {
                 (Some(_), None) => {
                     anyhow::ensure!(!self.index.iter().any(|(id, m)| m.parent.as_deref() == Some(&c.id) && !deleted.contains(id.as_str())), "文件夹里有后来新增的内容，不能撤销创建");
-                    anyhow::ensure!(!self.trash.contains_key(&c.id) && (self.virtual_folders() || !self.trash_path(&c.id).try_exists()?), "回收站存在冲突，未覆盖");
+                    anyhow::ensure!(!self.trash.contains_key(&c.id), "回收站存在冲突，未覆盖");
                     projected.remove(&c.id);
                 }
                 (None, Some(target)) => {
@@ -155,30 +155,17 @@ impl Store {
                 while let Some(p) = ancestor.filter(|p| deleted.contains(p.as_str())) { ancestor = self.index.get(&p).and_then(|m| m.parent.clone()); root = Some(p); }
                 (*id, root)
             }).collect();
-            for id in gone { self.trash_one(id, roots[id].clone())?; }
+            for id in gone { self.trash_virtual(&[(id.to_string(), roots[id].clone())], false)?; }
             // What comes back, folders first.
             let mut back: Vec<(&str, &FileState)> = pairs.iter().filter_map(|(c, (f, t))| if f.is_none() { t.as_ref().map(|t| (c.id.as_str(), t)) } else { None }).collect();
             back.sort_by_key(|(id, _)| depth(&projected, id));
             for (id, target) in back {
-                self.untrash(id, target.parent.clone(), Some((target.order, target.root_order)))?;
+                self.untrash_virtual(id, target.parent.clone(), Some((target.order, target.root_order)))?;
             }
             // Moves and renames.
             for (c, (from, to)) in &pairs {
                 let (Some(from), Some(to)) = (from, to) else { continue };
-                if from.parent != to.parent && !self.index[&c.id].local() && !self.flat && !self.virtual_folders() {
-                    let rel = self.rel_in(&c.id, to.parent.as_deref());
-                    self.relocate(&[(c.id.clone(), rel)])?;
-                }
                 if from.title != to.title {
-                    if !self.virtual_folders() && !to.folder && !self.index[&c.id].markdown && !self.index[&c.id].local() {
-                        let path = self.path(&c.id);
-                        let text = std::fs::read_to_string(&path)?;
-                        let mut doc = docxml::parse(&text)?;
-                        doc.title = crate::model::RichText::plain(&to.title);
-                        // Only the title changes: links stay as written.
-                        let out = docxml::serialize(&doc);
-                        if out != text { write_atomic(&path, out.as_bytes())?; }
-                    }
                     self.follow_title(&c.id, &to.title)?;
                     if let Some(m) = self.index.get_mut(&c.id) { m.modified = now(); }
                 }
@@ -186,8 +173,7 @@ impl Store {
                     m.parent = to.parent.clone(); m.order = to.order; m.root_order = to.root_order;
                 }
             }
-            self.save_index()?;
-            self.save_trash()
+            self.save_index()
         })();
         for c in changes { self.parsed.remove(&c.id); self.forget_loaded(&c.id); }
         result.map_err(|e| anyhow::anyhow!("{e}；已完成的部分保留在文档库"))

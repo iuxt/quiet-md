@@ -1,57 +1,9 @@
-//! FORMAT 4 layout: the folders on disk are the library's folders, a
-//! document's file name is its title, and links are paths relative to the
-//! file. Names, relative paths and the directory scan live here.
+//! Relative links and directory scans.
 
 use super::*;
 
-/// Characters no file name may hold on macOS or Windows, and what stands in for them.
-const ILLEGAL: [(char, char); 9] = [('/', '／'), ('\\', '＼'), (':', '：'), ('*', '＊'), ('?', '？'), ('"', '＂'), ('<', '＜'), ('>', '＞'), ('|', '｜')];
-/// Longest name kept, in bytes, before the ` 2` suffix and the extension.
-const NAME_BYTES: usize = 120;
-
-/// A title as a file or folder name (no extension): illegal characters become
-/// their full-width forms, control characters spaces; no leading `.`, no
-/// trailing dot or space (Windows drops them), Windows device names get a
-/// `_`, and at most 120 bytes. Empty: 未命名文档.
-pub fn file_name_for(title: &str) -> String {
-    let mut s: String = title.chars().map(|c| match ILLEGAL.iter().find(|(a, _)| *a == c) {
-        Some((_, b)) => *b,
-        None if c.is_control() => ' ',
-        None => c,
-    }).collect();
-    s = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    let s = s.trim_start_matches(['.', ' ']).trim_end_matches(['.', ' ']);
-    let mut s = if s.is_empty() { crate::model::UNTITLED.to_string() } else { s.to_string() };
-    if s.len() > NAME_BYTES {
-        let mut end = NAME_BYTES;
-        while !s.is_char_boundary(end) { end -= 1; }
-        s.truncate(end);
-        s = s.trim_end_matches(['.', ' ']).to_string();
-    }
-    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
-    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.as_bytes()[3].is_ascii_digit() && stem.as_bytes()[3] != b'0');
-    if reserved { s.insert(stem.len(), '_'); }
-    s
-}
-
-/// Whether `stem` is `base`, or `base` numbered (`base 2`, `base 3` …) because the name was taken.
-pub(super) fn name_fits(stem: &str, base: &str) -> bool {
-    stem == base || stem.strip_prefix(base).and_then(|r| r.strip_prefix(' ')).is_some_and(|n| !n.starts_with('0') && n.parse::<u32>().is_ok_and(|n| n >= 2))
-}
-
-/// `stem` without the ` 2` a clash gave it.
-pub(super) fn unnumbered(stem: &str) -> &str {
-    match stem.rsplit_once(' ') {
-        Some((head, n)) if !head.is_empty() && name_fits(stem, head) && !n.is_empty() => head,
-        _ => stem,
-    }
-}
-
 /// The folder part of a relative path ("" at the top).
 pub(super) fn parent_rel(rel: &str) -> &str { rel.rsplit_once('/').map_or("", |(d, _)| d) }
-/// The last part of a relative path.
-pub(super) fn base_name(rel: &str) -> &str { rel.rsplit_once('/').map_or(rel, |(_, n)| n) }
 /// A file name without its extension.
 pub(super) fn stem_of(name: &str) -> &str { name.rsplit_once('.').filter(|(s, _)| !s.is_empty()).map_or(name, |(s, _)| s) }
 pub(super) fn join_rel(dir: &str, name: &str) -> String { if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") } }
@@ -89,23 +41,21 @@ pub(super) struct Scan {
     pub docs: Vec<String>,
     /// iCloud placeholders (`.<name>.icloud`), by the path the file will have.
     pub pending: Vec<String>,
-    /// A folder could not be read: what is missing may just be unreadable.
-    pub partial: bool,
 }
 
 /// Walk the library: `.md` and `.xml` files and the folders holding them;
-/// Skip hidden entries and the library's resource directory.
+/// Skip hidden entries.
 pub(super) fn scan(root: &Path) -> Scan {
     fn walk(root: &Path, rel: &str, out: &mut Scan) {
-        let Ok(rd) = std::fs::read_dir(if rel.is_empty() { root.to_path_buf() } else { root.join(rel) }) else { out.partial = true; return };
+        let Ok(rd) = std::fs::read_dir(if rel.is_empty() { root.to_path_buf() } else { root.join(rel) }) else { return };
         for e in rd {
-            let Ok(e) = e else { out.partial = true; continue };
+            let Ok(e) = e else { continue };
             let Some(name) = e.file_name().to_str().map(str::to_string) else { continue };
             if let Some(real) = name.strip_prefix('.').and_then(|n| n.strip_suffix(".icloud")) {
                 if real.ends_with(".md") || real.ends_with(".xml") { out.pending.push(join_rel(rel, real)); }
                 continue;
             }
-            if name.starts_with('.') || (rel.is_empty() && super::reserved_resource_dir(&name)) { continue; }
+            if name.starts_with('.') { continue; }
             let Ok(kind) = e.file_type() else { continue };
             // Symbolic links are not followed: a link to a parent would never end.
             let dir = kind.is_dir();
@@ -152,31 +102,6 @@ pub(super) fn each_inline(doc: &mut Document, f: &mut dyn FnMut(&mut crate::mode
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn titles_become_file_names() {
-        assert_eq!(file_name_for("周报"), "周报");
-        assert_eq!(file_name_for("a/b\\c:d*e?f\"g<h>i|j"), "a／b＼c：d＊e？f＂g＜h＞i｜j");
-        assert_eq!(file_name_for("  ..隐藏. "), "隐藏");
-        assert_eq!(file_name_for(""), crate::model::UNTITLED);
-        assert_eq!(file_name_for("..."), crate::model::UNTITLED);
-        assert_eq!(file_name_for("一\n二\t三"), "一 二 三");
-        assert_eq!(file_name_for("con"), "con_");
-        assert_eq!(file_name_for("COM3.txt"), "COM3_.txt");
-        assert_eq!(file_name_for("COM0"), "COM0");
-        assert_eq!(file_name_for("console"), "console");
-        let long = file_name_for(&"字".repeat(100));
-        assert!(long.len() <= 120 && long.chars().all(|c| c == '字'));
-    }
-
-    #[test]
-    fn numbered_names() {
-        assert!(name_fits("周报", "周报") && name_fits("周报 2", "周报") && name_fits("周报 12", "周报"));
-        assert!(!name_fits("周报 1", "周报") && !name_fits("周报 02", "周报") && !name_fits("周报2", "周报") && !name_fits("周", "周报"));
-        assert_eq!(unnumbered("周报 3"), "周报");
-        assert_eq!(unnumbered("周报"), "周报");
-        assert_eq!(unnumbered("Q 1"), "Q 1");
-    }
 
     #[test]
     fn relative_paths() {

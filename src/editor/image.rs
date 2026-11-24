@@ -2290,7 +2290,7 @@ fn store_image_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Path
         .map(|n| n.trim().trim_start_matches('.').to_string()).filter(|n| !n.is_empty());
     let file = match name { Some(n) => format!("{}-{n}.{ext}", &id[..8]), None => format!("{id}.{ext}") };
     let root = Store::root_dir();
-    let dir = root.join(crate::store::image_dir(&root));
+    let dir = root.join(crate::store::IMAGE);
     std::fs::create_dir_all(&dir).map_err(|_| BAD_DIMS)?;
     let path = dir.join(file);
     std::fs::write(&path, bytes).map_err(|_| BAD_DIMS)?;
@@ -2316,7 +2316,7 @@ fn remote_name(url: &str) -> String {
     format!("{:016x}", h.finish())
 }
 
-fn remote_dir(root: &Path) -> PathBuf { root.join(crate::store::image_dir(root)).join("remote") }
+fn remote_dir(root: &Path) -> PathBuf { root.join(crate::store::IMAGE).join("remote") }
 
 /// The downloaded copy of a remote image, if it has been fetched.
 pub fn cached_remote(root: &Path, url: &str) -> Option<PathBuf> {

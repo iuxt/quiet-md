@@ -11,7 +11,7 @@ Each src/*.xml is one document (file name order = reading order). Placeholders:
   {{button:Action|url|text|color}}  inline button (OpenLink / DuplicatePage)
 Assets under guides/assets are copied to the library's resource directories.
 
-The output is a FORMAT 11 library: virtual folder identities in quiet.json,
+The output is a Quiet.md library with virtual folder identities in quiet.json,
 fixed Notes/<UUID>.xml bodies and relative document links.
 """
 import datetime as dt, json, re, shutil, sys, time, uuid
@@ -110,7 +110,6 @@ covers = set()
 if out.exists() and any(out.iterdir()):
     sys.exit(f"{out} is not empty")
 out.mkdir(parents=True, exist_ok=True)
-(out / ".quiet").mkdir()
 (out / "Notes").mkdir()
 index = {}
 order = list(KEYS.values())
@@ -149,7 +148,6 @@ for k, parent, _ in order:
                   "createdAt": stamp(meta["created"]), "updatedAt": stamp(meta["modified"]), "options": options})
 manifest = {"version": 2, "folders": sorted(folders, key=lambda f: f["id"]), "notes": sorted(notes, key=lambda n: n["id"]), "trash": []}
 (out / "quiet.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
-(out / ".quiet" / "format.json").write_text('{\n  "format": 11\n}')
 for asset in sorted((here / "assets").rglob("*")):
     if not asset.is_file() or asset.name.startswith("."):
         continue

@@ -100,7 +100,7 @@ mod tests {
     fn values_are_read_back_into_the_translation() {
         let values = read_back("{vy}年 {vm}月", "2026年 11月").unwrap();
         assert_eq!(fill("{vy}년 {vm}월", &values).as_deref(), Some("2026년 11월"));
-        let values = read_back("无法清理过期回收站文档 {}：{}", "无法清理过期回收站文档 笔记：甲.xml：Permission denied").unwrap();
+        let values = read_back("{}：{}", "笔记：甲.xml：Permission denied").unwrap();
         assert_eq!(fill("{1} — {0}", &values).as_deref(), Some("甲.xml：Permission denied — 笔记"), "middle literals split at their first match");
         let values = read_back("已删除「{}」", "已删除「a」b」").unwrap();
         assert_eq!(values["0"], "a」b", "the last literal is matched from the end");

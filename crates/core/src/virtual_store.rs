@@ -1,49 +1,38 @@
 //! Virtual folders, one shared manifest, fixed Notes/<UUID> files.
 use super::*;
-use crate::manifest::{Deleted, Manifest, FILE, NOTES};
+use crate::manifest::Deleted;
 
 impl Store {
     pub(super) fn manifest_title(&self, id: &str, doc: &mut Document) {
-        if self.virtual_folders() && let Some(meta) = self.index.get(id).or_else(|| self.trash.get(id).map(|t| &t.meta)).filter(|m| !m.local()) && let Some(title) = &meta.name && doc.title.text != *title {
+        if let Some(meta) = self.index.get(id).or_else(|| self.trash.get(id).map(|t| &t.meta)).filter(|m| !m.local()) && let Some(title) = &meta.name && doc.title.text != *title {
             doc.title = crate::model::RichText::plain(title);
         }
     }
 
-    pub fn virtual_folders(&self) -> bool { self.manifest.is_some() }
-
-    pub(super) fn open_virtual(&mut self) -> Result<()> {
-        let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(self.internal().join(".lock"))?;
-        file.lock()?;
-        let _lock = WriteLock(Some(file));
-        self.reload_virtual(Self::format_at(&self.root).context("无法读取文档库格式标记")?)?;
-        self.load_parsed();
-        Ok(())
+    pub(super) fn read_manifest(root: &Path) -> Result<Manifest> {
+        let path = crate::git::safe_path(root, FILE)?;
+        std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Manifest::parse(&b))
+            .with_context(|| format!("无法载入文档库清单 {}", path.display()))
     }
 
-    pub(super) fn reload_virtual(&mut self, format: u32) -> Result<()> {
-        let path = crate::git::safe_path(&self.root, FILE)?;
-        let manifest = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Manifest::parse(&b))
-            .with_context(|| format!("无法载入文档库清单 {}", path.display()))?;
-        if format < FORMAT {
-            virtual_migrate::rename_layout(&self.root, format, FORMAT)?;
-            if self.root.join(".git").is_dir() { crate::git::write_rules(&self.root, FORMAT)?; }
-            write_atomic(&self.internal().join("format.json"), &serde_json::to_vec_pretty(&FormatMarker { format: FORMAT })?)?;
-        }
+    pub(super) fn reload_virtual(&mut self) -> Result<()> {
+        let manifest = Self::read_manifest(&self.root)?;
         let local = self.read_local();
-        self.index = manifest.index();
-        for (id, m) in &mut self.index { m.opened = local.opened.get(id).copied().unwrap_or(0); }
+        let mut index = manifest.index();
+        for (id, m) in &mut index { m.opened = local.opened.get(id).copied().unwrap_or(0); }
         for (id, meta) in local.files {
-            anyhow::ensure!(!self.index.contains_key(&id), "本机文件与文档库 UUID 冲突");
-            self.index.insert(id, meta);
+            anyhow::ensure!(!index.contains_key(&id), "本机文件与文档库 UUID 冲突");
+            index.insert(id, meta);
         }
-        self.trash = manifest.trash.iter().map(|t| (t.id.clone(), Trashed { meta: Manifest::deleted_meta(t), deleted: t.deleted, root: t.root.clone() })).collect();
-        self.manifest = Some(manifest);
         std::fs::create_dir_all(crate::git::safe_path(&self.root, NOTES)?)?;
+        self.index = index;
+        self.trash = manifest.trash.iter().map(|t| (t.id.clone(), Trashed { meta: Manifest::deleted_meta(t), deleted: t.deleted, root: t.root.clone() })).collect();
+        self.manifest = manifest;
         Ok(())
     }
 
     pub(super) fn virtual_manifest_for(&self, index: &HashMap<String, Meta>, trash: &HashMap<String, Trashed>) -> Manifest {
-        let original = self.manifest.as_ref().cloned().unwrap_or_default();
+        let original = &self.manifest;
         let extras: HashMap<_, _> = original.notes.iter().map(|n| (&n.id, &n.extra)).chain(original.folders.iter().map(|f| (&f.id, &f.extra)))
             .chain(original.trash.iter().map(|t| (&t.id, &t.extra))).collect();
         let deleted = trash.iter().map(|(id, t)| Deleted {
@@ -93,7 +82,7 @@ impl Store {
 
     fn adopt_virtual_notes(&mut self) -> Result<()> {
         let known: HashSet<_> = self.index.values().filter(|m| !m.local() && m.folder.is_none()).map(|m| m.rel.clone())
-            .chain(self.manifest.iter().flat_map(|m| &m.trash).filter_map(|t| t.body_rel())).collect();
+            .chain(self.manifest.trash.iter().filter_map(|t| t.body_rel())).collect();
         let mut dirty = false;
         for entry in std::fs::read_dir(self.root.join(NOTES))? {
             let entry = entry?;
@@ -113,7 +102,7 @@ impl Store {
                 std::fs::rename(entry.path(), self.abs(&to))?;
             }
             let t = now();
-            self.index.insert(id, Meta { created: t, modified: t, name: Some(title), rel, markdown, stable_name: true, ..Default::default() });
+            self.index.insert(id, Meta { created: t, modified: t, name: Some(title), rel, markdown, ..Default::default() });
             dirty = true;
         }
         if dirty { self.save_index()?; }
@@ -156,7 +145,7 @@ impl Store {
             let committed = std::fs::read(self.root.join(FILE)).is_ok_and(|b| Manifest::parse(&b).is_ok_and(|m| m == after));
             if !committed { return Err(error) }
         }
-        self.index = index; self.trash = trash; self.manifest = Some(after);
+        self.index = index; self.trash = trash; self.manifest = after;
         self.save_local(&self.local_state())
     }
 }

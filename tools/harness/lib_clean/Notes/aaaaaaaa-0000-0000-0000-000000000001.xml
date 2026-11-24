@@ -16,6 +16,6 @@
 <grid><column width-ratio="0.5"><p>分栏左</p></column><column width-ratio="0.5"><p>分栏右</p></column></grid>
 <grid><column width-ratio="0.3333"><p>三栏一</p></column><column width-ratio="0.3333"><p>三栏二</p></column><column width-ratio="0.3334"><p>三栏三</p></column></grid>
 <table><colgroup><col width="160"/><col width="160"/><col width="160"/></colgroup><thead><tr><th background-color="light-gray"><p>表头A</p></th><th><p>表头B</p></th><th><p>表头C</p></th></tr></thead><tbody><tr><td colspan="2"><p>合并单元格</p></td><td><p>3</p></td></tr><tr><td><p>4</p></td><td><p>5</p></td><td><p>6</p></td></tr></tbody></table>
-<img href="/tmp/fdlaudit/lib_clean/assets/sample-hypnogram.png" width="300" caption="图片标题"/>
+<img href="Images/sample-hypnogram.png" width="300" caption="图片标题"/>
 <whiteboard type="blank"></whiteboard>
 <p>结尾</p>

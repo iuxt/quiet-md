@@ -11,8 +11,8 @@ from xml.sax.saxutils import escape as esc
 
 R = random.Random(20261023)
 out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/fdl-promo/lib"
-os.makedirs(f"{out}/docs", exist_ok=True)
-os.makedirs(f"{out}/assets", exist_ok=True)
+os.makedirs(f"{out}/Notes", exist_ok=True)
+os.makedirs(f"{out}/Images", exist_ok=True)
 
 # ---------------------------------------------------------------- prose
 SUBJ = ["我们", "团队", "产品组", "设计侧", "研发同学", "这一版", "新方案", "用户", "核心链路", "编辑器", "数据层", "增长小组", "客服团队", "运营同学"]
@@ -126,7 +126,7 @@ def chart(path):
     d.line((60, y0, W - 40, y0), fill=(222, 224, 227), width=2)
     im.save(path)
 
-chart(f"{out}/assets/weekly-active.png")
+chart(f"{out}/Images/weekly-active.png")
 
 # ---------------------------------------------------------------- documents
 docs = []
@@ -136,7 +136,7 @@ def doc(title, body):
 doc("2026 Q4 产品规划", "".join([
     f'<callout emoji="🎯" background-color="light-blue" border-color="blue"><p><b>本季度目标</b>：把长文档编辑体验做到行业第一梯队，七日留存提升到 45%。</p></callout>',
     "<h1>一、背景</h1>", p(), p(),
-    '<img href="assets/weekly-active.png" width="680" caption="图 1 · 近 12 周活跃用户"/>',
+    '<img href="Images/weekly-active.png" width="680" caption="图 1 · 近 12 周活跃用户"/>',
     "<h1>二、重点项目</h1>", table(5),
     "<h2>2.1 长文档性能</h2>", p(), ul(4),
     "<h2>2.2 表格与数据</h2>", p(), grid(),
@@ -172,13 +172,14 @@ while n < 1_000_000:
     n += text_len(x)
 doc("产品知识库 · 合订本（100 万字）", "".join(parts))
 
-index = {}
+notes = []
 t0 = int(time.time()) - 600
 for i, (title, body) in enumerate(docs):
     did = f"d0c0{i:04d}-0000-4000-8000-{i:012d}"
-    with open(f"{out}/docs/{did}.xml", "w") as f:
+    with open(f"{out}/Notes/{did}.xml", "w") as f:
         f.write(f"<title>{esc(title)}</title>\n{body}\n")
     t = t0 - i * 5400
-    index[did] = {"created": t - 86400 * 3, "modified": t, "pinned": False, "opened": t}
-json.dump(index, open(f"{out}/index.json", "w"), indent=2)
+    notes.append({"id": did, "title": title, "filename": f"{did}.xml", "createdAt": t - 86400 * 3, "updatedAt": t})
+with open(f"{out}/quiet.json", "w") as f:
+    json.dump({"version": 2, "folders": [], "notes": notes, "trash": []}, f, indent=2)
 print(f"{len(docs)} docs; big doc {n:,} chars in {ch} chapters")

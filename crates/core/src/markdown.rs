@@ -225,7 +225,7 @@ impl<'a> Writer<'a> {
         let root = self.opts.library_root.map(Path::to_path_buf).unwrap_or_else(crate::store::Store::root_dir);
         // Relative sources left after `parse_file` belong to the library.
         let abs = if raw.is_absolute() || raw.components().next().and_then(|p| p.as_os_str().to_str())
-            .is_some_and(|p| crate::store::resource_dir_at(p, crate::store::FORMAT).is_some()) {
+            .is_some_and(|p| crate::store::RESOURCE_DIRS.contains(&p)) {
             crate::store::image_path_in(&root, src).unwrap_or_else(|| root.join(raw))
         } else { root.join(raw) };
         if let Some(from) = self.opts.relative_from && let Ok(rel) = abs.strip_prefix(&root) {
@@ -238,7 +238,7 @@ impl<'a> Writer<'a> {
         }
         // The library's own image or attachment: a copy beside the file.
         match self.opts.name.filter(|_| abs.strip_prefix(&root).ok().and_then(|p| p.components().next()).and_then(|p| p.as_os_str().to_str())
-            .is_some_and(|dir| crate::store::resource_dir_at(dir, crate::store::FORMAT).is_some()) && abs.is_file()) {
+            .is_some_and(|dir| crate::store::RESOURCE_DIRS.contains(&dir)) && abs.is_file()) {
             Some(name) => self.beside(&abs, base, name, image),
             None => abs.to_string_lossy().into_owned(),
         }

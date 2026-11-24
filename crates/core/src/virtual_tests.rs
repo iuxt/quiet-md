@@ -13,7 +13,7 @@ fn doc(title: &str) -> Document { Document { title: crate::model::RichText::plai
 #[test]
 fn default_library_uses_virtual_folders_and_fixed_body_files_without_git() {
     let lib = Library::new(); let mut s = lib.open();
-    assert!(s.virtual_folders()); assert!(!s.git_enabled());
+    assert!(!s.git_enabled());
     let a = s.create_folder("Projects", None).unwrap(); let b = s.create_folder("Nested", Some(&a)).unwrap();
     let id = s.create_from_in(&doc("Title"), Some(&b)).unwrap();
     let md = s.create_markdown_in(&doc("Title"), "---\nkeep: true\n---\n", Some(&b)).unwrap();
@@ -34,79 +34,6 @@ fn default_library_uses_virtual_folders_and_fixed_body_files_without_git() {
     let note = manifest.notes.iter().find(|n| n.id == id).unwrap(); assert_eq!(note.folder.as_deref(), Some(a.as_str())); assert_eq!(note.title, "New title");
     let mut reopened = lib.open(); assert_eq!(reopened.load(&id).unwrap().title.text, "New title");
     assert_eq!(reopened.list().iter().find(|e| e.id == md).unwrap().title, "New Markdown title");
-}
-
-#[test]
-fn format_nine_renames_the_body_directory_preserving_notes_trash_and_links() {
-    for interrupted in [false, true] {
-        let lib = Library::new(); let mut store = lib.open();
-        let xml = store.create_from(&doc("XML")).unwrap();
-        let md = store.create_markdown_in(&doc("Markdown"), "# Keep this Markdown\n", None).unwrap();
-        let xml_path = store.file_path(&xml).unwrap(); let md_path = store.file_path(&md).unwrap();
-        store.delete(&md, None).unwrap();
-        let body = format!("<title>XML</title>\n<p><cite type=\"doc\" href=\"../notes/{xml}.xml\" file-type=\"docx\">Self</cite></p>\n");
-        std::fs::write(&xml_path, &body).unwrap();
-        let md_body = std::fs::read(&md_path).unwrap();
-        let stamp = std::fs::metadata(&xml_path).unwrap().modified().unwrap();
-        let manifest = std::fs::read(lib.0.join("quiet.json")).unwrap();
-        drop(store);
-        virtual_migrate::rename_notes(&lib.0, "Notes", "notes").unwrap();
-        std::fs::write(lib.0.join(".quiet/format.json"), r#"{"format":9}"#).unwrap();
-        if interrupted { std::fs::rename(lib.0.join("notes"), lib.0.join(".quiet-notes-format-10")).unwrap(); }
-
-        let migrated = lib.open();
-        let names: HashSet<_> = std::fs::read_dir(&lib.0).unwrap().map(|e| e.unwrap().file_name()).collect();
-        assert!(names.contains(std::ffi::OsStr::new("Notes"))); assert!(!names.contains(std::ffi::OsStr::new("notes")));
-        assert!(!names.contains(std::ffi::OsStr::new(".quiet-notes-format-10")));
-        assert_eq!(Store::format_at(&lib.0), Some(FORMAT));
-        assert_eq!(std::fs::read(lib.0.join("quiet.json")).unwrap(), manifest);
-        assert_eq!(std::fs::read_to_string(&xml_path).unwrap(), body);
-        assert_eq!(std::fs::metadata(&xml_path).unwrap().modified().unwrap(), stamp);
-        assert_eq!(migrated.load(&xml).unwrap().doc_links()[0].target, xml);
-        assert!(migrated.load_trash(&md).is_ok());
-        assert_eq!(std::fs::read(md_path).unwrap(), md_body);
-        assert!(lib.open().virtual_folders());
-    }
-}
-
-#[test]
-fn format_ten_resumes_resource_migration_and_resolves_legacy_body_and_snapshot_paths() {
-    let lib = Library::new(); let mut store = lib.open();
-    let xml = store.create_from(&doc("Images and drawings")).unwrap();
-    let md = store.create_markdown_in(&doc("Markdown"), "", None).unwrap();
-    let xml_path = store.file_path(&xml).unwrap(); let md_path = store.file_path(&md).unwrap();
-    let body = "<title cover=\"Image/p.png\">Images and drawings</title>\n<img src=\"Image/p.png\"/>\n<drawing path=\"Drawing/d.excalidraw\" preview=\"Image/p.png\" width=\"100\" height=\"100\"/>\n";
-    let markdown = "![Old image](../Image/p.png)\n";
-    std::fs::write(&xml_path, body).unwrap(); std::fs::write(&md_path, markdown).unwrap();
-    assert!(store.save_version_now(&xml).unwrap());
-    let version = store.versions(&xml)[0].name.clone();
-    store.delete(&md, None).unwrap();
-    drop(store);
-
-    std::fs::create_dir(lib.0.join("Image")).unwrap();
-    std::fs::write(lib.0.join("Image/p.png"), b"old image").unwrap();
-    std::fs::create_dir(lib.0.join("Drawing")).unwrap();
-    std::fs::write(lib.0.join("Drawing/d.excalidraw"), b"old drawing").unwrap();
-    std::fs::write(lib.0.join(".quiet/format.json"), r#"{"format":10}"#).unwrap();
-    // A conflicting destination must leave both resource trees alone.
-    std::fs::create_dir(lib.0.join("Drawings")).unwrap();
-    assert!(Store::open_at(lib.0.clone()).is_err());
-    assert_eq!(Store::format_at(&lib.0), Some(10));
-    assert!(lib.0.join("Image/p.png").is_file() && lib.0.join("Drawing/d.excalidraw").is_file());
-    std::fs::remove_dir(lib.0.join("Drawings")).unwrap();
-
-    std::fs::rename(lib.0.join("Image"), lib.0.join("Images")).unwrap();
-    let store = lib.open();
-    assert_eq!(Store::format_at(&lib.0), Some(FORMAT));
-    assert!(!lib.0.join("Image").exists() && !lib.0.join("Drawing").exists());
-    assert_eq!(std::fs::read_to_string(xml_path).unwrap(), body);
-    assert_eq!(std::fs::read_to_string(md_path).unwrap(), markdown);
-    for document in [store.load(&xml).unwrap(), store.version_document(&xml, &version).unwrap()] {
-        assert_eq!(std::fs::read(image_path_in(&lib.0, &document.cover.unwrap().src).unwrap()).unwrap(), b"old image");
-        assert_eq!(read_drawing_asset(&lib.0, "Drawing/d.excalidraw", 1024).unwrap(), b"old drawing");
-    }
-    let image = store.load_trash(&md).unwrap().asset_sources().pop().unwrap();
-    assert_eq!(std::fs::read(export_path_in(&lib.0, &image).unwrap()).unwrap(), b"old image");
 }
 
 #[test]
@@ -203,35 +130,6 @@ fn invalid_manifests_are_rejected_and_unknown_fields_survive_writes() {
     assert_eq!(std::fs::read(&path).unwrap(), b"broken JSON");
     assert_eq!(std::fs::read(&backup).unwrap(), previous);
     assert_eq!(std::fs::read(&body_path).unwrap(), body);
-}
-
-#[test]
-fn legacy_physical_library_migrates_titles_links_images_with_backup() {
-    let lib = Library::new(); std::fs::create_dir_all(lib.0.join(".quiet")).unwrap();
-    std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
-    let mut s = lib.open(); let root = s.create_folder("notes", None).unwrap(); let nested = s.create_folder("Child", Some(&root)).unwrap();
-    let id = s.create_from_in(&doc("XML"), Some(&nested)).unwrap();
-    std::fs::create_dir_all(lib.0.join("Image")).unwrap(); std::fs::write(lib.0.join("Image/image.png"), b"image bytes").unwrap();
-    let md = s.create_markdown_in(&doc("Markdown"), "", Some(&root)).unwrap();
-    let source = format!("---\nkeep: true\n---\n[XML](Child/{id}.xml#part)\n\n![image](Image/image.png)\n\n`[code](Child/{id}.xml)`\n\n[ref][n]\n\n[n]: Child/{id}.xml\n");
-    std::fs::write(s.file_path(&md).unwrap(), &source).unwrap();
-    let original_path = s.file_path(&id).unwrap(); let original = std::fs::read(&original_path).unwrap();
-    let old_index = std::fs::read(s.index_file()).unwrap();
-    std::fs::write(lib.0.join("quiet.json"), &old_index).unwrap();
-    s.use_virtual_folders().unwrap(); assert!(s.virtual_folders()); assert!(!original_path.exists());
-    assert!(!lib.0.join("quiet.json.bak").exists());
-    assert_eq!(std::fs::read(s.file_path(&id).unwrap()).unwrap(), original); assert_eq!(s.index[&id].parent.as_deref(), Some(nested.as_str()));
-    let text = std::fs::read_to_string(s.file_path(&md).unwrap()).unwrap();
-    assert!(text.contains(&format!("[XML]({id}.xml#part)"))); assert!(text.contains("![image](../Image/image.png)"));
-    assert!(text.contains(&format!("`[code](Child/{id}.xml)`"))); assert!(text.contains(&format!("[n]: {id}.xml")));
-    assert!(text.starts_with("---\nkeep: true\n---\n")); assert_eq!(s.load(&md).unwrap().title.text, "Markdown");
-    let backup = std::fs::read_dir(lib.0.join(".quiet")).unwrap().flatten().find(|e| e.file_name().to_string_lossy().starts_with("before-virtual-6-")).unwrap().path();
-    assert_eq!(std::fs::read(backup.join(original_path.strip_prefix(&lib.0).unwrap())).unwrap(), original);
-    assert_eq!(std::fs::read(backup.join("quiet.json")).unwrap(), old_index);
-    assert!(!std::fs::read_dir(&lib.0).unwrap().any(|e| e.unwrap().file_name() == "notes"));
-    assert!(lib.0.join("Images/image.png").is_file());
-    assert!(lib.manifest().trash.is_empty()); assert!(!s.git_enabled());
-    s.use_virtual_folders().unwrap(); assert_eq!(lib.manifest().notes.len(), 2);
 }
 
 #[test]
@@ -360,23 +258,29 @@ fn trash_changes_only_metadata_and_never_readopts_bodies() {
     }
 }
 
-#[test]
-fn old_trash_requires_manual_handling_without_moving_files() {
-    let lib = Library::new(); std::fs::create_dir_all(lib.0.join(".quiet")).unwrap();
-    std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
-    let mut s = lib.open(); let id = s.create_from(&doc("Old trash")).unwrap(); s.delete(&id, None).unwrap();
-    let path = s.trash_path(&id); let bytes = std::fs::read(&path).unwrap();
-    let index = std::fs::read(lib.0.join(".quiet/trash/index.json")).unwrap();
-    assert!(s.use_virtual_folders().unwrap_err().to_string().contains("手动处理旧版回收站"));
-    assert_eq!(std::fs::read(&path).unwrap(), bytes); assert_eq!(std::fs::read(lib.0.join(".quiet/trash/index.json")).unwrap(), index);
-    assert!(!lib.0.join("quiet.json").exists());
-}
+
 
 #[test]
-fn format_six_requires_manual_handling_without_changing_the_marker() {
-    let lib = Library::new(); let _s = lib.open();
-    let marker = lib.0.join(".quiet/format.json"); std::fs::write(&marker, b"{\"format\":6}").unwrap();
-    let bytes = std::fs::read(lib.0.join("quiet.json")).unwrap();
-    assert!(Store::open_at(lib.0.clone()).err().unwrap().to_string().contains("手动处理旧版回收站"));
-    assert_eq!(std::fs::read(&marker).unwrap(), b"{\"format\":6}"); assert_eq!(std::fs::read(lib.0.join("quiet.json")).unwrap(), bytes);
+fn invalid_manifest_versions_are_refused_without_changing_the_library() {
+    let lib = Library::new(); let mut store = lib.open();
+    let id = store.create_from(&doc("Original")).unwrap();
+    let body = std::fs::read(store.path(&id)).unwrap();
+    let path = lib.0.join(FILE);
+    let mut manifest = lib.manifest();
+    for version in [0, 1, crate::manifest::VERSION + 1] {
+        manifest.version = version;
+        let bytes = serde_json::to_vec(&manifest).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let error = Store::open_library_at(lib.0.clone()).err().unwrap();
+        assert!(format!("{error:#}").contains("不支持的文档库清单版本"));
+        assert!(store.save(&id, &doc("Changed")).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(std::fs::read(store.path(&id)).unwrap(), body);
+        assert!(!lib.0.join(".git").exists());
+    }
+
+    std::fs::remove_file(&path).unwrap();
+    assert!(Store::open_at(lib.0.clone()).is_err());
+    assert!(!path.exists());
+    assert_eq!(std::fs::read(store.path(&id)).unwrap(), body);
 }

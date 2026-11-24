@@ -143,15 +143,6 @@ pub(crate) fn start(scripted: bool, into: Option<&mut Window>, incoming: local_f
     app::set_menus(cx);
     let took = into.map(|window| window.replace_root(cx, app::Workspace::new));
     if took.is_none() { open_main_window(scripted, None, cx); }
-    // A synced library (or one used elsewhere) moves to real folders only once the user agrees.
-    if let store::MigrationState::NeedsConsent(r) = store::Store::migration_state(&store::Store::root_dir()) && settings::migrate_ask_due() {
-        match &took {
-            Some(ws) => ws.update(cx, |w, cx| { w.confirm = Some(app::Confirm::Migrate(r)); cx.notify(); }),
-            None => if let Some(ws) = cx.windows().into_iter().find_map(|w| w.downcast::<app::Workspace>()) {
-                let _ = ws.update(cx, |w, _, cx| { w.confirm = Some(app::Confirm::Migrate(r)); cx.notify(); });
-            },
-        }
-    }
     incoming.deliver(cx);
     took
 }
@@ -162,9 +153,6 @@ fn main() {
     // No single-instance guard: copies may share a library (builds tested
     // side by side). `Store` rereads an index another copy rewrote before
     // writing its own.
-    // The store asks the system whether a library is in iCloud through this.
-    #[cfg(target_os = "macos")]
-    store::set_ubiquity_probe(onboarding::ubiquitous);
     let root = store::Store::root_dir();
     logging::write(&format!("library {}", root.display()));
     // A new library is set up after first launch's pages pick where it goes.

@@ -44,7 +44,6 @@ def source(name, elements, files=None, *, english=True):
     lib = work / (name + "-source")
     for part in [".quiet", "Notes", "Drawings"]:
         (lib / part).mkdir(parents=True)
-    (lib / ".quiet/format.json").write_text('{"format":11}')
     (lib / ".quiet/preferences.json").write_text(json.dumps(dict(theme="craft", appearance="light", english=english, quick_hotkey=False)))
     (lib / "quiet.json").write_text(json.dumps(dict(version=2, folders=[], trash=[], notes=[dict(
         id=note, title="Drawing regression", filename=note + ".xml", folderId=None, options=dict(opened=1))])))

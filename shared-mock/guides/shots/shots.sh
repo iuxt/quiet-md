@@ -8,6 +8,7 @@ set -e
 cd "$(dirname "$0")/../../.."
 work=$(mktemp -d /tmp/quiet-shots.XXXXXX)
 python3 shared-mock/guides/build.py "$work/lib" >/dev/null
+mkdir -p "$work/lib/.quiet"
 printf '{"english":true,"theme":"feishu","feishu":true}\n' > "$work/lib/.quiet/preferences.json"
 printf '{"sidebar_width":240}\n' > "$work/lib/.quiet/settings.json"
 sed 's/^SHOT \(.*\)$/deskshot \1 48/' shared-mock/guides/shots/steps.txt > "$work/steps.txt"

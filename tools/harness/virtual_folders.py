@@ -17,7 +17,6 @@ child = "22222222-2222-4222-8222-222222222222"
 note = "33333333-3333-4333-8333-333333333333"
 body = "<title>Stored body title</title>\n<p>Original body.</p>\n"
 (source / f"Notes/{note}.xml").write_text(body)
-(source / ".quiet/format.json").write_text('{"format":11}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False,
 }))

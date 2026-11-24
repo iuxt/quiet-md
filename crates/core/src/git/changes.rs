@@ -26,13 +26,10 @@ impl LibraryRepo {
             ensure!(blob.size() <= crate::store::EXPORT_FILE_LIMIT as usize, "文件过大，无法对比");
             Ok(blob.content().to_vec())
         };
-        let asset = old.is_some() && before.as_ref().is_some_and(|tree| is_asset_path_at(path, self.tree_format(tree).unwrap_or_default()))
-            || new.is_some() && is_asset_path_at(path, self.worktree_format());
+        let asset = is_asset_path(path);
         let old = read(old)?; let new = read(new)?;
         let metadata = |tree: &git2::Tree<'_>| -> Option<String> {
-            let entry = tree.get_name(MANIFEST)?;
-            let blob = self.repo.find_blob(entry.id()).ok()?;
-            manifest(blob.content(), self.tree_format(tree).ok()?).ok()?.get(path)?.extra.get("title")?.as_str().map(str::to_string)
+            self.tree_manifest(tree).ok()?.get(path)?.extra.get("title")?.as_str().map(str::to_string)
         };
         let title = metadata(&after).or_else(|| before.as_ref().and_then(metadata)).unwrap_or_else(|| path.to_string());
         // LFS blobs are text pointers, but assets are never shown as text documents.

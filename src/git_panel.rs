@@ -141,8 +141,8 @@ impl Workspace {
                 };
                 let selected = p.selected.as_deref() == Some(&path);
                 let stage_path = path.clone(); let unstage_path = path.clone(); let discard_path = path.clone();
-                let can_discard = change.unstaged && (change.kind != 'A'
-                    || !matches!(path.as_str(), "quiet.json" | ".quiet/format.json" | ".gitattributes" | ".gitignore"));
+                let can_discard = change.unstaged && !fdl_core::git::is_internal_path(&path) && (change.kind != 'A'
+                    || !matches!(path.as_str(), "quiet.json" | ".gitattributes" | ".gitignore"));
                 files = files.child(div().id(("git-file", i)).w_full().min_h(px(58.)).px(px(10.)).py(px(9.)).flex().items_center().gap(px(9.))
                     .rounded(px(7.)).cursor_pointer().when(selected, |d| d.bg(Theme::block_selected()))
                     .when(!selected, |d| d.hover(|s| s.bg(Theme::fill_hover())))

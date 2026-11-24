@@ -16,10 +16,14 @@ from PIL import Image, ImageChops
 here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-table-resize-"))
 source = work / "source"
-(source / "docs").mkdir(parents=True)
+(source / "Notes").mkdir(parents=True)
 doc_id = "aaaaaaaa-0000-0000-0000-000000000001"
-(source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
-(source / "preferences.json").write_text(json.dumps({
+(source / ".quiet").mkdir()
+(source / "quiet.json").write_text(json.dumps({
+    "version": 2, "folders": [], "trash": [],
+    "notes": [{"id": doc_id, "title": "Table resize regression", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
+}))
+(source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 xml = "<title>Table resize regression</title>\n"
@@ -29,7 +33,7 @@ xml += "".join(f"<tr><td><p>Row {i}: text wraps when this column gets narrower.<
                f"<td><p>Right {i}</p></td></tr>" for i in range(6))
 xml += "</tbody></table>\n"
 xml += "".join(f"<p>After table paragraph {i:02d}</p>\n" for i in range(30))
-(source / "docs" / f"{doc_id}.xml").write_text(xml)
+(source / "Notes" / f"{doc_id}.xml").write_text(xml)
 
 
 def shot(folder, name, box):
@@ -74,7 +78,7 @@ wait 700
         assert diff.getbbox() is None, f"{name}: page moved {frame} resize; see {folder}"
     # Verify that the gesture hit the resizer, persisted only its width, and
     # left all document content intact (also catches no-op / undo regressions).
-    saved = ET.fromstring("<doc>" + (folder / "lib" / "docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = ET.fromstring("<doc>" + (folder / "lib" / "Notes" / f"{doc_id}.xml").read_text() + "</doc>")
     original = ET.fromstring("<doc>" + xml + "</doc>")
     widths = [int(c.get("width")) for c in saved.findall(".//col")]
     assert widths == [width, 240], f"{name}: expected {[width, 240]}, saved {widths}; see {folder}"

@@ -83,9 +83,13 @@ def unchanged_view(folder, task_y):
 
 def run(name, theme="craft", context="body", selection=False, below=False, finish="", done=True):
     source = work / f"source-{name}"
-    (source / "docs").mkdir(parents=True)
-    (source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
-    (source / "preferences.json").write_text(json.dumps({
+    (source / "Notes").mkdir(parents=True)
+    (source / ".quiet").mkdir()
+    (source / "quiet.json").write_text(json.dumps({
+        "version": 2, "folders": [], "trash": [],
+        "notes": [{"id": doc_id, "title": "Task click regression", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
+    }))
+    (source / ".quiet/preferences.json").write_text(json.dumps({
         "theme": theme, "appearance": "light", "english": True, "quick_hotkey": False,
     }))
     task = '<checkbox done="false">TASK TARGET</checkbox>'
@@ -101,7 +105,7 @@ def run(name, theme="craft", context="body", selection=False, below=False, finis
     xml += ''.join(f'<p>After task paragraph {i:02d}</p>\n' for i in range(20))
     xml += '<p>AFTER_ANCHOR</p>\n'
     xml += ''.join(f'<p>Trailing paragraph {i:02d}</p>\n' for i in range(20))
-    (source / "docs" / f"{doc_id}.xml").write_text(xml)
+    (source / "Notes" / f"{doc_id}.xml").write_text(xml)
     anchor = "AFTER_ANCHOR" if below else "CARET_ANCHOR"
     setup = f"key cmd-f\ntype {anchor}\nkey escape\n"
     if not selection:
@@ -114,7 +118,7 @@ def run(name, theme="craft", context="body", selection=False, below=False, finis
     folder = run_script(name, source, setup + f"\nclick {x} {y}\nmove 1150 820\nwait 600\nshot after\n"
                         + finish + f"\ntype {marker}\nwait 700\nkey cmd-s\nwait 300")
     unchanged_view(folder, y)
-    saved = ET.fromstring("<doc>" + (folder / "lib/docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = ET.fromstring("<doc>" + (folder / "lib/Notes" / f"{doc_id}.xml").read_text() + "</doc>")
     expected = ET.fromstring("<doc>" + xml + "</doc>")
     expected.find('.//checkbox').set('done', 'true' if done else 'false')
     for paragraph in expected.findall('p'):

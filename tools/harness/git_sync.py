@@ -17,9 +17,12 @@ source = work / "source"
 (source / ".quiet").mkdir(parents=True)
 doc_id = "aaaaaaaa-0000-4000-8000-000000000001"
 body = "<title>Git regression</title>\n<p>Keep this body.</p>\n"
-(source / "Git regression.xml").write_text(body)
-(source / ".quiet/format.json").write_text('{"format":4}')
-(source / ".quiet/index.json").write_text(json.dumps({"Git regression.xml": {"id": doc_id, "created": 1, "modified": 1}}))
+(source / "Notes").mkdir()
+(source / f"Notes/{doc_id}.xml").write_text(body)
+(source / "quiet.json").write_text(json.dumps({
+    "version": 2, "folders": [], "trash": [],
+    "notes": [{"id": doc_id, "title": "Git regression", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
+}))
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False,
 }))
@@ -92,15 +95,13 @@ metadata = json.loads((lib / "quiet.json").read_text())
 assert metadata["version"] == 2 and len(metadata["notes"]) == 1, metadata
 assert metadata["notes"][0]["filename"] == f"{doc_id}.xml"
 assert metadata["notes"][0]["title"] == "Git regression"
-assert not (lib / "Git regression.xml").exists()
-backups = list((lib / ".quiet").glob("before-virtual-6-*"))
-assert len(backups) == 1 and (backups[0] / "Git regression.xml").read_text() == body
 assert (lib / f"Notes/{doc_id}.xml").read_text() == body
 repo = lib / ".git"
 attributes = (lib / ".gitattributes").read_text()
 for folder in ("Images", "Files", "Drawings"):
     assert f"/{folder}/** filter=lfs diff=lfs merge=lfs -text" in attributes
-assert "!.quiet/format.json" in (lib / ".gitignore").read_text()
+assert ".quiet/" in (lib / ".gitignore").read_text().splitlines()
+assert not (lib / ".quiet/format.json").exists()
 config = (repo / "config").read_text()
 assert "ui-secret-token" not in config and "ui-secret-passphrase" not in config
 assert "ssh://git@example.invalid:2222/notes.git" in config
@@ -110,4 +111,4 @@ contents = zlib.decompress((repo / "objects" / commit[:2] / commit[2:]).read_byt
 assert b"First UI commit" in contents and b"Git UI Tester <ui@example.invalid>" in contents
 for name in ("library-settings", "masked-token", "configured", "committed", "settings-after-commit", "article-menu", "git-history", "returned"):
     assert (run / f"{name}.png").is_file(), name
-print(f"Git UI: UUID migration, author, commit, SSH key/CA settings, secret privacy and readonly history verified; screenshots: {run}")
+print(f"Git UI: author, commit, SSH key/CA settings, secret privacy and readonly history verified; screenshots: {run}")

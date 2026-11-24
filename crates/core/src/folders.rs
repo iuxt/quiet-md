@@ -3,7 +3,7 @@ use super::*;
 impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
     pub fn tree_writer(&self) -> Self {
-        Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), flat: self.flat, manifest: self.manifest.clone(),
+        Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), manifest: self.manifest.clone(),
             loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: self.parsed_disk.clone(), warnings: vec![], batch: Default::default() }
     }
 
@@ -11,7 +11,7 @@ impl Store {
     /// conflict baselines and attachment copies in this handle.
     pub fn receive_tree(&mut self, writer: Self) {
         assert_eq!(self.root, writer.root);
-        self.index = writer.index; self.trash = writer.trash; self.manifest = writer.manifest; self.flat = writer.flat;
+        self.index = writer.index; self.trash = writer.trash; self.manifest = writer.manifest;
         self.parsed = writer.parsed;
         self.parsed_disk = writer.parsed_disk;
         self.warnings.extend(writer.warnings);
@@ -21,17 +21,6 @@ impl Store {
     }
 
     pub fn take_warnings(&mut self) -> Vec<String> { std::mem::take(&mut self.warnings) }
-
-    /// Where `id` would go in folder `parent`: its name there, numbered when taken.
-    pub(super) fn rel_in(&self, id: &str, parent: Option<&str>) -> String {
-        let m = &self.index[id];
-        let dir = parent.and_then(|p| self.index.get(p)).map(|p| p.rel.clone()).unwrap_or_default();
-        if m.stable_name && m.folder.is_none() { return join_rel(&dir, &format!("{id}.{}", ext_of(m))); }
-        let name = base_name(&m.rel);
-        let ext = m.folder.is_none().then(|| ext_of(m));
-        let base = if ext.is_some() { layout::unnumbered(stem_of(name)) } else { layout::unnumbered(name) };
-        join_rel(&dir, &self.free_name(&dir, base, ext, None))
-    }
 
     pub(super) fn validate_folder(&self, id: Option<&str>, parent: Option<&str>) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
@@ -49,19 +38,8 @@ impl Store {
         self.validate_folder(None, parent)?;
         let id = uuid::Uuid::new_v4().to_string();
         let t = now();
-        if self.flat || self.virtual_folders() {
-            self.index.insert(id.clone(), Meta { folder: Some(title.to_string()), parent: parent.map(str::to_string), created: t, modified: t, ..Default::default() });
-            if let Err(e) = self.save_index() { self.index.remove(&id); return Err(e); }
-            self.record_file_change(&id, None);
-            return Ok(id);
-        }
-        // A folder is a folder on disk, named after its title.
-        let dir = parent.and_then(|p| self.index.get(p)).map(|m| m.rel.clone()).unwrap_or_default();
-        let rel = join_rel(&dir, &self.free_name(&dir, &file_name_for(title), None, None));
-        std::fs::create_dir_all(self.abs(&rel))?;
-        self.index.insert(id.clone(), Meta { folder: Some(String::new()), rel: rel.clone(), created: t, modified: t, ..Default::default() });
-        derive_tree(&mut self.index);
-        if let Err(e) = self.save_index() { self.index.remove(&id); let _ = std::fs::remove_dir(self.abs(&rel)); return Err(e); }
+        self.index.insert(id.clone(), Meta { folder: Some(title.to_string()), parent: parent.map(str::to_string), created: t, modified: t, ..Default::default() });
+        if let Err(e) = self.save_index() { self.index.remove(&id); return Err(e); }
         self.record_file_change(&id, None);
         Ok(id)
     }
@@ -109,12 +87,7 @@ impl Store {
         siblings.retain(|key| key != id);
         let pos = before.and_then(|key| siblings.iter().position(|x| x == key)).unwrap_or(siblings.len());
         siblings.insert(pos, id.to_string());
-        let mut previous = self.index.clone();
-        if self.index[id].parent.as_deref() != parent && !self.index[id].local() && !self.flat && !self.virtual_folders() {
-            // Into another folder: the file moves there, keeping its name when it is free.
-            self.relocate(&[(id.to_string(), self.rel_in(id, parent))])?;
-            for (k, m) in &self.index { if let Some(p) = previous.get_mut(k) { p.rel = m.rel.clone(); p.folder = m.folder.clone(); p.name = m.name.clone(); } }
-        }
+        let previous = self.index.clone();
         self.index.get_mut(id).unwrap().parent = parent.map(str::to_string);
         for (i, key) in siblings.iter().enumerate() {
             let m = self.index.get_mut(key).unwrap();

@@ -30,10 +30,10 @@ fn opening_a_library_initializes_local_git_and_its_rules() {
     for path in ["Images/test.png", "Files/dir/file.bin", "Drawings/test.excalidraw"] {
         assert_eq!(repo.repo.get_attr(Path::new(path), "filter", git2::AttrCheckFlags::empty()).unwrap(), Some("lfs"));
     }
-    for path in ["private.txt", ".quiet/.lock", ".quiet/history/old.xml", ".quiet/trash/old.xml", ".quiet-notes-format-10/old.xml", "Images/remote/cache.part"] {
+    for path in ["private.txt", ".quiet/format.json", ".quiet/.lock", ".quiet/history/old.xml", ".quiet/trash/old.xml", "Images/remote/cache.part"] {
         assert!(repo.repo.status_should_ignore(Path::new(path)).unwrap(), "{path}");
     }
-    for path in [FORMAT_PATH, MANIFEST, "Notes/current.xml", "Images/current.png"] {
+    for path in [MANIFEST, "Notes/current.xml", "Images/current.png"] {
         assert!(!repo.repo.status_should_ignore(Path::new(path)).unwrap(), "{path}");
     }
 }
@@ -259,48 +259,6 @@ fn staging_assets_uses_lfs_and_incomplete_staged_libraries_do_not_commit() {
 }
 
 #[test]
-fn uuid_names_metadata_titles_links_and_trash_survive_reopen() {
-    let lib = Library::new();
-    std::fs::create_dir_all(lib.0.join(".quiet")).unwrap();
-    std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
-    let mut store = lib.store();
-    let folder = store.create_folder("笔记", None).unwrap();
-    // A pre-UUID library, to exercise conversion rather than new-document creation.
-    let first = uuid::Uuid::new_v4().to_string();
-    let md = uuid::Uuid::new_v4().to_string();
-    let old = lib.0.join("笔记/同名.xml");
-    let md_path = lib.0.join("Markdown 标题.md");
-    std::fs::write(&old, crate::docxml::serialize(&doc("同名"))).unwrap();
-    let path = lib.0.join(".quiet/index.json");
-    let mut metadata: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-    for (path, id) in [("笔记/同名.xml", &first), ("Markdown 标题.md", &md)] {
-        metadata[path] = serde_json::json!({"id": id, "created": 1, "modified": 1});
-    }
-    std::fs::write(path, serde_json::to_vec_pretty(&metadata).unwrap()).unwrap();
-    std::fs::write(&md_path, "[文章](笔记/同名.xml#段落)\n\n`[代码](笔记/同名.xml)`\n\n[引用][ref]\n\n[ref]: 笔记/同名.xml\n").unwrap();
-    drop(store);
-    let mut store = lib.store();
-    store.enable_git().unwrap();
-    assert!(std::fs::read_dir(lib.0.join(".quiet")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().starts_with("before-virtual-6-")));
-    assert!(!old.exists());
-    assert_eq!(store.file_path(&first).unwrap().file_stem().unwrap().to_str().unwrap(), first);
-    let text = std::fs::read_to_string(store.file_path(&md).unwrap()).unwrap();
-    assert!(text.contains(&format!("[文章]({first}.xml#段落)")), "{text}");
-    assert!(text.contains("`[代码](笔记/同名.xml)`"));
-    assert!(text.contains(&format!("[ref]: {first}.xml")), "{text}");
-    store.rename(&md, "新的标题").unwrap();
-    let mut store = lib.store();
-    assert_eq!(store.load(&md).unwrap().title.text, "新的标题");
-    assert_eq!(store.file_path(&md).unwrap().file_stem().unwrap().to_str().unwrap(), md);
-    store.set_parent(&md, Some(&folder)).unwrap();
-    assert_eq!(store.load(&md).unwrap().title.text, "新的标题");
-    store.delete(&md, None).unwrap(); store.restore(&md).unwrap();
-    assert_eq!(store.load(&md).unwrap().title.text, "新的标题");
-    let second = store.create_from(&doc("同名")).unwrap();
-    assert_ne!(store.file_path(&first).unwrap().file_name(), store.file_path(&second).unwrap().file_name());
-}
-
-#[test]
 fn commits_use_lfs_pointers_and_history_tracks_ids_across_moves() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let id = store.create_from(&doc("First")).unwrap();
@@ -469,7 +427,7 @@ fn historical_images_with_windows_paths_use_committed_assets() {
     std::fs::create_dir_all(lib.0.join("Images/nested")).unwrap();
     std::fs::write(lib.0.join("Images/nested/image.png"), b"old picture").unwrap();
     let mut ids = Vec::new();
-    for source in [r"Image\nested\image.png", r"C:\Notes\Image\nested\image.png"] {
+    for source in [r"Images\nested\image.png", r"C:\Notes\Images\nested\image.png"] {
         let mut document = doc("Windows image");
         document.blocks = vec![crate::model::Block::new(crate::model::BlockKind::Image { src_kind: "path".into(), src: source.into(),
             width: None, height: None, caption: None, crop: None }, RichText::default())];
@@ -572,27 +530,6 @@ fn virtual_empty_folders_survive_clone_and_are_not_treated_as_pristine() {
     let local = Library::new(); let mut draft = local.store(); let own = draft.create_folder("Unsaved folder", None).unwrap();
     draft.enable_git().unwrap(); configure(&local.git(), &server.0);
     assert!(draft.git_pull(&Auth::default()).is_err()); assert!(draft.list().iter().any(|e| e.id == own));
-}
-
-#[test]
-fn physical_git_commits_remain_readable_after_virtual_conversion() {
-    let lib = Library::new(); std::fs::create_dir_all(lib.0.join(".quiet")).unwrap(); std::fs::create_dir_all(lib.0.join("Physical")).unwrap();
-    std::fs::write(lib.0.join(".quiet/format.json"), b"{\"format\":5}").unwrap();
-    let folder = uuid::Uuid::new_v4().to_string(); let a = uuid::Uuid::new_v4().to_string(); let b = uuid::Uuid::new_v4().to_string();
-    let path_a = format!("Physical/{a}.xml"); let path_b = format!("Physical/{b}.xml");
-    let body = format!("<title>Original</title>\n<p><cite type=\"doc\" href=\"{b}.xml\" file-type=\"docx\">Target</cite></p>\n");
-    std::fs::write(lib.0.join(&path_a), &body).unwrap(); std::fs::write(lib.0.join(&path_b), crate::docxml::serialize(&doc("Target"))).unwrap();
-    std::fs::write(lib.0.join(MANIFEST), serde_json::to_vec_pretty(&serde_json::json!({
-        "Physical/": {"id": folder, "created": 1, "modified": 1},
-        path_a: {"id": a, "created": 1, "modified": 1, "stable_name": true, "title": "Original"},
-        path_b: {"id": b, "created": 1, "modified": 1, "stable_name": true, "title": "Target"}
-    })).unwrap()).unwrap();
-    let repo = LibraryRepo::init(&lib.0).unwrap(); configure(&repo, &Library::new().0); let old = repo.commit("physical").unwrap().unwrap();
-    let mut store = lib.store(); store.use_virtual_folders().unwrap(); store.rename(&a, "Current title").unwrap(); repo.commit("virtual").unwrap();
-    let version = format!("git:0-{old}"); let historical = store.version_document(&a, &version).unwrap();
-    assert_eq!(historical.title.text, "Original"); assert_eq!(historical.doc_links()[0].target, b);
-    assert!(repo.revision(&old, &a).unwrap().contains("Original")); assert_eq!(store.git_versions(&a).unwrap().len(), 2);
-    assert_eq!(store.file_path(&a).unwrap(), lib.0.join(format!("Notes/{a}.xml")));
 }
 
 #[test]
@@ -763,87 +700,105 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     for (id, _, bytes) in bodies { assert_eq!(std::fs::read(a.file_path(&id).unwrap()).unwrap(), bytes); }
 }
 
+
 #[test]
-fn old_git_history_and_pull_survive_the_directory_renames() {
-    for old_format in [OLD_NOTES_FORMAT, NOTES_FORMAT] {
-        let server = Library::new(); Repository::init_bare(&server.0).unwrap();
-        let source = Library::new(); let mut store = source.store(); store.enable_git().unwrap();
-        let id = store.create_from(&doc("Keep")).unwrap(); drop(store);
-        let legacy = format!("{}/{id}.xml", notes_dir(old_format)); let current = format!("Notes/{id}.xml");
-        crate::store::rename_layout(&source.0, FORMAT, old_format).unwrap();
-        std::fs::write(source.0.join(FORMAT_PATH), format!(r#"{{"format":{old_format}}}"#)).unwrap();
-        for name in RULE_FILES { std::fs::write(source.0.join(name), "").unwrap(); }
-        write_rules(&source.0, old_format).unwrap();
-        for (path, bytes) in [("Image/p.png", b"picture".as_slice()), ("Drawing/d.excalidraw", b"scene".as_slice())] {
-            let target = source.0.join(path);
-            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-            std::fs::write(target, bytes).unwrap();
-        }
-        let xml = "<title>Keep</title>\n<img src=\"Image/p.png\"/>\n<drawing path=\"Drawing/d.excalidraw\" width=\"100\" height=\"100\"/>\n";
-        std::fs::write(source.0.join(&legacy), xml).unwrap();
-        let old_body = std::fs::read_to_string(source.0.join(&legacy)).unwrap();
-        let repo = source.git(); configure(&repo, &server.0);
-        let old_commit = repo.commit("Old format").unwrap().unwrap(); repo.push(&Auth::default()).unwrap();
+fn clone_and_pull_refuse_unsupported_manifests_and_history_skips_them() {
+    let server = Library::new(); let bare = Repository::init_bare(&server.0).unwrap();
+    let source = Library::new(); let mut store = source.store(); store.enable_git().unwrap();
+    let id = store.create_from(&doc("Original")).unwrap();
+    let repo = source.git(); configure(&repo, &server.0);
+    let initial = repo.commit("initial").unwrap().unwrap();
+    let auth = Auth::default(); repo.push(&auth).unwrap();
+    bare.set_head("refs/heads/main").unwrap();
+    let existing = Library::new();
+    let clone = LibraryRepo::clone_into(server.0.to_str().unwrap(), &existing.0, &auth).unwrap();
+    let original = std::fs::read(existing.0.join(MANIFEST)).unwrap();
 
-        let first = Library::new(); let second = Library::new();
-        for lib in [&first, &second] { LibraryRepo::clone_into(server.0.to_str().unwrap(), &lib.0, &Auth::default()).unwrap(); }
-        let mut migrated = first.store();
-        assert_eq!(first.git().revision_paths(&old_commit).unwrap()[&id], legacy);
-        assert_eq!(first.git().revision(&old_commit, &id).unwrap(), old_body);
-        if legacy != current {
-            assert!(migrated.git_discard(&legacy).is_err()); assert!(migrated.git_discard(&current).is_err());
-        }
-        assert!(migrated.git_discard("Drawing/d.excalidraw").is_err());
-        assert!(migrated.git_discard("Drawings/d.excalidraw").is_err());
-
-        let edited = format!("{old_body}<p>Written before upgrading</p>\n");
-        std::fs::write(source.0.join(&legacy), &edited).unwrap();
-        std::fs::write(source.0.join("Image/p.png"), b"updated picture").unwrap();
-        repo.commit("Edit before upgrading").unwrap(); repo.push(&Auth::default()).unwrap();
-        assert!(migrated.git_pull(&Auth::default()).unwrap());
-        assert_eq!(Store::format_at(&first.0), Some(FORMAT));
-        assert_eq!(std::fs::read_to_string(first.0.join(&current)).unwrap(), edited);
-
-        let mut upgraded = source.store();
-        upgraded.git_stage_all(true).unwrap();
-        let migration = upgraded.git_commit("Plural directories").unwrap().unwrap(); repo.push(&Auth::default()).unwrap();
-        assert!(migrated.git_pull(&Auth::default()).unwrap());
-        assert!(second.git().pull(&Auth::default()).unwrap());
-        for lib in [&first, &second] {
-            assert_eq!(Store::format_at(&lib.0), Some(FORMAT));
-            assert_eq!(std::fs::read_to_string(lib.0.join(&current)).unwrap(), edited);
-            assert!(std::fs::read_dir(&lib.0).unwrap().any(|e| e.unwrap().file_name() == NOTES));
-            assert!(lib.git().status().unwrap().changes.is_empty());
-            assert!(!lib.0.join("Image").exists() && !lib.0.join("Drawing").exists());
-            assert_eq!(std::fs::read(lib.0.join("Images/p.png")).unwrap(), b"updated picture");
-            assert_eq!(std::fs::read(lib.0.join("Drawings/d.excalidraw")).unwrap(), b"scene");
-            let old_image = lib.git().revision_asset(&old_commit, "Image/p.png", false).unwrap().unwrap();
-            assert!(old_image.starts_with("Images/"));
-            assert_eq!(std::fs::read(lib.0.join(old_image)).unwrap(), b"picture");
-            let new_drawing = lib.git().revision_drawing_asset(&migration, "Drawing/d.excalidraw").unwrap().unwrap();
-            assert_eq!(crate::store::read_drawing_asset(&lib.0, &new_drawing, 1024).unwrap(), b"scene");
-            assert_eq!(lib.git().revision_paths(&migration).unwrap()[&id], current);
-            assert_eq!(lib.git().revision(&old_commit, &id).unwrap(), old_body);
-        }
+    // Create unsupported commits as an older application would.
+    let parent = bare.find_commit(Oid::from_str(&initial).unwrap()).unwrap();
+    let current = parent.tree().unwrap();
+    let mut manifest = Manifest::parse(&original).unwrap();
+    let author = Signature::now("Test", "test@example.invalid").unwrap();
+    for version in [1, crate::manifest::VERSION + 1] {
+        manifest.version = version;
+        let metadata = bare.blob(&serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let mut root = bare.treebuilder(Some(&current)).unwrap();
+        root.insert(MANIFEST, metadata, 0o100644).unwrap();
+        let tree = bare.find_tree(root.write().unwrap()).unwrap();
+        let tip = bare.head().unwrap().peel_to_commit().unwrap();
+        let unsupported = bare.commit(Some("refs/heads/main"), &author, &author, "older", &tree, &[&tip]).unwrap();
+        let destination = Library::new();
+        let result = LibraryRepo::clone_into(server.0.to_str().unwrap(), &destination.0, &auth);
+        assert!(result.err().unwrap().to_string().contains("远端文档库格式不兼容"));
+        assert!(clone.pull(&auth).unwrap_err().to_string().contains("远端文档库格式不兼容"));
+        assert_eq!(clone.status().unwrap().head.as_deref(), Some(initial.as_str()));
+        assert_eq!(std::fs::read(existing.0.join(MANIFEST)).unwrap(), original);
+        assert!(clone.revision(&unsupported.to_string(), &id).is_err());
     }
+    let unsupported = bare.head().unwrap().peel_to_commit().unwrap();
+    bare.commit(Some("refs/heads/main"), &author, &author, "current", &current, &[&unsupported]).unwrap();
+    assert!(clone.pull(&auth).unwrap());
+    let history = clone.history(Some(&id), 10).unwrap();
+    assert_eq!(history.iter().map(|c| c.message.as_str()).collect::<Vec<_>>(), ["current", "initial"]);
 }
 
 #[test]
-fn stale_virtual_formats_are_refused_locally_and_on_clone() {
-    let server = Library::new(); Repository::init_bare(&server.0).unwrap();
+fn library_commits_stop_tracking_internal_metadata() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
-    store.create_from(&doc("Old library")).unwrap();
-    let marker = lib.0.join(FORMAT_PATH);
-    let repo = lib.git(); configure(&repo, &server.0);
-    for format in [7, 8] {
-        let old_format = format!(r#"{{"format":{format}}}"#);
-        std::fs::write(&marker, &old_format).unwrap();
-        assert!(Store::open_at(lib.0.clone()).err().unwrap().to_string().contains(&format!("格式 {format}")));
-        assert_eq!(std::fs::read_to_string(&marker).unwrap(), old_format);
-        repo.commit(&format!("format {format}")).unwrap().unwrap();
-        repo.push(&Auth::default()).unwrap();
-        let destination = Library::new();
-        let result = LibraryRepo::clone_into(server.0.to_str().unwrap(), &destination.0, &Auth::default());
-        assert!(result.err().unwrap().to_string().contains("远端文档库格式不兼容"));
-    }
+    let id = store.create_from(&doc("Original")).unwrap();
+    let repo = lib.git(); let remote = Library::new();
+    let bare = Repository::init_bare(&remote.0).unwrap(); configure(&repo, &remote.0);
+    bare.set_head("refs/heads/main").unwrap();
+    repo.commit("initial").unwrap();
+
+    // Simulate the tracked file and ignore rule from an older checkout.
+    let old_path = ".quiet/format.json";
+    let old_blob = repo.repo.blob(b"{\"format\":11}").unwrap();
+    let author = Signature::now("Test", "test@example.invalid").unwrap();
+    let parent = repo.repo.head().unwrap().peel_to_commit().unwrap();
+    let current = parent.tree().unwrap();
+    let mut hidden = repo.repo.treebuilder(None).unwrap();
+    hidden.insert("format.json", old_blob, 0o100644).unwrap();
+    let old_rules = b".quiet/*\n!.quiet/format.json\n/private.txt\n";
+    let mut root = repo.repo.treebuilder(Some(&current)).unwrap();
+    root.insert(".quiet", hidden.write().unwrap(), 0o040000).unwrap();
+    root.insert(".gitignore", repo.repo.blob(old_rules).unwrap(), 0o100644).unwrap();
+    let tree = repo.repo.find_tree(root.write().unwrap()).unwrap();
+    repo.repo.commit(Some("HEAD"), &author, &author, "tracked internal file", &tree, &[&parent]).unwrap();
+    let mut index = repo.repo.index().unwrap(); index.read_tree(&tree).unwrap(); index.write().unwrap();
+    std::fs::write(lib.0.join(old_path), b"{\"format\":11}").unwrap();
+    std::fs::write(lib.0.join(".gitignore"), old_rules).unwrap();
+
+    // Keep a second checkout on the old commit while the first removes it.
+    repo.repo.find_remote("origin").unwrap().push(&["refs/heads/main:refs/heads/main"], None).unwrap();
+    let peer = Library::new(); Repository::clone(remote.0.to_str().unwrap(), &peer.0).unwrap();
+    let mut peer_store = Store::open_library_at(peer.0.clone()).unwrap();
+    assert!(peer_store.warnings.is_empty());
+
+    let mut store = Store::open_library_at(lib.0.clone()).unwrap();
+    assert!(store.warnings.is_empty());
+    let ignore = std::fs::read_to_string(lib.0.join(".gitignore")).unwrap();
+    assert!(ignore.contains(".quiet/\n") && ignore.contains("/private.txt\n") && !ignore.contains("format.json"));
+    assert!(repo.discard(old_path).is_err());
+    let mut changed = doc("Changed"); changed.blocks.push(crate::model::Block::text("New content"));
+    store.save(&id, &changed).unwrap();
+    repo.stage(".gitignore").unwrap();
+    repo.stage(MANIFEST).unwrap();
+    repo.stage(&format!("Notes/{id}.xml")).unwrap();
+    let commit = repo.commit_staged("remove tracked internal file").unwrap().unwrap();
+    let head = repo.repo.head().unwrap().peel_to_tree().unwrap();
+    assert!(head.get_path(Path::new(old_path)).is_err());
+    assert!(repo.repo.index().unwrap().get_path(Path::new(old_path), 0).is_none());
+    assert!(repo.repo.status_should_ignore(Path::new(old_path)).unwrap());
+    assert_eq!(std::fs::read(lib.0.join(old_path)).unwrap(), b"{\"format\":11}");
+    assert!(repo.status().unwrap().changes.is_empty());
+
+    let auth = Auth::default(); repo.push(&auth).unwrap();
+    assert!(peer_store.git_pull(&auth).unwrap());
+    assert_eq!(peer.git().status().unwrap().head.as_deref(), Some(commit.as_str()));
+    assert!(peer.git().status().unwrap().changes.is_empty());
+    let target = Library::new();
+    let clone = LibraryRepo::clone_into(remote.0.to_str().unwrap(), &target.0, &auth).unwrap();
+    assert!(!target.0.join(old_path).exists());
+    assert!(clone.revision(&commit, &id).unwrap().contains("New content"));
 }

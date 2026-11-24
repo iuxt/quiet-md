@@ -17,7 +17,6 @@ source = work / "source"
 (source / ".quiet").mkdir(parents=True)
 (source / "Notes").mkdir()
 (source / "Images").mkdir()
-(source / ".quiet/format.json").write_text('{"format":11}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "theme": "craft", "appearance": "light", "english": True, "quick_hotkey": False,
 }))

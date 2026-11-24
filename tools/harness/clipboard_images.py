@@ -16,14 +16,18 @@ from PIL import Image
 here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-clipboard-images-"))
 source = work / "source"
-(source / "docs").mkdir(parents=True)
+(source / "Notes").mkdir(parents=True)
 doc_id = "aaaaaaaa-0000-0000-0000-000000000001"
-(source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
-(source / "preferences.json").write_text(json.dumps({
+(source / ".quiet").mkdir()
+(source / "quiet.json").write_text(json.dumps({
+    "version": 2, "folders": [], "trash": [],
+    "notes": [{"id": doc_id, "title": "Screenshot paste", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
+}))
+(source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False,
 }))
 original = "<title>Screenshot paste</title>\n<p>BeforeAfter</p>\n"
-(source / "docs" / f"{doc_id}.xml").write_text(original)
+(source / "Notes" / f"{doc_id}.xml").write_text(original)
 pixels = Image.new("RGBA", (64, 32), (30, 120, 220, 180))
 pixels.save(work / "screenshot.tiff")
 pixels.save(work / "screenshot.png")
@@ -59,7 +63,7 @@ shot result
 """)
     subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), str(folder)],
                    env=dict(os.environ, FDL_NOBLINK="1"), check=True, timeout=60)
-    saved = (folder / "lib" / "docs" / f"{doc_id}.xml").read_text()
+    saved = (folder / "lib" / "Notes" / f"{doc_id}.xml").read_text()
     doc = ET.fromstring("<doc>" + saved + "</doc>")
     images = doc.findall(".//img")
     assert len(images) == expected_images, f"{name}: expected {expected_images} images; {saved}; see {folder}"

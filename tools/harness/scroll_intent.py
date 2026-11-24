@@ -22,16 +22,20 @@ marker = "CARET_MARKER"
 
 def fixture(name, target, theme="craft"):
     source = work / (name + "-source")
-    (source / "docs").mkdir(parents=True)
-    (source / "index.json").write_text(json.dumps({doc_id: {"created": 1, "modified": 1, "opened": 1}}))
-    (source / "preferences.json").write_text(json.dumps({
+    (source / "Notes").mkdir(parents=True)
+    (source / ".quiet").mkdir()
+    (source / "quiet.json").write_text(json.dumps({
+        "version": 2, "folders": [], "trash": [],
+        "notes": [{"id": doc_id, "title": "Scroll intent regression", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
+    }))
+    (source / ".quiet/preferences.json").write_text(json.dumps({
         "theme": theme, "appearance": "light", "english": True, "quick_hotkey": False,
     }))
     xml = '<title>Scroll intent regression</title>\n<p>CARET_ANCHOR</p>\n'
     xml += ''.join(f'<p>Before target paragraph {i:02d}</p>\n' for i in range(20))
     xml += target + '\n'
     xml += ''.join(f'<p>After target paragraph {i:02d}</p>\n' for i in range(40))
-    (source / "docs" / f"{doc_id}.xml").write_text(xml)
+    (source / "Notes" / f"{doc_id}.xml").write_text(xml)
     return source, ET.fromstring("<doc>" + xml + "</doc>")
 
 
@@ -60,7 +64,7 @@ def stable(folder, frames=("after",)):
 
 
 def saved_matches(folder, expected):
-    saved = ET.fromstring("<doc>" + (folder / "lib/docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = ET.fromstring("<doc>" + (folder / "lib/Notes" / f"{doc_id}.xml").read_text() + "</doc>")
     canonical = lambda tree: ET.canonicalize(ET.tostring(tree, encoding="unicode"), strip_text=True)
     assert canonical(saved) == canonical(expected), f"Unexpected document/selection change; see {folder}"
 
@@ -127,7 +131,7 @@ def grid_resize(name):
     folder = run_script(name, source, steps)
     stable(folder, ('during', 'after'))
     expected.find('p').text = marker + "CARET_ANCHOR"
-    saved = ET.fromstring("<doc>" + (folder / "lib/docs" / f"{doc_id}.xml").read_text() + "</doc>")
+    saved = ET.fromstring("<doc>" + (folder / "lib/Notes" / f"{doc_id}.xml").read_text() + "</doc>")
     ratios = [float(c.get('width-ratio')) for c in saved.findall('.//column')]
     assert len(ratios) == 2 and ratios[0] > .5 and abs(sum(ratios) - 1) < .001, f"Resize missed; see {folder}"
     for col, ratio in zip(expected.findall('.//column'), saved.findall('.//column')):

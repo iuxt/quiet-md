@@ -115,23 +115,7 @@ pub struct Preferences {
     pub opaque_window: bool,
     /// 外观 › 界面字号: "small" or "large"; empty is the 13pt standard.
     pub ui_font: String,
-    /// When 稍后 put off moving the library to real folders (Unix seconds; 0 never).
-    pub migrate_later: u64,
 }
-
-/// A week between asks to move the library to real folders.
-const MIGRATE_ASK_EVERY: u64 = 7 * 24 * 3600;
-fn unix_now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
-
-/// 稍后 on the move to real folders: remember when.
-pub fn migrate_later() {
-    let mut p = prefs();
-    p.migrate_later = unix_now();
-    let _ = save(&p);
-}
-
-/// Whether to ask about the move now: never put off, or a week since.
-pub fn migrate_ask_due() -> bool { unix_now().saturating_sub(prefs().migrate_later) >= MIGRATE_ASK_EVERY }
 
 /// Pick the first supported system language; saved preferences still win.
 fn system_lang() -> Lang {
@@ -144,7 +128,7 @@ fn system_lang() -> Lang {
 impl Default for Preferences {
     fn default() -> Self {
         let lang = system_lang();
-        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, appearance: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new(), migrate_later: 0 }
+        Preferences { theme: String::new(), feishu: true, english: lang != Lang::Zh, language: lang.code().into(), remote_images: true, quick_hotkey: true, appearance: String::new(), motion: String::new(), new_default: String::new(), last_new: String::new(), search_engine: String::new(), browser: String::new(), opaque_window: false, ui_font: String::new() }
     }
 }
 
@@ -1518,20 +1502,11 @@ fn diagnostic_for(message: &str, english: bool) -> String {
     if !english { return message.to_string(); }
     const TEMPLATES: &[(&str, &str)] = &[
         ("无法初始化文档库 Git：{}", "Could not initialize Git for the library: {}"),
-        ("无法读取文档索引：{}", "Could not read document index: {}"),
-        ("无法读取回收站索引：{}", "Could not read Trash index: {}"),
-        ("文档索引已损坏，已从备份恢复（原文件保留为 {}）", "Document index was damaged and restored from backup (original retained as {})."),
-        ("回收站索引已损坏，已从备份恢复（原文件保留为 {}）", "Trash index was damaged and restored from backup (original retained as {})."),
-        ("文档索引已损坏且没有可用备份，部分文档的置顶、层级等信息已重置（原文件保留为 {}）", "Document index was damaged with no usable backup. Some pins and document hierarchy were reset (original retained as {})."),
-        ("回收站索引已损坏且没有可用备份，部分文档的置顶、层级等信息已重置（原文件保留为 {}）", "Trash index was damaged with no usable backup. Some metadata was reset (original retained as {})."),
-        ("回收站已存在同名文档，未覆盖：{}", "A document with this ID already exists in Trash and was not overwritten: {}"),
-        ("文档库已存在同名文档，未覆盖：{}", "A document with this ID already exists in Documents and was not overwritten: {}"),
-        ("文档已移入回收站，文档索引清理失败：{}", "Document moved to Trash, but the document index could not be cleaned up: {}"),
-        ("回收站目录读取不完整：{}", "Could not fully read the Trash directory: {}"),
-        ("无法清理过期回收站文档 {}：{}", "Could not remove expired Trash document {}: {}"),
-        ("回收站索引保存失败：{}", "Could not save Trash index: {}"),
+        ("缺少文档库清单 quiet.json", "The library is missing its quiet.json manifest."),
+        ("不支持的文档库清单版本", "Unsupported library manifest version."),
+        ("远端文档库格式不兼容", "The remote library uses an unsupported format."),
+        ("无法载入文档库清单 {}", "Could not load the library manifest {}"),
         ("恢复文档 {} 失败，已恢复的文档保留在文档库", "Could not restore document {}. Documents already restored remain in Documents."),
-        ("文档已恢复，回收站索引清理失败：{}", "Document restored, but the Trash index could not be cleaned up: {}"),
     ];
     for (source, target) in TEMPLATES {
         let parts: Vec<_> = source.split("{}").collect();
@@ -1586,10 +1561,10 @@ mod localization_tests {
 
     #[test]
     fn diagnostics_preserve_paths_and_identifiers() {
-        let source = "无法清理过期回收站文档 我的笔记.xml：Permission denied";
+        let source = "无法载入文档库清单 /tmp/我的笔记/quiet.json";
         assert_eq!(diagnostic_for(source, false), source);
-        assert_eq!(diagnostic_for(source, true), "Could not remove expired Trash document 我的笔记.xml: Permission denied");
-        assert_eq!(diagnostic_for("文档索引已损坏，已从备份恢复（原文件保留为 index.json.bad）", true), "Document index was damaged and restored from backup (original retained as index.json.bad).");
+        assert_eq!(diagnostic_for(source, true), "Could not load the library manifest /tmp/我的笔记/quiet.json");
+        assert_eq!(diagnostic_for("不支持的文档库清单版本", true), "Unsupported library manifest version.");
         assert_eq!(diagnostic_for("unknown OS error", true), "unknown OS error");
     }
 

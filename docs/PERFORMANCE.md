@@ -43,7 +43,8 @@ bench "wheel 900 500 40" x100: step [p50 0.01 p95 0.02 max 0.02] frame [p50 2.08
 ```sh
 cargo build --release --locked --features devtools
 python3 tools/perf/gen_library.py /tmp/quiet-perf/library
-printf '{"english":true,"theme":"craft"}\n' > /tmp/quiet-perf/library/preferences.json
+mkdir -p /tmp/quiet-perf/library/.quiet
+printf '{"english":true,"theme":"craft"}\n' > /tmp/quiet-perf/library/.quiet/preferences.json
 python3 tools/harness/run.py tools/harness/examples/readme-performance.txt /tmp/quiet-perf/library /tmp/quiet-perf/run
 grep -a bench /tmp/quiet-perf/run/log
 ```

@@ -16,7 +16,6 @@ for pinned in (False, True):
     source = case / "source"
     (source / ".quiet").mkdir(parents=True)
     (source / "Notes").mkdir()
-    (source / ".quiet/format.json").write_text('{"format":11}')
     (source / ".quiet/preferences.json").write_text(json.dumps({
         "appearance": "light", "english": True, "quick_hotkey": False,
     }))
