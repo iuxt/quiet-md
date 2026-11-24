@@ -26,7 +26,8 @@ markup5ever_rcdom = "0.3"
 git2 = { version = "0.21", default-features = false, features = ["https", "ssh", "vendored-libgit2", "vendored-openssl"] }
 ssh2 = { version = "0.9.5", features = ["vendored-openssl"] }
 sha2 = "0.10"
-ureq = { version = "3.5", features = ["json"] }
+ureq = { version = "~3.5", features = ["json"] }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 percent-encoding = "2"
 url = "2"

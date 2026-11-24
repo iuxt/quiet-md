@@ -1,6 +1,6 @@
 # 存储格式
 
-当前布局为 FORMAT 11，清单版本为 2。文件夹和标题由根目录 `quiet.json` 管理；所有正文集中在 `Notes/<UUID>.xml` 或 `Notes/<UUID>.md`。Git 是可选功能，不改变目录布局。详见 [GIT.md](GIT.md)。
+当前布局为 FORMAT 11，清单版本为 2。文件夹和标题由根目录 `quiet.json` 管理；所有正文集中在 `Notes/<UUID>.xml` 或 `Notes/<UUID>.md`。文档存储布局独立于 Git。详见 [GIT.md](GIT.md)。
 
 ## 文档库目录（FORMAT 11）
 

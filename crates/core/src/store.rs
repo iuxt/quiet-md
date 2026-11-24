@@ -750,9 +750,18 @@ impl Store {
         Self::prune_backups(&root);
         let mut failed = None;
         if let MigrationState::Silent = Self::migration_state(&root) && let Err(e) = Self::migrate(&root) { failed = Some(e.to_string()); }
-        let mut store = Self::open_at(root)?;
-        if !store.flat { store.use_virtual_folders()?; }
+        let mut store = Self::open_library_at(root)?;
         store.warnings.extend(failed);
+        Ok(store)
+    }
+
+    /// Open a library for the app, preparing local Git after the layout is ready.
+    pub fn open_library_at(root: PathBuf) -> Result<Self> {
+        let mut store = Self::open_at(root)?;
+        if !store.flat {
+            store.use_virtual_folders()?;
+            if let Err(e) = store.initialize_library_git() { store.warnings.push(format!("无法初始化文档库 Git：{e:#}")); }
+        }
         Ok(store)
     }
 

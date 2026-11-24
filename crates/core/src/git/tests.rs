@@ -17,6 +17,62 @@ fn configure(repo: &LibraryRepo, remote: &Path) {
 }
 
 #[test]
+fn opening_a_library_initializes_local_git_and_its_rules() {
+    let lib = Library::new();
+    std::fs::write(lib.0.join(".gitignore"), "/private.txt").unwrap();
+    std::fs::write(lib.0.join(".gitattributes"), "*.txt text").unwrap();
+    let store = Store::open_library_at(lib.0.clone()).unwrap();
+    assert!(store.git_enabled() && store.warnings.is_empty());
+    let repo = lib.git();
+    assert_eq!(repo.config().unwrap().branch, "main");
+    assert!(repo.repo.head().is_err() && repo.repo.remotes().unwrap().is_empty() && repo.repo.index().unwrap().is_empty());
+    assert!(std::fs::read_to_string(lib.0.join(".gitattributes")).unwrap().starts_with("*.txt text\n"));
+    for path in ["Images/test.png", "Files/dir/file.bin", "Drawings/test.excalidraw"] {
+        assert_eq!(repo.repo.get_attr(Path::new(path), "filter", git2::AttrCheckFlags::empty()).unwrap(), Some("lfs"));
+    }
+    for path in ["private.txt", ".quiet/.lock", ".quiet/history/old.xml", ".quiet/trash/old.xml", ".quiet-notes-format-10/old.xml", "Images/remote/cache.part"] {
+        assert!(repo.repo.status_should_ignore(Path::new(path)).unwrap(), "{path}");
+    }
+    for path in [FORMAT_PATH, MANIFEST, "Notes/current.xml", "Images/current.png"] {
+        assert!(!repo.repo.status_should_ignore(Path::new(path)).unwrap(), "{path}");
+    }
+}
+
+#[test]
+fn opening_a_library_leaves_existing_repositories_in_place() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let repo = lib.git(); configure(&repo, &Library::new().0);
+    repo.repo.set_head("refs/heads/custom").unwrap();
+    let commit = repo.commit("existing history").unwrap().unwrap();
+    std::fs::write(lib.0.join(".gitignore"), "/local-only\n").unwrap();
+    let config = std::fs::read(repo.repo.path().join("config")).unwrap();
+    assert!(Store::open_library_at(lib.0.clone()).unwrap().git_enabled());
+    assert_eq!(std::fs::read(repo.repo.path().join("config")).unwrap(), config);
+    assert_eq!(std::fs::read(lib.0.join(".gitignore")).unwrap(), b"/local-only\n");
+    assert_eq!(repo.config().unwrap().branch, "custom");
+    assert_eq!(repo.repo.head().unwrap().target().unwrap().to_string(), commit);
+
+    let nested = lib.0.join("nested");
+    let mut nested_store = Store::open_library_at(nested.clone()).unwrap();
+    assert!(!nested_store.git_enabled());
+    assert!(!nested.join(".git").exists() && !nested.join(".gitattributes").exists() && !nested.join(".gitignore").exists());
+    nested_store.create_from(&doc("Still usable")).unwrap();
+}
+
+#[test]
+fn opening_a_library_retries_git_after_a_rule_file_error() {
+    let lib = Library::new();
+    let blocked = lib.0.join(".gitignore"); std::fs::create_dir(&blocked).unwrap();
+    let mut store = Store::open_library_at(lib.0.clone()).unwrap();
+    assert!(!store.git_enabled() && !store.warnings.is_empty());
+    let id = store.create_from(&doc("Keep this note")).unwrap();
+    drop(store); std::fs::remove_dir(&blocked).unwrap();
+    let store = Store::open_library_at(lib.0.clone()).unwrap();
+    assert!(store.git_enabled() && store.warnings.is_empty());
+    assert_eq!(store.load(&id).unwrap().title.text, "Keep this note");
+}
+
+#[test]
 fn staged_commits_keep_the_snapshot_and_leave_other_changes_uncommitted() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let first = store.create_from(&doc("First")).unwrap(); let second = store.create_from(&doc("Second")).unwrap();
@@ -644,8 +700,14 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
     repo.configure(&config).unwrap();
     assert!(repo.push(&Auth { ssh_passphrase: "wrong-passphrase".into(), ..Default::default() }).is_err());
     let endpoint = std::env::var("QUIET_MD_TEST_TLS").unwrap();
-    let empty_config = git2::Config::new().unwrap();
-    assert!(transport::http_agent(&empty_config, &endpoint).unwrap().get(&endpoint).call().is_err());
+    let mut tls_config = git2::Config::open(&source.0.join(".git/test-tls-config")).unwrap();
+    let tls_check = url::Url::parse(&endpoint).unwrap().join("/tls-check").unwrap();
+    let check_tls = |config: &git2::Config, url: &url::Url| transport::http_agent(config, url.as_str()).unwrap().get(url.as_str()).call();
+    assert!(check_tls(&tls_config, &tls_check).is_err());
+    tls_config.set_str("http.sslCAInfo", &config.lfs_ca_info).unwrap();
+    check_tls(&tls_config, &tls_check).unwrap();
+    let mut wrong_host = tls_check.clone(); wrong_host.set_host(Some("127.0.0.1")).unwrap();
+    assert!(check_tls(&tls_config, &wrong_host).is_err());
     repo.configure(&config).unwrap();
     assert_eq!(transport::ca_info(&repo.repo.config().unwrap(), &endpoint).unwrap(), Some(PathBuf::from(&config.lfs_ca_info)));
     repo.push(&auth).unwrap();

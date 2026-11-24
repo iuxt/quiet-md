@@ -1166,7 +1166,7 @@ impl Workspace {
     pub(crate) fn migrate_library(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.save_before(cx, |w, window, cx| w.migrate_library(window, cx)) { return }
         let root = crate::store::Store::root_dir();
-        let moved = crate::store::Store::migrate(&root).and_then(|_| { let mut store = crate::store::Store::open_at(root)?; store.use_virtual_folders()?; Ok(store) });
+        let moved = crate::store::Store::migrate(&root).and_then(|_| crate::store::Store::open_library_at(root));
         match moved {
             Err(e) => self.show_toast_kind(ToastKind::Error, &crate::localized_format!("文档库格式升级未完成：{}", "Library storage upgrade did not finish: {}", crate::settings::diagnostic(&e.to_string())), cx),
             Ok(store) => {

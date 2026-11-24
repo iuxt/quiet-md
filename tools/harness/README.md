@@ -39,7 +39,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 ## 脚本命令
 
-`python3 tools/harness/git_sync.py` 在临时文档库中通过界面启用 Git、提交并打开历史，核对 UUID 文件名、元数据、真实提交对象、令牌不落盘及只读预览；不调用系统 Git、不联网。
+`python3 tools/harness/git_sync.py` 打开临时文档库，验证本地 Git 和 LFS 规则自动初始化，再通过界面保存配置、提交并打开历史，核对 UUID 文件名、元数据、提交对象、令牌和只读预览。脚本离线运行，由应用处理 Git。
 
 `python3 tools/harness/git_ssh.py` 使用临时 SSH / 自签 TLS 服务器验证自定义端口、加密私钥、known_hosts 校验、LFS CA、上传确认及推送 / 克隆 / 拉取；需要 Python `paramiko`，系统 Git 仅作为测试服务端。
 
@@ -53,7 +53,7 @@ python3 tools/harness/compare.py tools/harness/examples/menus.txt <旧版二进�
 
 `python3 tools/harness/document_safety.py` 验证多窗口历史预览保留最新编辑、导入成功后打开正文、删除后打开下一篇，以及主页和侧栏混合拖入多个文件夹与文件；只使用临时文档库。
 
-`python3 tools/harness/virtual_folders.py` 用 FORMAT 6 临时文档库验证 JSON 标题、侧栏拖动、文件夹重命名和文件夹内新建文章；确认只改变虚拟层级，原正文不变，新正文固定使用 UUID 文件名，无需启用 Git。
+`python3 tools/harness/virtual_folders.py` 用临时文档库验证 JSON 标题、侧栏拖动、文件夹重命名和文件夹内新建文章，并检查原正文、UUID 文件名和初始化后的 Git 分支。
 
 每行一条命令；`#` 开头的是注释。完整说明见 `src/devtools.rs` 顶部。
 

@@ -138,7 +138,9 @@ fn ca_match(scope: &str, target: &url::Url) -> Option<(usize, usize, usize)> {
 
 pub(super) fn http_agent(config: &git2::Config, target: &str) -> Result<ureq::Agent> {
     super::http_url(target)?;
-    let mut builder = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).max_redirects(0);
+    // ureq's default ring provider cannot verify ECDSA-SHA512 certificate signatures.
+    let mut tls = ureq::tls::TlsConfig::builder()
+        .unversioned_rustls_crypto_provider(rustls::crypto::aws_lc_rs::default_provider().into());
     if let Some(path) = ca_info(config, target)? {
         let pem = crate::store::read_bounded(&path, 4 << 20).with_context(|| format!("无法读取 LFS CA 证书：{}", path.display()))?;
         let mut certificates = vec![];
@@ -146,9 +148,10 @@ pub(super) fn http_agent(config: &git2::Config, target: &str) -> Result<ureq::Ag
             if let ureq::tls::PemItem::Certificate(cert) = item.context("无效的 LFS CA 证书")? { certificates.push(cert); }
         }
         ensure!(!certificates.is_empty(), "LFS CA 文件中没有 PEM 证书");
-        builder = builder.tls_config(ureq::tls::TlsConfig::builder().root_certs(certificates.into()).build());
+        tls = tls.root_certs(certificates.into());
     }
-    Ok(builder.build().into())
+    Ok(ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(120))).max_redirects(0)
+        .tls_config(tls.build()).build().into())
 }
 
 #[cfg(test)]

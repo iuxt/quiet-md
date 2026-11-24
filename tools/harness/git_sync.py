@@ -1,4 +1,4 @@
-"""Enable Git, commit and view article history through the native UI.
+"""Open a library, configure Git, commit and view article history through the native UI.
 
 Build with --release --features devtools. Uses only a temporary library;
 no Git executable, network, real clipboard or installed application.
@@ -35,8 +35,10 @@ shot library-settings
 click 120 223
 wait 300
 click 560 190
+key cmd-a
 type Git UI Tester
 click 880 190
+key cmd-a
 type ui@example.invalid
 click 880 396
 type ui-secret-token
@@ -51,7 +53,7 @@ type /tmp/quiet-ui-test-ca.crt
 shot masked-token
 click 470 644
 wait 1200
-shot enabled
+shot configured
 key escape
 wait 300
 click 110 98
@@ -95,6 +97,10 @@ backups = list((lib / ".quiet").glob("before-virtual-6-*"))
 assert len(backups) == 1 and (backups[0] / "Git regression.xml").read_text() == body
 assert (lib / f"Notes/{doc_id}.xml").read_text() == body
 repo = lib / ".git"
+attributes = (lib / ".gitattributes").read_text()
+for folder in ("Images", "Files", "Drawings"):
+    assert f"/{folder}/** filter=lfs diff=lfs merge=lfs -text" in attributes
+assert "!.quiet/format.json" in (lib / ".gitignore").read_text()
 config = (repo / "config").read_text()
 assert "ui-secret-token" not in config and "ui-secret-passphrase" not in config
 assert "ssh://git@example.invalid:2222/notes.git" in config
@@ -102,6 +108,6 @@ assert "/tmp/quiet-ui-test-key" in config and "/tmp/quiet-ui-test-ca.crt" in con
 commit = (repo / "refs/heads/main").read_text().strip()
 contents = zlib.decompress((repo / "objects" / commit[:2] / commit[2:]).read_bytes())
 assert b"First UI commit" in contents and b"Git UI Tester <ui@example.invalid>" in contents
-for name in ("library-settings", "masked-token", "enabled", "committed", "settings-after-commit", "article-menu", "git-history", "returned"):
+for name in ("library-settings", "masked-token", "configured", "committed", "settings-after-commit", "article-menu", "git-history", "returned"):
     assert (run / f"{name}.png").is_file(), name
 print(f"Git UI: UUID migration, author, commit, SSH key/CA settings, secret privacy and readonly history verified; screenshots: {run}")

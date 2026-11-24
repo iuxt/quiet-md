@@ -29,29 +29,29 @@ script = work / "steps.txt"
 script.write_text("""resize 1200 1000
 wait 1400
 move 1150 950
-click 100 197
+click 100 227
 wait 300
 shot metadata-title
-down 120 197
+down 120 227
 wait 100
-dragto 120 186
+dragto 120 216
 wait 150
-dragto 120 166
+dragto 120 196
 wait 500
-up 120 166
+up 120 196
 wait 900
 shot moved
-move 200 134
+move 200 164
 wait 250
-click 200 134
+click 200 164
 wait 200
-click 260 233
+click 260 263
 wait 150
 type Renamed Projects
 key enter
 wait 700
 shot renamed
-click 115 166
+click 115 196
 wait 250
 key cmd-n
 wait 250
@@ -75,5 +75,6 @@ for n in notes.values():
     assert n["folderId"] == child
     assert (lib / "Notes" / n["filename"]).is_file()
 assert not any((lib / name).exists() for name in ("Projects", "Renamed Projects", "Archive"))
-assert not (lib / ".git").exists()
+assert (lib / ".git" / "HEAD").read_text().strip() == "ref: refs/heads/main"
+assert not (lib / ".git" / "refs" / "heads" / "main").exists()
 print(f"Virtual folders UI: JSON titles, move, rename and UUID creation verified; screenshots: {run}")

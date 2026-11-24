@@ -1517,6 +1517,7 @@ pub fn diagnostic(message: &str) -> String {
 fn diagnostic_for(message: &str, english: bool) -> String {
     if !english { return message.to_string(); }
     const TEMPLATES: &[(&str, &str)] = &[
+        ("无法初始化文档库 Git：{}", "Could not initialize Git for the library: {}"),
         ("无法读取文档索引：{}", "Could not read document index: {}"),
         ("无法读取回收站索引：{}", "Could not read Trash index: {}"),
         ("文档索引已损坏，已从备份恢复（原文件保留为 {}）", "Document index was damaged and restored from backup (original retained as {})."),

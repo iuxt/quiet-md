@@ -4,11 +4,12 @@ Quiet.md 本体以 MIT 协议发布（见 [LICENSE](LICENSE)）。下面是随�
 
 ## Rust 依赖
 
-由 `cargo metadata` 生成，共 778 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
+由 `cargo metadata` 生成，共 782 个包。许可逐项列于下表，其中也包含 MPL-2.0；本表记录依赖声明，不替代各组件的许可文本。
 
 要重新生成这张表：`scripts/licences.sh`（从 `cargo metadata` 取全部依赖）。
 
 Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 linking exception）、libssh2（BSD-3-Clause）与 OpenSSL（Apache-2.0）。随安装包附带的原始许可与作者信息在 [`assets/licenses/`](assets/licenses/)；libgit2 与 libssh2 未修改，源代码随 `libgit2-sys` / `libssh2-sys` 的固定 Cargo 依赖取得。
+Git LFS 的 TLS 证书校验使用 AWS-LC，原始许可也随安装包附带。
 
 | 包 | 版本 | 许可 |
 |---|---|---|
@@ -54,6 +55,8 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | av-scenechange | 0.14.1 | MIT |
 | av1-grain | 0.2.5 | BSD-2-Clause |
 | avif-serialize | 0.8.9 | BSD-3-Clause |
+| aws-lc-rs | 1.18.2 | ISC AND (Apache-2.0 OR ISC) |
+| aws-lc-sys | 0.46.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
 | bindgen | 0.71.1 | BSD-3-Clause |
@@ -95,6 +98,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | chrono | 0.4.45 | MIT OR Apache-2.0 |
 | cipher | 0.4.4 | MIT OR Apache-2.0 |
 | clang-sys | 1.9.1 | Apache-2.0 |
+| cmake | 0.1.58 | MIT OR Apache-2.0 |
 | cocoa | 0.25.0 | MIT OR Apache-2.0 |
 | cocoa | 0.26.0 | MIT OR Apache-2.0 |
 | cocoa-foundation | 0.1.2 | MIT OR Apache-2.0 |
@@ -204,6 +208,7 @@ Git 功能还静态链接 libgit2（GPL v2，带不限制组合程序分发的 l
 | foreign-types-shared | 0.3.1 | MIT/Apache-2.0 |
 | form_urlencoded | 1.2.2 | MIT OR Apache-2.0 |
 | freetype-sys | 0.20.1 | MIT |
+| fs_extra | 1.3.0 | MIT |
 | futf | 0.1.5 | MIT / Apache-2.0 |
 | futures | 0.3.34 | MIT OR Apache-2.0 |
 | futures-channel | 0.3.34 | MIT OR Apache-2.0 |

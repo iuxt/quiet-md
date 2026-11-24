@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import paramiko
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
 repo = Path(__file__).resolve().parents[2]
@@ -28,18 +28,18 @@ with tempfile.TemporaryDirectory(prefix="quiet-ssh-lfs-") as directory:
     host_key = paramiko.RSAKey.generate(2048)
     client_key = paramiko.RSAKey.generate(2048)
     client_key.write_private_key_file(str(work / "identity"), password="test-key-password")
-    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    server_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    ca_key = ec.generate_private_key(ec.SECP521R1())
+    server_key = ec.generate_private_key(ec.SECP256R1())
     now = datetime.datetime.now(datetime.timezone.utc)
     ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Quiet test CA")])
     ca = (x509.CertificateBuilder().subject_name(ca_name).issuer_name(ca_name).public_key(ca_key.public_key())
           .serial_number(x509.random_serial_number()).not_valid_before(now - datetime.timedelta(days=1))
           .not_valid_after(now + datetime.timedelta(days=1)).add_extension(x509.BasicConstraints(ca=True, path_length=None), True)
-          .sign(ca_key, hashes.SHA256()))
+          .sign(ca_key, hashes.SHA512()))
     leaf = (x509.CertificateBuilder().subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")]))
             .issuer_name(ca_name).public_key(server_key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - datetime.timedelta(days=1)).not_valid_after(now + datetime.timedelta(days=1))
-            .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), False).sign(ca_key, hashes.SHA256()))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost")]), False).sign(ca_key, hashes.SHA512()))
     (work / "ca.pem").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
     (work / "server.pem").write_bytes(leaf.public_bytes(serialization.Encoding.PEM))
     (work / "server.key").write_bytes(server_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
@@ -85,6 +85,9 @@ with tempfile.TemporaryDirectory(prefix="quiet-ssh-lfs-") as directory:
 
         def do_GET(self):
             assert not self.headers.get("Authorization")
+            if self.path == "/tls-check":
+                self.reply(b"{}")
+                return
             self.reply(objects[self.path.rsplit("/", 1)[1]])
 
     http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -182,7 +185,7 @@ with tempfile.TemporaryDirectory(prefix="quiet-ssh-lfs-") as directory:
         subprocess.run(["cargo", "test", "--release", "--locked", "-p", "fdl_core", "ssh_push_clone_pull_with_self_signed_lfs", "--", "--ignored", "--nocapture"],
                        cwd=repo, env=env, check=True, timeout=180)
         assert "upload" in operations and "download" in operations and "verify" in operations, operations
-        print("SSH custom port, encrypted key, host verification, clone/push/pull and self-signed LFS upload/verify/download passed")
+        print("SSH clone/push/pull and LFS upload/verify/download with ECDSA-SHA512 TLS passed")
     finally:
         listener.close()
         http.shutdown()

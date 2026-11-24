@@ -1,10 +1,21 @@
-//! Opt-in UUID file names and shared metadata for a Git-backed library.
+//! Git operations on UUID file names and shared library metadata.
 use super::*;
 use std::collections::BTreeSet;
 
 impl Store {
     pub fn git_enabled(&self) -> bool { !self.flat && self.root.join(".git").is_dir() && self.root.join(crate::git::MANIFEST).is_file() }
     pub fn library_root(&self) -> &Path { &self.root }
+
+    pub(super) fn initialize_library_git(&mut self) -> Result<()> {
+        let path = self.root.join(".git");
+        if path.symlink_metadata().is_ok() { return Ok(()) }
+        let _lock = self.begin_write()?;
+        match path.symlink_metadata() {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => crate::git::LibraryRepo::init(&self.root).map(|_| ()),
+            Err(e) => Err(e.into()),
+        }
+    }
 
     pub(super) fn normalize_git_files(&mut self) -> Result<()> {
         let docs: Vec<_> = self.index.iter().filter(|(_, m)| !m.local() && m.folder.is_none() && !m.stable_name)

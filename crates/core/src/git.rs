@@ -1,4 +1,4 @@
-//! Embedded Git for opt-in libraries. No Git executable, hooks or credential helpers.
+//! Embedded Git for libraries. No Git executable, hooks or credential helpers.
 use anyhow::{Context, Result, ensure};
 use git2::{Index, IndexEntry, IndexTime, Oid, Repository, Signature};
 use serde::{Deserialize, Serialize};
@@ -31,7 +31,8 @@ fn with_rules(name: &str, mut text: String, format: u32) -> String {
     let additions = if name == ".gitattributes" { asset_attributes(format).collect::<Vec<_>>().join("\n") }
         else {
             let image = resource_dirs(format)[0];
-            format!(".DS_Store\n.quiet/*\n!.quiet/format.json\n!.quiet/trash/\n.quiet/trash/*.bak\n/{image}/remote/*.part\n*.tmp\nquiet.json.bak\n")
+            let trash = if virtual_format(format) { "/.quiet/trash/" } else { "!.quiet/trash/\n.quiet/trash/*.bak" };
+            format!(".DS_Store\n.quiet/*\n!.quiet/format.json\n{trash}\n/{image}/remote/*.part\n*.tmp\nquiet.json.bak\n/.quiet-notes-format-10/\n")
         };
     for line in additions.lines() {
         if text.lines().any(|existing| existing == line) { continue }
@@ -89,12 +90,16 @@ impl LibraryRepo {
     }
 
     pub fn init(root: &Path) -> Result<Self> {
-        Self::check_location(root)?;
-        let mut options = git2::RepositoryInitOptions::new();
-        options.initial_head("main");
-        let repo = Repository::init_opts(root, &options)?;
-        write_rules(root, Store::format_at(root).unwrap_or(FORMAT))?;
-        Ok(Self { root: root.canonicalize()?, repo })
+        let root = root.canonicalize()?;
+        Self::check_location(&root)?;
+        let existing = root.join(".git").is_dir().then(|| Repository::open(&root)).transpose()?;
+        write_rules(&root, Store::format_at(&root).unwrap_or(FORMAT))?;
+        let repo = if let Some(repo) = existing { repo } else {
+            let mut options = git2::RepositoryInitOptions::new();
+            options.initial_head("main").no_reinit(true).external_template(false);
+            Repository::init_opts(&root, &options)?
+        };
+        Ok(Self { root, repo })
     }
 
     pub fn clone_into(remote: &str, root: &Path, auth: &Auth) -> Result<Self> {
