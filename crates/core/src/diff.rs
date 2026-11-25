@@ -1,9 +1,8 @@
-//! Line-level diff between two document versions. DocxXML is turned into
-//! plain text first, so the view compares what the reader sees rather than
-//! markup; Git also offers formatted block comparisons below. Markdown files
-//! are compared as written. No diff crate: the LCS
-//! table is bounded, which keeps a million-character note from allocating
-//! hundreds of megabytes during a preview.
+//! Version history uses a bounded LCS for readable line counts. Git previews
+//! use libgit2 over complete files or sequences of canonical DocxXML blocks.
+
+use anyhow::{Context as _, Result};
+use std::borrow::Cow;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind { Same, Added, Removed }
@@ -14,7 +13,7 @@ pub struct Line {
     pub text: String,
 }
 
-/// Beyond this many lines the preview is truncated; the table is O(n·m).
+/// Bound the quadratic LCS table used by version history.
 pub const MAX_LINES: usize = 1200;
 
 /// What a reader sees: block text in document order, one line per paragraph.
@@ -71,19 +70,115 @@ fn sequence<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(Kind, usize)> {
     out
 }
 
-/// Read-only block comparisons retain styles and containers, including changes
-/// that leave the plain text identical. Canonical XML ignores per-parse ids.
-pub struct FormattedDiff {
-    pub rows: Vec<(Kind, crate::model::Block)>,
-    pub truncated: bool,
+#[derive(Debug, PartialEq, Eq)]
+pub struct DiffChange<T> {
+    pub added: bool,
+    pub number: usize,
+    pub content: T,
 }
 
-pub fn formatted(old: &str, new: &str) -> Option<FormattedDiff> {
+fn git_changes(old: &[u8], new: &[u8], mut visit: impl FnMut(bool, usize, &[u8]) -> Result<()>) -> Result<()> {
+    if old == new { return Ok(()) }
+    let mut options = git2::DiffOptions::new();
+    options.context_lines(0).force_text(true);
+    let patch = git2::Patch::from_buffers(old, None, new, None, Some(&mut options))?;
+    for hunk in 0..patch.num_hunks() {
+        for index in 0..patch.num_lines_in_hunk(hunk)? {
+            let line = patch.line_in_hunk(hunk, index)?;
+            let (added, number) = match line.origin() {
+                '+' => (true, line.new_lineno()),
+                '-' => (false, line.old_lineno()),
+                _ => continue,
+            };
+            visit(added, number.context("Git diff line is missing its position")? as usize, line.content())?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn is_blank_line(line: &str) -> bool { line.trim_ascii().is_empty() }
+
+/// Cumulative offsets from runs of skipped lines or blocks. Each run is
+/// keyed by the next position in the filtered sequence.
+#[derive(Default)]
+struct SkippedPositions(Vec<(usize, usize)>);
+
+impl SkippedPositions {
+    fn skip(&mut self, original: usize) {
+        let offset = self.0.last().map_or(0, |&(_, offset)| offset);
+        let next = original - offset;
+        if let Some((position, offset)) = self.0.last_mut() && *position == next {
+            *offset += 1;
+        } else {
+            self.0.push((next, offset + 1));
+        }
+    }
+
+    fn original(&self, number: usize) -> usize {
+        let end = self.0.partition_point(|&(position, _)| position <= number);
+        number + self.0[..end].last().map_or(0, |&(_, offset)| offset)
+    }
+}
+
+fn without_blank_lines(text: &str) -> (Cow<'_, str>, SkippedPositions) {
+    let mut skipped = SkippedPositions::default();
+    let mut filtered = String::new();
+    let (mut start, mut offset) = (0, 0);
+    for (index, line) in text.split_inclusive('\n').enumerate() {
+        let end = offset + line.len();
+        if is_blank_line(line) {
+            filtered.push_str(&text[start..offset]);
+            start = end;
+            skipped.skip(index + 1);
+        }
+        offset = end;
+    }
+    if start == 0 { return (Cow::Borrowed(text), skipped) }
+    filtered.push_str(&text[start..]);
+    (Cow::Owned(filtered), skipped)
+}
+
+pub(crate) fn git_lines(old: &str, new: &str) -> Result<Vec<DiffChange<String>>> {
+    if old == new { return Ok(vec![]) }
+    let (old, old_skipped) = without_blank_lines(old);
+    let (new, new_skipped) = without_blank_lines(new);
+    let mut rows = Vec::new();
+    git_changes(old.as_bytes(), new.as_bytes(), |added, number, bytes| {
+        let line = std::str::from_utf8(bytes)?;
+        let content = line.strip_suffix('\n').map_or(line, |s| s.strip_suffix('\r').unwrap_or(s));
+        let number = if added { &new_skipped } else { &old_skipped }.original(number);
+        rows.push(DiffChange { added, number, content: content.to_string() });
+        Ok(())
+    })?;
+    Ok(rows)
+}
+
+/// Retain both documents for equation numbering. Each edit indexes the
+/// original block in its own version, including style-only changes.
+pub struct FormattedDiff {
+    pub old: crate::model::Document,
+    pub new: crate::model::Document,
+    rows: Vec<DiffChange<()>>,
+}
+
+impl FormattedDiff {
+    pub fn into_rows(self) -> impl Iterator<Item = DiffChange<crate::model::Block>> {
+        let mut old = self.old.blocks.into_iter().enumerate();
+        let mut new = self.new.blocks.into_iter().enumerate();
+        self.rows.into_iter().map(move |DiffChange { added, number, .. }| {
+            let blocks = if added { &mut new } else { &mut old };
+            let (_, content) = blocks.find(|(i, _)| i + 1 == number).expect("Git diff block position");
+            DiffChange { added, number, content }
+        })
+    }
+}
+
+pub(crate) fn formatted(old: &str, new: &str) -> Result<Option<FormattedDiff>> {
     use crate::{docxml, model::{Block, BlockKind, Document}};
-    let blocks = |xml: &str| -> Option<Vec<Block>> {
-        if xml.is_empty() { return Some(vec![]) }
-        let doc = docxml::parse(xml).ok()?;
-        let mut blocks = doc.blocks;
+    use std::fmt::Write as _;
+    let document = |xml: &str| -> Option<Document> {
+        if xml.is_empty() { return Some(Document { blocks: vec![], ..Document::default() }) }
+        let mut doc = docxml::parse(xml).ok()?;
         fn number_lists(blocks: &mut [Block]) {
             let mut number = 0;
             for block in blocks {
@@ -96,20 +191,40 @@ pub fn formatted(old: &str, new: &str) -> Option<FormattedDiff> {
                 }
             }
         }
-        number_lists(&mut blocks);
-        if !doc.title.is_empty() { blocks.insert(0, Block::new(BlockKind::Heading { level: 1, seq_auto: false }, doc.title)); }
-        Some(blocks)
+        number_lists(&mut doc.blocks);
+        if !doc.title.is_empty() {
+            let title = std::mem::take(&mut doc.title);
+            doc.blocks.insert(0, Block::new(BlockKind::Heading { level: 1, seq_auto: false }, title));
+        }
+        Some(doc)
     };
-    let mut a = blocks(old)?; let mut b = blocks(new)?;
-    let truncated = a.len() > MAX_LINES || b.len() > MAX_LINES;
-    a.truncate(MAX_LINES); b.truncate(MAX_LINES);
-    let keys = |blocks: &[Block]| blocks.iter().map(|block| {
-        docxml::serialize(&Document { blocks: vec![block.clone()], ..Document::default() })
-    }).collect::<Vec<_>>();
-    let rows = sequence(&keys(&a), &keys(&b)).into_iter().map(|(kind, i)| {
-        (kind, if kind == Kind::Removed { a[i].clone() } else { b[i].clone() })
-    }).collect();
-    Some(FormattedDiff { rows, truncated })
+    let (Some(old), Some(new)) = (document(old), document(new)) else { return Ok(None) };
+    let ((old_keys, old_skipped), (new_keys, new_skipped)) = {
+        let mut ids = rustc_hash::FxHashMap::default();
+        let mut encode = |doc: &Document| {
+            let mut buf = String::new();
+            let mut skipped = SkippedPositions::default();
+            for (index, block) in doc.blocks.iter().enumerate() {
+                if matches!(block.kind, BlockKind::Text) && block.children.is_empty() && block.bg.is_none()
+                    && is_blank_line(&block.text.text) {
+                    skipped.skip(index + 1);
+                    continue;
+                }
+                let next = ids.len();
+                let id = ids.entry(docxml::serialize_block(block)).or_insert(next);
+                writeln!(buf, "{id}").unwrap();
+            }
+            (buf, skipped)
+        };
+        (encode(&old), encode(&new))
+    };
+    let mut rows = Vec::new();
+    git_changes(old_keys.as_bytes(), new_keys.as_bytes(), |added, number, _| {
+        let number = if added { &new_skipped } else { &old_skipped }.original(number);
+        rows.push(DiffChange { added, number, content: () });
+        Ok(())
+    })?;
+    Ok(Some(FormattedDiff { old, new, rows }))
 }
 
 pub fn counts(lines: &[Line]) -> (usize, usize) {
@@ -152,42 +267,59 @@ mod tests {
     }
 
     #[test]
+    fn git_previews_ignore_blank_rows_and_keep_original_numbers() {
+        let old = "\n \t\r\nBefore\n\nKeep\n\nOld tail\n";
+        let new = "After\n\nKeep\n \n\nNew tail\n";
+        let text = git_lines(old, new).unwrap();
+        let positions = |rows: &[DiffChange<String>]| rows.iter().map(|r| (r.added, r.number)).collect::<Vec<_>>();
+        let expected = [(false, 3), (true, 1), (false, 7), (true, 6)];
+        assert_eq!(positions(&text), expected);
+        assert!(git_lines("A\n\n\nB\n", "A\nB\n \t\n").unwrap().is_empty());
+        assert_eq!(git_lines("item\n", "  item\n").unwrap().len(), 2);
+
+        let old = "<p></p><p> </p><p>Before</p><p></p><p>Keep</p><p></p><p>Old tail</p>";
+        let new = "<p>After</p><p></p><p>Keep</p><p> </p><p></p><p>New tail</p>";
+        let rows = formatted(old, new).unwrap().unwrap().into_rows();
+        assert_eq!(rows.map(|r| (r.added, r.number)).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
     fn formatted_diff_detects_styles_without_text_changes() {
         let a = "<p>same text</p><p>unchanged</p>";
         let b = "<p><b>same text</b></p><p>unchanged</p>";
         assert_eq!(counts(&diff(a, b, false)), (0, 0));
-        let rich = formatted(a, b).unwrap();
-        assert_eq!(rich.rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![Kind::Removed, Kind::Added, Kind::Same]);
-        assert!(!rich.rows[0].1.text.runs[0].marks.bold);
-        assert!(rich.rows[1].1.text.runs[0].marks.bold);
-        assert!(!rich.truncated);
+        let rows = formatted(a, b).unwrap().unwrap().into_rows().collect::<Vec<_>>();
+        assert_eq!(rows.iter().map(|r| (r.added, r.number)).collect::<Vec<_>>(), [(false, 1), (true, 1)]);
+        assert!(!rows[0].content.text.runs[0].marks.bold);
+        assert!(rows[1].content.text.runs[0].marks.bold);
     }
 
     #[test]
     fn formatted_diff_preserves_structure_and_ignores_parse_ids() {
         use crate::model::BlockKind;
         let xml = "<title>Title</title><h2>Heading</h2><blockquote><p>Quote</p></blockquote><ul><li>Item</li></ul>";
-        let rich = formatted(xml, xml).unwrap();
-        assert!(rich.rows.iter().all(|(k, _)| *k == Kind::Same));
-        assert!(matches!(rich.rows[1].1.kind, BlockKind::Heading { level: 2, .. }));
-        assert!(matches!(rich.rows[2].1.kind, BlockKind::Quote));
-        assert_eq!(rich.rows[2].1.children[0].text.text, "Quote");
-        let added = formatted("", xml).unwrap();
-        assert!(added.rows.iter().all(|(k, _)| *k == Kind::Added));
-        let removed = formatted(xml, "").unwrap();
-        assert!(removed.rows.iter().all(|(k, _)| *k == Kind::Removed));
-        assert!(formatted("<p>broken", xml).is_none());
-        assert!(formatted("", "").unwrap().rows.is_empty());
+        assert!(formatted(xml, xml).unwrap().unwrap().into_rows().next().is_none());
+        let added = formatted("", xml).unwrap().unwrap().into_rows().collect::<Vec<_>>();
+        assert_eq!(added.len(), 4);
+        assert!(added.iter().all(|row| row.added));
+        assert!(matches!(added[1].content.kind, BlockKind::Heading { level: 2, .. }));
+        assert!(matches!(added[2].content.kind, BlockKind::Quote));
+        assert_eq!(added[2].content.children[0].text.text, "Quote");
+        let removed = formatted(xml, "").unwrap().unwrap().into_rows().collect::<Vec<_>>();
+        assert_eq!(removed.len(), 4);
+        assert!(removed.iter().all(|row| !row.added));
+        assert!(formatted("<p>broken", xml).unwrap().is_none());
+        assert!(formatted("", "").unwrap().unwrap().into_rows().next().is_none());
     }
 
     #[test]
     fn formatted_diff_keeps_ordered_list_numbers_in_each_version() {
         use crate::model::BlockKind;
-        let rich = formatted("<ol><li>One</li><li>Two</li></ol>", "<ol><li>One</li><li>New</li><li>Two</li></ol>").unwrap();
-        let numbers = rich.rows.iter().filter(|(k, _)| *k != Kind::Removed).map(|(_, b)| match b.kind {
+        let rich = formatted("<ol><li>One</li><li>Two</li></ol>", "<ol><li>One</li><li>New</li><li>Two</li></ol>").unwrap().unwrap();
+        let numbers = rich.into_rows().map(|row| match row.content.kind {
             BlockKind::Ordered { seq } => seq.unwrap(), _ => panic!("ordered list expected"),
         }).collect::<Vec<_>>();
-        assert_eq!(numbers, vec![1, 2, 3]);
+        assert_eq!(numbers, [2, 2, 3]);
     }
 
     #[test]
@@ -197,13 +329,12 @@ mod tests {
             ("<blockquote><p>Quote</p></blockquote>", "<blockquote><p><i>Quote</i></p></blockquote>"),
             ("<table><tr><td><p>Cell</p></td></tr></table>", "<table><tr><td><p><b>Cell</b></p></td></tr></table>"),
         ] {
-            let rich = formatted(a, b).unwrap();
-            assert_eq!(rich.rows.iter().map(|(k, _)| *k).collect::<Vec<_>>(), vec![Kind::Removed, Kind::Added]);
+            let rich = formatted(a, b).unwrap().unwrap();
+            assert_eq!(rich.into_rows().map(|r| r.added).collect::<Vec<_>>(), [false, true]);
         }
         let many = "<p>line</p>".repeat(MAX_LINES + 1);
-        let rich = formatted("", &many).unwrap();
-        assert!(rich.truncated);
-        assert_eq!(rich.rows.len(), MAX_LINES);
+        let rich = formatted("", &many).unwrap().unwrap();
+        assert_eq!(rich.into_rows().count(), MAX_LINES + 1);
     }
 
     #[test]

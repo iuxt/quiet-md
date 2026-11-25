@@ -218,7 +218,7 @@ impl LibraryRepo {
         if old.contains('\0') || new.contains('\0') { return Ok(false) }
         // Keep the exact bytes of nonblank lines, including their line endings.
         fn nonblank(text: &str) -> impl Iterator<Item = &str> {
-            text.split_inclusive('\n').filter(|line| !line.trim_ascii().is_empty())
+            text.split_inclusive('\n').filter(|line| !crate::diff::is_blank_line(line))
         }
         Ok(nonblank(old).eq(nonblank(new)))
     }

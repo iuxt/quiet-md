@@ -718,6 +718,12 @@ pub fn serialize(doc: &Document) -> String {
     s
 }
 
+pub(crate) fn serialize_block(block: &Block) -> String {
+    let mut s = String::new();
+    write_blocks(std::slice::from_ref(block), &mut s, 0);
+    s
+}
+
 thread_local! {
     /// Writing a table cell, whose blocks go on one line: content newlines
     /// (code, raw elements) are written as `&#10;` so that dropping the

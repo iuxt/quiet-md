@@ -57,7 +57,7 @@ main.rs ─ 窗口
 
 回收站文件夹按原父级逐层浏览，文章通过 `Store::load_trash` 只读加载，不建立编辑冲突基线。`trash_document` 在应用层阻止保存、同步和切换编辑模式，存储层也拒绝保存回收站正文。历史抽屉复用普通文章的实现，本地快照按文章状态从 `history/` 或 `history-trash/` 读取，Git 历史仍按 UUID 查询；恢复文章后重新打开可编辑正文。
 
-差异分两层：`changes.rs` 按块做 LCS，回答「这一版哪些块是新加的、哪些被改写」，用来给正文上色；`diff.rs` 按行做 LCS，计算抽屉每行的 `+N 行 −M 行` 和 Git 文本 / 源码对比；Git XML 正文另用规范化 XML 做块级 LCS，保留格式并识别纯样式变更，复用主页的无交互 block 渲染器以正常字号显示。规则见 FORMAT.md。
+`changes.rs` 按块做 LCS，给历史预览中的新增和改写块上色。`diff.rs` 按行做 LCS，计算历史抽屉的 `+N 行 −M 行`。Git 变更在后台用 libgit2 对比完整文本和源码，只返回新增、删除及其原始编号。XML 正文先将规范化的顶层块映射为编号，再使用同一算法比较，保留格式并识别纯样式变更，复用主页的无交互 block 渲染器以正常字号显示。规则见 FORMAT.md。
 
 Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机编辑后检查：
 
@@ -139,7 +139,7 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 | `editor/table_ops.rs` | 表格操作和单元格选区（`CellSel`） |
 | `editor/fuzz_tests.rs` | 随机编辑 fuzzer |
 | `versions.rs` | 正文版本快照：目录即索引、节流、配额、回收站联动 |
-| `diff.rs` | 版本间的按行 LCS 差异（无第三方依赖） |
+| `diff.rs` | 版本历史的按行 LCS，以及 Git 的完整文本、源码和富文本差异 |
 | `changes.rs` | 版本间的块级 LCS：哪些块是新加的、哪些被改写，用来给快照上色 |
 
 应用顶层（`src/`）：

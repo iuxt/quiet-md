@@ -1,15 +1,13 @@
 //! Read-only comparisons against the same managed tree used by commits.
 use super::*;
-use crate::diff::{self, Line};
+use crate::diff::{self, DiffChange};
 
 pub struct ChangePreview {
     pub title: String,
-    pub lines: Vec<Line>,
-    pub source: Option<Vec<Line>>,
+    pub lines: Vec<DiffChange<String>>,
+    pub source: Option<Vec<DiffChange<String>>>,
     pub formatted: Option<diff::FormattedDiff>,
     pub binary: bool,
-    pub truncated: bool,
-    pub source_truncated: bool,
 }
 
 impl LibraryRepo {
@@ -35,13 +33,16 @@ impl LibraryRepo {
         // LFS blobs are text pointers, but assets are never shown as text documents.
         let binary = asset || old.contains(&0) || new.contains(&0)
             || std::str::from_utf8(&old).is_err() || std::str::from_utf8(&new).is_err();
-        if binary { return Ok(ChangePreview { title, lines: vec![], source: None, formatted: None, binary, truncated: false, source_truncated: false }); }
+        if binary { return Ok(ChangePreview { title, lines: vec![], source: None, formatted: None, binary }); }
         let old = std::str::from_utf8(&old)?; let new = std::str::from_utf8(&new)?;
         let xml = path.ends_with(".xml");
-        let old_text = diff::readable(old, !xml); let new_text = diff::readable(new, !xml);
-        let exceeds = |a: &str, b: &str| a.lines().count() > diff::MAX_LINES || b.lines().count() > diff::MAX_LINES;
-        Ok(ChangePreview { title, lines: diff::diff(&old_text, &new_text, true),
-            source: xml.then(|| diff::diff(old, new, true)), formatted: if xml { diff::formatted(old, new) } else { None }, binary,
-            truncated: exceeds(&old_text, &new_text), source_truncated: xml && exceeds(old, new) })
+        let (lines, source, formatted) = if xml {
+            let formatted = diff::formatted(old, new)?;
+            let lines = if formatted.is_some() { vec![] } else {
+                diff::git_lines(&diff::readable(old, false), &diff::readable(new, false))?
+            };
+            (lines, Some(diff::git_lines(old, new)?), formatted)
+        } else { (diff::git_lines(old, new)?, None, None) };
+        Ok(ChangePreview { title, lines, source, formatted, binary })
     }
 }

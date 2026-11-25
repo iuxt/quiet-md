@@ -1,59 +1,72 @@
 //! Working-tree browser and read-only text / formatted block comparisons.
-use crate::{app::{View, Workspace}, git::Action, settings::tr, theme::{self, Theme}, ui::{self, TipExt}};
-use fdl_core::{diff::{Kind, Line}, git::{ChangePreview, LibraryRepo}, store::Store};
+use crate::{app::{View, Workspace}, git::Action, model::{Block, BlockId}, settings::tr, theme::{self, Theme}, ui::{self, TipExt}};
+use fdl_core::{diff::DiffChange, git::{ChangePreview, LibraryRepo}, store::Store};
 use gpui::{prelude::FluentBuilder, *};
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, collections::HashMap, rc::Rc};
+
+type EquationNumbers = HashMap<BlockId, u32>;
 
 pub(super) struct GitPreview {
     title: String, binary: bool, text: DiffRows, source: Option<DiffRows>, formatted: Option<DiffRows>,
 }
 
 struct DiffRows {
-    rows: Rc<Vec<DiffRow>>, state: ListState, counts: (usize, usize), truncated: bool,
-    eqnos: Rc<std::collections::HashMap<crate::model::BlockId, u32>>,
+    rows: Rc<Vec<DiffRow>>, state: ListState, counts: (usize, usize), number_width: Pixels, eqnos: Rc<EquationNumbers>,
 }
 
-struct DiffRow { kind: Kind, number: usize, text: SharedString, block: Option<crate::model::Block> }
+struct DiffRow { added: bool, number: usize, content: DiffContent }
+
+enum DiffContent { Text(SharedString), Block(Box<Block>) }
+
+struct GitPreviewData {
+    title: String, binary: bool, text: Vec<DiffRow>, source: Option<Vec<DiffRow>>,
+    formatted: Option<Vec<DiffRow>>, eqnos: EquationNumbers,
+}
+
+impl GitPreviewData {
+    fn new(preview: ChangePreview) -> Self {
+        let text = |lines: Vec<DiffChange<String>>| lines.into_iter().map(|DiffChange { added, number, content }| {
+            DiffRow { added, number, content: DiffContent::Text(content.into()) }
+        }).collect();
+        let mut eqnos = EquationNumbers::new();
+        let formatted = preview.formatted.map(|diff| {
+            eqnos = crate::editor::equation_numbers(&diff.old);
+            eqnos.extend(crate::editor::equation_numbers(&diff.new));
+            diff.into_rows().map(|DiffChange { added, number, content }| {
+                DiffRow { added, number, content: DiffContent::Block(Box::new(content)) }
+            }).collect()
+        });
+        Self { title: preview.title, binary: preview.binary, text: text(preview.lines), source: preview.source.map(text), formatted, eqnos }
+    }
+}
 
 impl GitPreview {
-    fn new(preview: ChangePreview) -> Self {
-        Self { title: preview.title, binary: preview.binary, text: DiffRows::new(preview.lines, preview.truncated),
-            source: preview.source.map(|lines| DiffRows::new(lines, preview.source_truncated)),
-            formatted: preview.formatted.map(DiffRows::formatted) }
+    fn new(data: GitPreviewData) -> Self {
+        Self { title: data.title, binary: data.binary, text: DiffRows::new(data.text, Default::default()),
+            source: data.source.map(|rows| DiffRows::new(rows, Default::default())),
+            formatted: data.formatted.map(|rows| DiffRows::new(rows, data.eqnos)) }
     }
 }
 
 impl DiffRows {
-    fn new(lines: Vec<Line>, truncated: bool) -> Self {
-        let counts = fdl_core::diff::counts(&lines);
-        let mut old = 0; let mut new = 0;
-        let rows = lines.into_iter().map(|line| {
-            if line.kind != Kind::Added { old += 1; }
-            if line.kind != Kind::Removed { new += 1; }
-            DiffRow { kind: line.kind, number: if line.kind == Kind::Removed { old } else { new }, text: line.text.into(), block: None }
-        }).collect::<Vec<_>>();
+    fn new(rows: Vec<DiffRow>, eqnos: EquationNumbers) -> Self {
+        let (added, max_number) = rows.iter().fold((0, 0), |(added, max_number), row| {
+            (added + usize::from(row.added), max_number.max(row.number))
+        });
+        let counts = (added, rows.len() - added);
+        let extra_digits = max_number.max(1).ilog10().saturating_sub(3);
+        let number_width = px(42. + 8. * extra_digits as f32);
         let state = ListState::new(rows.len(), ListAlignment::Top, px(100.));
-        Self { rows: Rc::new(rows), state, counts, truncated, eqnos: Default::default() }
-    }
-
-    fn formatted(diff: fdl_core::diff::FormattedDiff) -> Self {
-        let numbers = |exclude| {
-            let blocks = diff.rows.iter().filter(|(kind, _)| *kind != exclude).map(|(_, b)| b.clone()).collect();
-            crate::editor::equation_numbers(&crate::model::Document { blocks, ..Default::default() })
-        };
-        let mut eqnos = numbers(Kind::Added); eqnos.extend(numbers(Kind::Removed));
-        let mut out = Self::new(diff.rows.iter().map(|(kind, _)| Line { kind: *kind, text: String::new() }).collect(), diff.truncated);
-        for (row, (_, block)) in Rc::get_mut(&mut out.rows).unwrap().iter_mut().zip(diff.rows) { row.block = Some(block); }
-        out.eqnos = Rc::new(eqnos);
-        out
+        Self { rows: Rc::new(rows), state, counts, number_width, eqnos: Rc::new(eqnos) }
     }
 
     fn render(&self) -> impl IntoElement {
         let rows = self.rows.clone(); let eqnos = self.eqnos.clone();
+        let number_width = self.number_width;
         let state = self.state.clone();
         let offset = Cell::new(state.estimated_scroll_metrics().0);
         div().flex_1().min_h_0()
-            .child(list(self.state.clone(), move |i, _, _| rows[i].render(&eqnos)).size_full().pb(px(20.)))
+            .child(list(self.state.clone(), move |i, _, _| rows[i].render(number_width, &eqnos)).size_full().pb(px(20.)))
             .on_scroll_wheel(move |event, window, cx| {
                 // Unmeasured rows have no exact height yet; large swipes and
                 // returning to the top after a resize still need to reach them.
@@ -65,22 +78,22 @@ impl DiffRows {
 }
 
 impl DiffRow {
-    fn render(&self, eqnos: &std::collections::HashMap<crate::model::BlockId, u32>) -> AnyElement {
-        let (mark, bg, fg) = match self.kind {
-            Kind::Same => (" ", Theme::bg_body(), Theme::text()),
-            Kind::Added => ("+", Theme::diff_added_bg(), Theme::diff_added()),
-            Kind::Removed => ("−", Theme::diff_removed_bg(), Theme::danger()),
+    fn render(&self, number_width: Pixels, eqnos: &EquationNumbers) -> AnyElement {
+        let (mark, bg, fg) = if self.added {
+            ("+", Theme::diff_added_bg(), Theme::diff_added())
+        } else {
+            ("−", Theme::diff_removed_bg(), Theme::danger())
         };
-        if let Some(block) = &self.block {
-            return div().w_full().flex().items_start().py(px(8.)).bg(bg)
+        match &self.content {
+            DiffContent::Block(block) => div().w_full().flex().items_start().py(px(8.)).bg(bg)
                 .child(div().flex_none().flex().text_size(px(12.)).line_height(px(25.)).font_family(theme::MONO_FONT)
-                    .child(number(self.number)).child(div().w(px(22.)).text_color(fg).child(mark)))
-                .child(div().flex_1().min_w_0().pr(px(18.)).overflow_hidden().child(crate::home::formatted_block(block, eqnos))).into_any_element();
+                    .child(number(self.number, number_width)).child(div().w(px(22.)).text_color(fg).child(mark)))
+                .child(div().flex_1().min_w_0().pr(px(18.)).overflow_hidden().child(crate::home::formatted_block(block, eqnos))).into_any_element(),
+            DiffContent::Text(text) => div().w_full().flex().items_start().min_h(px(25.)).bg(bg).text_size(px(12.)).line_height(px(25.)).font_family(theme::MONO_FONT)
+                .child(number(self.number, number_width))
+                .child(div().w(px(22.)).flex_none().text_color(fg).child(mark))
+                .child(div().flex_1().min_w_0().pr(px(18.)).whitespace_normal().text_color(Theme::text()).child(text.clone())).into_any_element(),
         }
-        div().w_full().flex().items_start().min_h(px(25.)).bg(bg).text_size(px(12.)).line_height(px(25.)).font_family(theme::MONO_FONT)
-            .child(number(self.number))
-            .child(div().w(px(22.)).flex_none().text_color(fg).child(mark))
-            .child(div().flex_1().min_w_0().pr(px(18.)).whitespace_normal().text_color(Theme::text()).child(self.text.clone())).into_any_element()
     }
 }
 
@@ -99,7 +112,7 @@ impl Workspace {
         p.selected = Some(path.clone()); p.preview = None; p.loading = true; p.source = false;
         let root = Store::root_dir();
         let task = cx.background_executor().spawn(async move {
-            LibraryRepo::open(&root).and_then(|r| r.change_preview(&path)).map_err(|e| format!("{e:#}"))
+            LibraryRepo::open(&root).and_then(|r| r.change_preview(&path)).map(GitPreviewData::new).map_err(|e| format!("{e:#}"))
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await;
@@ -209,7 +222,6 @@ impl Workspace {
         let mut diff = div().flex_1().min_w_0().h_full().flex().flex_col();
         if let Some(preview) = &p.preview {
             let rows = if p.source { preview.source.as_ref().unwrap_or(&preview.text) } else { preview.formatted.as_ref().unwrap_or(&preview.text) };
-            let truncated = rows.truncated;
             let (added, removed) = rows.counts;
             diff = diff.child(div().flex_none().min_h(px(72.)).p(px(18.)).flex().flex_col().gap(px(7.))
                 .child(div().flex().items_center().gap(px(12.))
@@ -221,19 +233,12 @@ impl Workspace {
                     .child(div().min_w_0().truncate().text_size(px(11.)).text_color(Theme::text_caption()).child(tr("上次提交 → 工作区 · 只读对比", "Last commit → Working tree · Read only")))
                     .when(preview.source.is_some(), |d| d.child(ui::secondary_button("git-diff-source", if p.source { tr("查看正文", "Show text") } else { tr("查看源码", "Show source") })
                         .on_click(cx.listener(|w, _, _, cx| { if let Some(p) = &mut w.git { p.source = !p.source; } cx.notify(); }))))));
-            if truncated {
-                diff = diff.child(div().flex_none().px(px(18.)).py(px(8.)).text_size(px(11.)).text_color(Theme::text_caption())
-                    .child(if !p.source && preview.formatted.is_some() { tr("仅对比前 1200 个内容块，后续内容未显示。", "Only the first 1200 blocks are compared. Later content is omitted.") }
-                        else { tr("仅对比前 1200 行，后续内容未显示。", "Only the first 1200 lines are compared. Later content is omitted.") }));
-            }
             if preview.binary {
                 diff = diff.child(empty(tr("图片或附件内容已变更，不提供文本对比。", "Image or attachment changed. No text diff available.")));
             } else if added == 0 && removed == 0 {
-                diff = diff.child(empty(if truncated {
-                    tr("显示范围内没有文字差异，请检查完整文件。", "No text differences in the displayed range. Check the full file.")
-                } else if preview.source.is_some() && !p.source {
+                diff = diff.child(empty(if !p.source && preview.source.as_ref().is_some_and(|source| !source.rows.is_empty()) {
                     tr("正文文字相同，可查看源码中的格式或样式变更。", "Text is unchanged. View source to inspect formatting or style changes.")
-                } else { tr("文件内容与上次提交相同，请刷新状态。", "File matches the last commit. Refresh the status.") }));
+                } else { tr("没有可显示的变更。", "No changes to display.") }));
             } else {
                 diff = diff.child(rows.render());
             }
@@ -256,8 +261,8 @@ impl Workspace {
 fn empty(text: &'static str) -> Div {
     div().flex_1().p(px(30.)).flex().items_center().justify_center().text_size(px(13.)).line_height(px(22.)).text_color(Theme::text_caption()).child(text)
 }
-fn number(n: usize) -> Div {
-    div().w(px(42.)).flex_none().pr(px(10.)).text_right().text_color(Theme::text_caption()).child(n.to_string())
+fn number(n: usize, width: Pixels) -> Div {
+    div().w(width).flex_none().pr(px(10.)).text_right().whitespace_nowrap().text_color(Theme::text_caption()).child(n.to_string())
 }
 
 fn tool(id: impl Into<ElementId>, icon: &'static str, label: &'static str, enabled: bool) -> Stateful<Div> {
