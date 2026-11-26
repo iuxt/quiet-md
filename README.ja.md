@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="Quiet.md のホーム画面。左にドキュメントのツリー、右にすべてのノートがグリッドで並んでいます。">
+  <img src="docs/images/home.png" width="100%" alt="Quiet.md のホーム画面。左にドキュメントツリー、右にフォルダーとノートの一覧があります。">
 </p>
 
 > [!NOTE]

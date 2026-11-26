@@ -1,6 +1,6 @@
 mod button;
 mod caption;
-mod catalogue;
+pub(crate) mod catalogue;
 mod countdown;
 mod cover;
 pub use fdl_core::editor::core;

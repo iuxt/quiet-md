@@ -126,8 +126,7 @@ impl Workspace {
         )).with_priority(3).into_any_element())
     }
 
-    /// A folder's page: one header row (the path on the left, the actions on
-    /// the right), then its contents in the view 主页 shows.
+    /// A folder's document page lists its immediate children below the title.
     pub(crate) fn render_folder(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let id = self.folder_current.clone().unwrap_or_default();
         let title = self.entries.iter().find(|e| e.id == id).map(|e| display_title(&e.title)).unwrap_or_else(|| tr("文件夹", "Folder").to_string());
@@ -154,7 +153,7 @@ impl Workspace {
             crumbs = crumbs.child(sep()).child(link(e.id.clone(), display_title(&e.title), Some(e.id.clone())));
         }
         crumbs = crumbs.child(sep()).child(div().min_w_0().px(px(4.)).overflow_hidden().whitespace_nowrap().text_ellipsis()
-            .font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(ui_text(title)));
+            .font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()).child(ui_text(title.clone())));
         let doc = id.clone();
         let header = crate::trash::page_header_with(self, crumbs, 26., cx)
             .child(self.place_button("folder-more", Some(id.clone()), cx))
@@ -164,18 +163,41 @@ impl Workspace {
                 .when(self.create_menu.is_some(), |d| d.bg(Theme::fill_hover()))
                 .tip(tr("新建", "New"), Some(crate::shortcuts::hint("workspace::NewDoc", "⌘ + N")))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-folder").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); let p = Some(doc.clone()); w.create_menu = if w.create_menu.is_some() { None } else { Some((p, pos)) }; cx.notify(); })))
-            .child(self.view_switch(cx).no_drag().ml(px(12.)));
-        let children = self.level_entries(Some(&id));
-        let body = if children.is_empty() {
-            crate::trash::empty_state("illus/empty-list.svg", tr("这个文件夹还是空的", "This folder is empty")).into_any_element()
-        } else if self.home.grid {
-            self.render_home_grid(&children, true, window, cx)
-        } else {
-            self.render_home_list(&children, true, cx)
-        };
+                .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| { let pos = w.home.anchor("create-folder").map_or(ev.position(), |b| point(b.left(), b.bottom() + px(4.))); let p = Some(doc.clone()); w.create_menu = if w.create_menu.is_some() { None } else { Some((p, pos)) }; cx.notify(); })));
+        use crate::editor_theme::{self as page, Theme as PageTheme};
+        let pane_width = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
+        let layout = crate::editor::catalogue::page_layout(pane_width, Some(page::style().num("page.width")), false, false);
+        let metrics = page::title();
+        let feishu = crate::settings::feishu();
+        let scroll = &self.home.folder_scroll;
+        let title = div().id("folder-title").pt(px(if feishu { 48. } else { 52. })).pb(px(if feishu { 22. } else { 24. }))
+            .font_family(page::style().font("title.font")).font_weight(FontWeight(page::style().num("title.weight")))
+            .text_size(px(metrics.size)).line_height(px(metrics.line_height))
+            .text_color(page::style().color("title.color").unwrap_or_else(PageTheme::text)).child(title);
+        let entries = self.level_entries(Some(&id));
+        let mut content = div().w_full().pl(px(layout.ml)).pr(px(layout.mr)).pb(px(80.))
+            .font_family(page::body_font()).text_color(PageTheme::text()).child(title);
+        if entries.is_empty() {
+            content = content.child(div().text_size(px(page::body_size())).line_height(px(page::body_line()))
+                .text_color(PageTheme::text_caption()).child(tr("这个文件夹还是空的", "This folder is empty")));
+        }
+        for e in &entries {
+            let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
+            content = content.child(self.home_row(e, "folder-row", cx).min_h(px(36.)).px(px(8.)).rounded(px(4.))
+                .hover(|s| s.bg(PageTheme::fill_hover()))
+                .when(menu_on, |d| d.bg(PageTheme::fill_hover()))
+                .when(self.file_drop_over(&e.id), |d| d.bg(PageTheme::fill_hover_strong()))
+                .when_some(self.home_check(e), |d, c| d.child(c.mr(px(12.))))
+                .child(crate::home::entry_icon(e))
+                .child(div().flex_1().min_w_0().text_size(px(page::body_size())).line_height(px(page::body_line()))
+                    .overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
+                .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., PageTheme::pinned()).ml(px(6.))))
+                .child(self.home_row_actions(e, cx)));
+        }
         div().size_full().flex().flex_col().child(header).children(self.render_document_tabs(window, cx))
-            .child(div().h(px(8.)).flex_none()).child(body).into_any_element()
+            .child(div().relative().flex_1().min_h_0().flex().flex_col()
+                .child(div().id("folder-page").flex_1().min_h_0().overflow_y_scroll().track_scroll(scroll).child(content))
+                .child(self.home.folder_scrollbar.render(scroll))).into_any_element()
     }
 
     pub(crate) fn folder_row_menu(&self, m: crate::app::RowMenu, cx: &mut Context<Self>) -> Vec<AnyElement> {

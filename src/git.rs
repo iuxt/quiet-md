@@ -8,7 +8,7 @@ pub(crate) struct GitPanel {
     name: Entity<TextField>, email: Entity<TextField>, remote: Entity<TextField>, lfs: Entity<TextField>,
     ssh_key: Entity<TextField>, ssh_passphrase: Entity<TextField>, lfs_ca_info: Entity<TextField>,
     username: Entity<TextField>, token: Entity<TextField>, pub(super) message: Entity<TextField>,
-    pub(super) status: Option<Status>, settings_feedback: bool, pub(super) error: Option<String>, pub(super) notice: Option<String>,
+    pub(super) status: Option<Status>, settings_error: Option<String>, settings_notice: Option<String>,
     pub(super) selected: Option<String>, pub(super) preview: Option<crate::git_panel::GitPreview>, pub(super) loading: bool,
     pub(super) source: bool, pub(super) request: u64,
 }
@@ -38,7 +38,7 @@ impl Workspace {
             ssh_passphrase: field(tr("私钥密码（仅本次会话）", "Key passphrase (this session only)"), &auth.ssh_passphrase, true),
             lfs_ca_info: field(tr("PEM CA 证书路径（可选）", "PEM CA certificate path (optional)"), &config.lfs_ca_info, false),
             message: field(tr("提交说明", "Commit message"), &message, false),
-            status: None, settings_feedback: error.is_some(), error, notice: None,
+            status: None, settings_error: error, settings_notice: None,
             selected: None, preview: None, loading: false, source: false, request: 0,
         });
     }
@@ -54,8 +54,8 @@ impl Workspace {
             }
         }
         self.init_git_panel(cx);
-        let panel = self.git.as_mut().unwrap(); panel.error = None; panel.notice = None;
-        panel.settings_feedback = matches!(action, Action::Enable | Action::Configure | Action::Clone(_));
+        let panel = self.git.as_mut().unwrap(); panel.settings_error = None; panel.settings_notice = None;
+        let settings_feedback = matches!(action, Action::Enable | Action::Configure | Action::Clone(_));
         panel.request += 1; panel.preview = None; panel.loading = false;
         let config = Config { name: panel.name.read(cx).text.clone(), email: panel.email.read(cx).text.clone(), remote: panel.remote.read(cx).text.trim().to_string(),
             branch: String::new(), lfs_url: panel.lfs.read(cx).text.trim().to_string(),
@@ -104,9 +104,23 @@ impl Workspace {
                 match result {
                     Ok((status, notice, clone)) => {
                         if let Some(path) = clone { w.confirm = Some(Confirm::SwitchLibrary(path)); }
-                        if let Some(panel) = w.git.as_mut() { panel.status = status; panel.notice = (!notice.is_empty()).then_some(notice); }
+                        if let Some(panel) = w.git.as_mut() { panel.status = status; }
+                        if !notice.is_empty() {
+                            if settings_feedback {
+                                if let Some(panel) = w.git.as_mut() { panel.settings_notice = Some(notice); }
+                            } else {
+                                w.show_toast(&notice, cx);
+                            }
+                        }
                     },
-                    Err(error) => if let Some(panel) = w.git.as_mut() { panel.error = Some(crate::settings::diagnostic(&error)); },
+                    Err(error) => {
+                        let error = crate::settings::diagnostic(&error);
+                        if settings_feedback {
+                            if let Some(panel) = w.git.as_mut() { panel.settings_error = Some(error); }
+                        } else {
+                            w.show_toast_kind(ui::ToastKind::Error, &error, cx);
+                        }
+                    },
                 }
                 if reload || !restored.is_empty() {
                     let paths = (!reload).then_some(&restored);
@@ -182,10 +196,8 @@ impl Workspace {
                     .when(!enabled, |d| d.child(ui::primary_button("git-enable", tr("启用 Git", "Enable Git")).on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Enable, window, cx)))))
                     .when(enabled, |d| d.child(ui::secondary_button("git-configure", tr("保存配置", "Save configuration")).on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Configure, window, cx)))))
                     .child(ui::secondary_button("git-clone", tr("克隆到空文件夹…", "Clone to an empty folder…")).on_click(cx.listener(|w, _, window, cx| w.pick_git_clone(window, cx)))));
-            if panel.settings_feedback {
-                if let Some(error) = &panel.error { section = section.child(div().text_size(px(12.)).text_color(Theme::danger()).child(error.clone())); }
-                if let Some(notice) = &panel.notice { section = section.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(notice.clone())); }
-            }
+            if let Some(error) = &panel.settings_error { section = section.child(div().text_size(px(12.)).text_color(Theme::danger()).child(error.clone())); }
+            if let Some(notice) = &panel.settings_notice { section = section.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(notice.clone())); }
         } else {
             section = section.child(ui::secondary_button("git-settings", tr("配置 Git", "Configure Git")).on_click(cx.listener(|w, _, _, cx| { w.init_git_panel(cx); cx.notify(); })));
         }

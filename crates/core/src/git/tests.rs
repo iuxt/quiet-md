@@ -538,6 +538,7 @@ fn virtual_empty_folders_survive_clone_and_are_not_treated_as_pristine() {
 
 #[test]
 fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
+    use crate::diff::Kind::{Added, Removed, Same};
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let mut first = doc("Preview note");
     first.blocks = vec![crate::model::Block::text("Before")];
@@ -546,8 +547,8 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let added = repo.change_preview(&path).unwrap();
     assert_eq!(added.title, "Preview note");
-    assert_eq!(added.source.unwrap().into_iter().filter(|row| row.added).count(), 2);
-    assert_eq!(added.formatted.unwrap().into_rows().filter(|row| row.added).count(), 2);
+    assert_eq!(added.source.unwrap().into_iter().filter(|row| row.kind == Added).count(), 2);
+    assert_eq!(added.formatted.unwrap().into_rows().filter(|row| row.kind == Added).count(), 2);
     assert!(repo.change_preview("../outside").is_err());
     std::fs::write(lib.0.join("unmanaged.txt"), "private").unwrap();
     assert!(repo.change_preview("unmanaged.txt").is_err());
@@ -559,20 +560,20 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     assert!(formatting.formatted.unwrap().into_rows().next().is_none());
     std::fs::write(lib.0.join(&path), original.replace("Before", "<b>Before</b>")).unwrap();
     let styled = repo.change_preview(&path).unwrap();
-    assert!(styled.formatted.unwrap().into_rows().any(|row| row.added && row.content.text.runs[0].marks.bold));
+    assert!(styled.formatted.unwrap().into_rows().any(|row| row.kind == Added && row.content.text.runs[0].marks.bold));
     let body = format!(" \t\n{}", original.replace("Before", "After"));
     std::fs::write(lib.0.join(&path), body).unwrap();
     let changed = repo.change_preview(&path).unwrap();
     let source = changed.source.unwrap();
-    assert_eq!(source.iter().map(|row| (row.added, row.number)).collect::<Vec<_>>(), [(false, 2), (true, 3)]);
+    assert_eq!(source.iter().map(|row| (row.kind, row.number)).collect::<Vec<_>>(), [(Same, 2), (Removed, 2), (Added, 3)]);
     let rows = changed.formatted.unwrap().into_rows().collect::<Vec<_>>();
-    assert_eq!(rows.len(), 2);
-    assert!(rows[1].added);
-    assert_eq!(rows[1].content.text.text, "After");
+    assert_eq!(rows.iter().map(|row| (row.kind, row.number)).collect::<Vec<_>>(), [(Same, 1), (Removed, 2), (Added, 2)]);
+    assert_eq!(rows[0].content.text.text, "Preview note");
+    assert_eq!(rows[2].content.text.text, "After");
     std::fs::write(lib.0.join(&path), "<p>broken").unwrap();
     let invalid = repo.change_preview(&path).unwrap();
     assert!(invalid.formatted.is_none());
-    assert!(invalid.lines.iter().any(|row| row.added && row.content == "<p>broken"));
+    assert!(invalid.lines.iter().any(|row| row.kind == Added && row.content == "<p>broken"));
     std::fs::create_dir_all(lib.0.join("Images")).unwrap();
     std::fs::write(lib.0.join("Images/image.png"), b"image content").unwrap();
     let binary = repo.change_preview("Images/image.png").unwrap();
@@ -587,11 +588,12 @@ fn change_previews_compare_managed_text_and_keep_binary_assets_out() {
     std::fs::remove_file(lib.0.join(&path)).unwrap();
     let removed = repo.change_preview(&path).unwrap();
     assert_eq!(removed.title, "Preview note");
-    assert_eq!(removed.formatted.unwrap().into_rows().filter(|row| !row.added).count(), 2);
+    assert_eq!(removed.formatted.unwrap().into_rows().filter(|row| row.kind == Removed).count(), 2);
 }
 
 #[test]
 fn change_previews_report_edits_after_1200_lines_and_blocks() {
+    use crate::diff::Kind::{Added, Removed, Same};
     use std::fmt::Write as _;
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let markdown_id = store.create_markdown(&doc("Long Markdown"), "").unwrap();
@@ -614,20 +616,25 @@ fn change_previews_report_edits_after_1200_lines_and_blocks() {
     std::fs::write(lib.0.join(&markdown), new_text).unwrap();
     std::fs::write(lib.0.join(&xml), new_xml).unwrap();
 
-    let positions = |rows: &[crate::diff::DiffChange<String>]| rows.iter().map(|row| (row.added, row.number)).collect::<Vec<_>>();
+    let positions = |rows: &[crate::diff::DiffChange<String>]| rows.iter().map(|row| (row.kind, row.number)).collect::<Vec<_>>();
+    let expected = [
+        (Same, 2497), (Same, 2498), (Same, 2499), (Added, 2500), (Same, 2501), (Same, 2502), (Same, 2503),
+        (Same, 4998), (Same, 4999), (Same, 5000), (Removed, 5000), (Added, 5001),
+    ];
     let text = repo.change_preview(&markdown).unwrap();
     assert!(text.source.is_none());
-    assert_eq!(positions(&text.lines), [(true, 2500), (false, 5000), (true, 5001)]);
-    assert_eq!(text.lines[2].content, "New final line");
+    assert_eq!(positions(&text.lines), expected);
+    assert_eq!(text.lines.last().unwrap().content, "New final line");
     let xml = repo.change_preview(&xml).unwrap();
     let source = xml.source.unwrap();
-    let expected = [(true, 2501), (false, 5001), (true, 5002)];
+    let expected = expected.map(|(kind, number)| (kind, number + 1));
     assert_eq!(positions(&source), expected);
-    assert_eq!(source[2].content, "<p><b>Line 5000</b></p>");
+    assert_eq!(source.last().unwrap().content, "<p><b>Line 5000</b></p>");
     let formatted = xml.formatted.unwrap().into_rows().collect::<Vec<_>>();
-    assert_eq!(formatted.iter().map(|row| (row.added, row.number)).collect::<Vec<_>>(), expected);
-    assert_eq!(formatted[2].content.text.text, "Line 5000");
-    assert!(formatted[2].content.text.runs[0].marks.bold);
+    assert_eq!(formatted.iter().map(|row| (row.kind, row.number)).collect::<Vec<_>>(), expected);
+    let last = &formatted.last().unwrap().content;
+    assert_eq!(last.text.text, "Line 5000");
+    assert!(last.text.runs[0].marks.bold);
 }
 
 #[test]

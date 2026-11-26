@@ -439,7 +439,7 @@ impl Workspace {
                     if !this.store.file_task_busy() { this.entries = this.store.list(); this.prune_tabs(); this.sort(); }
                     cx.notify();
                 }
-                else if !this.store.file_task_busy() { this.cancel_home_drag(cx); this.end_folder_drag(true, cx); this.cancel_shortcut_recording(cx); this.flush(cx); }
+                else if !this.store.file_task_busy() { this.end_folder_drag(true, cx); this.cancel_shortcut_recording(cx); this.flush(cx); }
             }),
             cx.subscribe_in(&search, window, |this, _, ev: &TextFieldEvent, window, cx| {
                 match ev {
@@ -1633,7 +1633,6 @@ impl Render for Workspace {
         let resize = self.sidebar_open.then(|| self.render_resize_handle(window, cx));
         let resize_overlay = self.render_resize_overlay(cx);
         let folder_drag_overlay = self.render_folder_drag_overlay(cx);
-        let home_drag_overlay = self.render_home_drag_overlay(window, cx);
         let file_drop = self.render_file_drop(window, cx);
         let create_menu = self.render_create_menu(cx);
         let import_menu = self.render_import_menu(cx);
@@ -1650,6 +1649,7 @@ impl Render for Workspace {
         let pref_menu = self.render_pref_menu(cx);
         let toast = self.render_toast(window);
         let mode_menu = self.render_mode_menu(cx);
+        self.home.folder_bounds.borrow_mut().clear();
         let main = match self.view {
             View::Doc => div()
                 .flex_1()
@@ -1691,7 +1691,7 @@ impl Render for Workspace {
         // surface beside it; the change of value is the only line between
         // them (no gutter, radius, border or shadow).
         // A document sits on its theme's page colour.
-        let page = if self.view == View::Doc { crate::editor_theme::Theme::bg_body() } else { Theme::bg_body() };
+        let page = if matches!(self.view, View::Doc | View::Folder) { crate::editor_theme::Theme::bg_body() } else { Theme::bg_body() };
         let note = div().id("note").relative().flex_1().min_w_0().h_full().flex().bg(page).child(main)
             // Files from the Finder dropped on 主页 or a folder's page are imported there.
             .when(matches!(self.view, View::Home | View::Folder), |d| d
@@ -1781,7 +1781,7 @@ impl Render for Workspace {
                 }
             }))
             // Esc leaves 批量操作 (closing its menu or confirmation first), even from the editor.
-            .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, _, cx| {
+            .capture_key_down(cx.listener(|w, ev: &KeyDownEvent, window, cx| {
                 let undo = ev.keystroke.modifiers.secondary() && matches!(ev.keystroke.key.as_str(), "z" | "y");
                 if w.store.file_task_busy() || (w.file_history.busy && !undo) { cx.stop_propagation(); return; }
                 if ev.keystroke.key == "escape" && w.dismiss_tab_overflow() { cx.notify(); cx.stop_propagation(); return; }
@@ -1793,8 +1793,8 @@ impl Render for Workspace {
                 if ev.keystroke.key == "escape" && w.history.is_some() {
                     w.close_history(cx); cx.stop_propagation(); return;
                 }
-                if ev.keystroke.key == "escape" && w.has_home_drag() {
-                    w.cancel_home_drag(cx); cx.stop_propagation(); return;
+                if ev.keystroke.key == "escape" && matches!(w.view, View::Home | View::Folder) && cx.stop_active_drag(window) {
+                    cx.stop_propagation(); return;
                 }
                 if ev.keystroke.key == "escape" && w.folder_drag.active.is_some() {
                     w.end_folder_drag(true, cx); cx.stop_propagation(); return;
@@ -1849,7 +1849,6 @@ impl Render for Workspace {
             .when(self.file_history.busy || self.store.file_task_busy(), |d| d.child(deferred(div().id("file-history-pending").absolute().inset_0().occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())).with_priority(20)))
-            .children(home_drag_overlay)
             .children(create_menu)
             .children(import_menu)
             .children(place_menu)

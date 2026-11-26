@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="L'accueil de Quiet.md : l'arborescence des documents à gauche, toutes les notes en grille à droite.">
+  <img src="docs/images/home.png" width="100%" alt="L’accueil de Quiet.md, avec l’arborescence des documents à gauche et la liste des dossiers et des notes à droite.">
 </p>
 
 > [!NOTE]

@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="Quiet.md 홈 화면. 왼쪽에는 문서 트리가, 오른쪽에는 모든 노트가 격자로 놓여 있습니다.">
+  <img src="docs/images/home.png" width="100%" alt="Quiet.md 홈 화면. 왼쪽에 문서 트리, 오른쪽에 폴더와 노트 목록이 있습니다.">
 </p>
 
 > [!NOTE]

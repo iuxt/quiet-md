@@ -363,7 +363,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Put `id` last in `folder` (a drop on 主页's folder card), saved like a sidebar drop.
+    /// Put `id` last in `folder` (a drop on a folder row), saved like a sidebar drop.
     pub(crate) fn move_into_folder(&mut self, id: &str, folder: &str, cx: &mut Context<Self>) {
         let mut movement = PendingMove { id: id.to_string(), parent: Some(folder.to_string()), before: None, history: 0 };
         let file_before = self.entries.clone();

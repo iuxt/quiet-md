@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="Quiet.md 的主页：左侧是文档树，右侧按网格排列所有笔记。">
+  <img src="docs/images/home.png" width="100%" alt="Quiet.md 的主页：左侧是文档树，右侧列出文件夹和笔记。">
 </p>
 
 > [!NOTE]

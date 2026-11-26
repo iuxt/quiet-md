@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="The Quiet.md home screen: a document tree on the left and all notes in a grid on the right.">
+  <img src="docs/images/home.png" width="100%" alt="The Quiet.md home screen: a document tree on the left and a list of folders and notes on the right.">
 </p>
 
 > [!NOTE]

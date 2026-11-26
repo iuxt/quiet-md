@@ -1,6 +1,9 @@
 //! Working-tree browser and read-only text / formatted block comparisons.
+mod block;
+mod text;
+
 use crate::{app::{View, Workspace}, git::Action, model::{Block, BlockId}, settings::tr, theme::{self, Theme}, ui::{self, TipExt}};
-use fdl_core::{diff::DiffChange, git::{ChangePreview, LibraryRepo}, store::Store};
+use fdl_core::{diff::{DiffChange, Kind}, git::{ChangePreview, LibraryRepo}, store::Store};
 use gpui::{prelude::FluentBuilder, *};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 
@@ -14,7 +17,7 @@ struct DiffRows {
     rows: Rc<Vec<DiffRow>>, state: ListState, counts: (usize, usize), number_width: Pixels, eqnos: Rc<EquationNumbers>,
 }
 
-struct DiffRow { added: bool, number: usize, content: DiffContent }
+struct DiffRow { kind: Kind, number: usize, content: DiffContent }
 
 enum DiffContent { Text(SharedString), Block(Box<Block>) }
 
@@ -25,15 +28,15 @@ struct GitPreviewData {
 
 impl GitPreviewData {
     fn new(preview: ChangePreview) -> Self {
-        let text = |lines: Vec<DiffChange<String>>| lines.into_iter().map(|DiffChange { added, number, content }| {
-            DiffRow { added, number, content: DiffContent::Text(content.into()) }
+        let text = |lines: Vec<DiffChange<String>>| lines.into_iter().map(|DiffChange { kind, number, content }| {
+            DiffRow { kind, number, content: DiffContent::Text(content.into()) }
         }).collect();
         let mut eqnos = EquationNumbers::new();
         let formatted = preview.formatted.map(|diff| {
             eqnos = crate::editor::equation_numbers(&diff.old);
             eqnos.extend(crate::editor::equation_numbers(&diff.new));
-            diff.into_rows().map(|DiffChange { added, number, content }| {
-                DiffRow { added, number, content: DiffContent::Block(Box::new(content)) }
+            diff.into_rows().map(|DiffChange { kind, number, content }| {
+                DiffRow { kind, number, content: DiffContent::Block(Box::new(content)) }
             }).collect()
         });
         Self { title: preview.title, binary: preview.binary, text: text(preview.lines), source: preview.source.map(text), formatted, eqnos }
@@ -50,10 +53,10 @@ impl GitPreview {
 
 impl DiffRows {
     fn new(rows: Vec<DiffRow>, eqnos: EquationNumbers) -> Self {
-        let (added, max_number) = rows.iter().fold((0, 0), |(added, max_number), row| {
-            (added + usize::from(row.added), max_number.max(row.number))
+        let (added, removed, max_number) = rows.iter().fold((0, 0, 0), |(added, removed, max_number), row| {
+            (added + usize::from(row.kind == Kind::Added), removed + usize::from(row.kind == Kind::Removed), max_number.max(row.number))
         });
-        let counts = (added, rows.len() - added);
+        let counts = (added, removed);
         let extra_digits = max_number.max(1).ilog10().saturating_sub(3);
         let number_width = px(42. + 8. * extra_digits as f32);
         let state = ListState::new(rows.len(), ListAlignment::Top, px(100.));
@@ -79,16 +82,16 @@ impl DiffRows {
 
 impl DiffRow {
     fn render(&self, number_width: Pixels, eqnos: &EquationNumbers) -> AnyElement {
-        let (mark, bg, fg) = if self.added {
-            ("+", Theme::diff_added_bg(), Theme::diff_added())
-        } else {
-            ("−", Theme::diff_removed_bg(), Theme::danger())
+        let (mark, bg, fg) = match self.kind {
+            Kind::Added => ("+", Theme::diff_added_bg(), Theme::diff_added()),
+            Kind::Removed => ("−", Theme::diff_removed_bg(), Theme::danger()),
+            Kind::Same => ("", transparent_black(), Theme::text()),
         };
         match &self.content {
             DiffContent::Block(block) => div().w_full().flex().items_start().py(px(8.)).bg(bg)
                 .child(div().flex_none().flex().text_size(px(12.)).line_height(px(25.)).font_family(theme::MONO_FONT)
                     .child(number(self.number, number_width)).child(div().w(px(22.)).text_color(fg).child(mark)))
-                .child(div().flex_1().min_w_0().pr(px(18.)).overflow_hidden().child(crate::home::formatted_block(block, eqnos))).into_any_element(),
+                .child(div().flex_1().min_w_0().pr(px(18.)).overflow_hidden().child(block::formatted_block(block, eqnos))).into_any_element(),
             DiffContent::Text(text) => div().w_full().flex().items_start().min_h(px(25.)).bg(bg).text_size(px(12.)).line_height(px(25.)).font_family(theme::MONO_FONT)
                 .child(number(self.number, number_width))
                 .child(div().w(px(22.)).flex_none().text_color(fg).child(mark))
@@ -119,7 +122,10 @@ impl Workspace {
             let _ = this.update(cx, |w, cx| {
                 let Some(p) = w.git.as_mut().filter(|p| p.request == request) else { return };
                 p.loading = false;
-                match result { Ok(preview) => p.preview = Some(GitPreview::new(preview)), Err(e) => p.error = Some(crate::settings::diagnostic(&e)) }
+                match result {
+                    Ok(preview) => p.preview = Some(GitPreview::new(preview)),
+                    Err(e) => w.show_toast_kind(ui::ToastKind::Error, &crate::settings::diagnostic(&e), cx),
+                }
                 cx.notify();
             });
         }).detach();
@@ -252,8 +258,6 @@ impl Workspace {
         div().size_full().flex().flex_col().text_color(Theme::text()).child(header)
             .child(div().flex_none().min_h(px(44.)).px(px(20.)).py(px(7.)).flex().flex_wrap().items_center().gap(px(10.)).border_b_1().border_color(Theme::line_border())
                 .child(div().flex_1().text_size(px(12.)).text_color(Theme::text_caption()).child(format!("{branch} · {}", tr("本地工作区", "Local working tree")))))
-            .children(p.error.as_ref().map(|e| div().px(px(20.)).py(px(10.)).text_size(px(12.)).text_color(Theme::danger()).child(e.clone())))
-            .children(p.notice.as_ref().map(|n| div().px(px(20.)).py(px(8.)).text_size(px(12.)).text_color(Theme::text_caption()).child(n.clone())))
             .child(div().flex_1().min_h_0().flex().child(left).child(diff)).into_any_element()
     }
 }

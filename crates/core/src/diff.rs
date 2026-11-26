@@ -72,25 +72,26 @@ fn sequence<T: PartialEq>(a: &[T], b: &[T]) -> Vec<(Kind, usize)> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct DiffChange<T> {
-    pub added: bool,
+    pub kind: Kind,
     pub number: usize,
     pub content: T,
 }
 
-fn git_changes(old: &[u8], new: &[u8], mut visit: impl FnMut(bool, usize, &[u8]) -> Result<()>) -> Result<()> {
+fn git_changes(old: &[u8], new: &[u8], mut visit: impl FnMut(Kind, usize, &[u8]) -> Result<()>) -> Result<()> {
     if old == new { return Ok(()) }
     let mut options = git2::DiffOptions::new();
-    options.context_lines(0).force_text(true);
+    options.context_lines(3).force_text(true);
     let patch = git2::Patch::from_buffers(old, None, new, None, Some(&mut options))?;
     for hunk in 0..patch.num_hunks() {
         for index in 0..patch.num_lines_in_hunk(hunk)? {
             let line = patch.line_in_hunk(hunk, index)?;
-            let (added, number) = match line.origin() {
-                '+' => (true, line.new_lineno()),
-                '-' => (false, line.old_lineno()),
+            let (kind, number) = match line.origin() {
+                '+' => (Kind::Added, line.new_lineno()),
+                '-' => (Kind::Removed, line.old_lineno()),
+                ' ' => (Kind::Same, line.new_lineno()),
                 _ => continue,
             };
-            visit(added, number.context("Git diff line is missing its position")? as usize, line.content())?;
+            visit(kind, number.context("Git diff line is missing its position")? as usize, line.content())?;
         }
     }
     Ok(())
@@ -143,17 +144,17 @@ pub(crate) fn git_lines(old: &str, new: &str) -> Result<Vec<DiffChange<String>>>
     let (old, old_skipped) = without_blank_lines(old);
     let (new, new_skipped) = without_blank_lines(new);
     let mut rows = Vec::new();
-    git_changes(old.as_bytes(), new.as_bytes(), |added, number, bytes| {
+    git_changes(old.as_bytes(), new.as_bytes(), |kind, number, bytes| {
         let line = std::str::from_utf8(bytes)?;
         let content = line.strip_suffix('\n').map_or(line, |s| s.strip_suffix('\r').unwrap_or(s));
-        let number = if added { &new_skipped } else { &old_skipped }.original(number);
-        rows.push(DiffChange { added, number, content: content.to_string() });
+        let number = if kind == Kind::Removed { &old_skipped } else { &new_skipped }.original(number);
+        rows.push(DiffChange { kind, number, content: content.to_string() });
         Ok(())
     })?;
     Ok(rows)
 }
 
-/// Retain both documents for equation numbering. Each edit indexes the
+/// Retain both documents for equation numbering. Each row indexes the
 /// original block in its own version, including style-only changes.
 pub struct FormattedDiff {
     pub old: crate::model::Document,
@@ -165,10 +166,10 @@ impl FormattedDiff {
     pub fn into_rows(self) -> impl Iterator<Item = DiffChange<crate::model::Block>> {
         let mut old = self.old.blocks.into_iter().enumerate();
         let mut new = self.new.blocks.into_iter().enumerate();
-        self.rows.into_iter().map(move |DiffChange { added, number, .. }| {
-            let blocks = if added { &mut new } else { &mut old };
+        self.rows.into_iter().map(move |DiffChange { kind, number, .. }| {
+            let blocks = if kind == Kind::Removed { &mut old } else { &mut new };
             let (_, content) = blocks.find(|(i, _)| i + 1 == number).expect("Git diff block position");
-            DiffChange { added, number, content }
+            DiffChange { kind, number, content }
         })
     }
 }
@@ -219,9 +220,9 @@ pub(crate) fn formatted(old: &str, new: &str) -> Result<Option<FormattedDiff>> {
         (encode(&old), encode(&new))
     };
     let mut rows = Vec::new();
-    git_changes(old_keys.as_bytes(), new_keys.as_bytes(), |added, number, _| {
-        let number = if added { &new_skipped } else { &old_skipped }.original(number);
-        rows.push(DiffChange { added, number, content: () });
+    git_changes(old_keys.as_bytes(), new_keys.as_bytes(), |kind, number, _| {
+        let number = if kind == Kind::Removed { &old_skipped } else { &new_skipped }.original(number);
+        rows.push(DiffChange { kind, number, content: () });
         Ok(())
     })?;
     Ok(Some(FormattedDiff { old, new, rows }))
@@ -271,8 +272,8 @@ mod tests {
         let old = "\n \t\r\nBefore\n\nKeep\n\nOld tail\n";
         let new = "After\n\nKeep\n \n\nNew tail\n";
         let text = git_lines(old, new).unwrap();
-        let positions = |rows: &[DiffChange<String>]| rows.iter().map(|r| (r.added, r.number)).collect::<Vec<_>>();
-        let expected = [(false, 3), (true, 1), (false, 7), (true, 6)];
+        let positions = |rows: &[DiffChange<String>]| rows.iter().map(|r| (r.kind, r.number)).collect::<Vec<_>>();
+        let expected = [(Kind::Removed, 3), (Kind::Added, 1), (Kind::Same, 3), (Kind::Removed, 7), (Kind::Added, 6)];
         assert_eq!(positions(&text), expected);
         assert!(git_lines("A\n\n\nB\n", "A\nB\n \t\n").unwrap().is_empty());
         assert_eq!(git_lines("item\n", "  item\n").unwrap().len(), 2);
@@ -280,7 +281,7 @@ mod tests {
         let old = "<p></p><p> </p><p>Before</p><p></p><p>Keep</p><p></p><p>Old tail</p>";
         let new = "<p>After</p><p></p><p>Keep</p><p> </p><p></p><p>New tail</p>";
         let rows = formatted(old, new).unwrap().unwrap().into_rows();
-        assert_eq!(rows.map(|r| (r.added, r.number)).collect::<Vec<_>>(), expected);
+        assert_eq!(rows.map(|r| (r.kind, r.number)).collect::<Vec<_>>(), expected);
     }
 
     #[test]
@@ -289,7 +290,7 @@ mod tests {
         let b = "<p><b>same text</b></p><p>unchanged</p>";
         assert_eq!(counts(&diff(a, b, false)), (0, 0));
         let rows = formatted(a, b).unwrap().unwrap().into_rows().collect::<Vec<_>>();
-        assert_eq!(rows.iter().map(|r| (r.added, r.number)).collect::<Vec<_>>(), [(false, 1), (true, 1)]);
+        assert_eq!(rows.iter().map(|r| (r.kind, r.number)).collect::<Vec<_>>(), [(Kind::Removed, 1), (Kind::Added, 1), (Kind::Same, 2)]);
         assert!(!rows[0].content.text.runs[0].marks.bold);
         assert!(rows[1].content.text.runs[0].marks.bold);
     }
@@ -301,13 +302,13 @@ mod tests {
         assert!(formatted(xml, xml).unwrap().unwrap().into_rows().next().is_none());
         let added = formatted("", xml).unwrap().unwrap().into_rows().collect::<Vec<_>>();
         assert_eq!(added.len(), 4);
-        assert!(added.iter().all(|row| row.added));
+        assert!(added.iter().all(|row| row.kind == Kind::Added));
         assert!(matches!(added[1].content.kind, BlockKind::Heading { level: 2, .. }));
         assert!(matches!(added[2].content.kind, BlockKind::Quote));
         assert_eq!(added[2].content.children[0].text.text, "Quote");
         let removed = formatted(xml, "").unwrap().unwrap().into_rows().collect::<Vec<_>>();
         assert_eq!(removed.len(), 4);
-        assert!(removed.iter().all(|row| !row.added));
+        assert!(removed.iter().all(|row| row.kind == Kind::Removed));
         assert!(formatted("<p>broken", xml).unwrap().is_none());
         assert!(formatted("", "").unwrap().unwrap().into_rows().next().is_none());
     }
@@ -319,7 +320,7 @@ mod tests {
         let numbers = rich.into_rows().map(|row| match row.content.kind {
             BlockKind::Ordered { seq } => seq.unwrap(), _ => panic!("ordered list expected"),
         }).collect::<Vec<_>>();
-        assert_eq!(numbers, [2, 2, 3]);
+        assert_eq!(numbers, [1, 2, 2, 3]);
     }
 
     #[test]
@@ -330,7 +331,7 @@ mod tests {
             ("<table><tr><td><p>Cell</p></td></tr></table>", "<table><tr><td><p><b>Cell</b></p></td></tr></table>"),
         ] {
             let rich = formatted(a, b).unwrap().unwrap();
-            assert_eq!(rich.into_rows().map(|r| r.added).collect::<Vec<_>>(), [false, true]);
+            assert_eq!(rich.into_rows().map(|r| r.kind).collect::<Vec<_>>(), [Kind::Removed, Kind::Added]);
         }
         let many = "<p>line</p>".repeat(MAX_LINES + 1);
         let rich = formatted("", &many).unwrap().unwrap();

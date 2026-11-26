@@ -37,9 +37,16 @@ pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: std::time::Instant, win
         ToastKind::Info => (Theme::primary(), "info-mark", 12.),
     };
     let vw = window.viewport_size().width;
+    let msg = crate::settings::label(msg);
+    let text = if kind == ToastKind::Error {
+        div().min_w_0().child(ui_para(msg)).into_any_element()
+    } else {
+        ui_text(msg).into_any_element()
+    };
     let card = div()
         .flex()
         .items_center()
+        .when(kind == ToastKind::Error, |d| d.max_w(vw - px(32.)))
         .px(px(14.))
         .py(px(10.))
         .rounded(px(12.))
@@ -63,7 +70,7 @@ pub fn toast_el(kind: ToastKind, msg: &SharedString, t0: std::time::Instant, win
                 .child(icon("circle-filled", 16., fill).absolute().top_0().left_0())
                 .child(icon(mark, mark_size, gpui::white())),
         )
-        .child(ui_text(crate::settings::label(msg)));
+        .child(text);
     Some(
         deferred(
             anchored()
@@ -88,18 +95,6 @@ pub fn popover() -> Div {
         .shadow(theme::shadow_menu())
         .font_family(theme::UI_FONT)
         .text_color(Theme::text())
-}
-
-/// Second-level panels (color panel, link editor): white, larger drop.
-/// The header button: a white pill on the note (hairline, 1px drop, radius 12).
-pub fn pill() -> Div {
-    div()
-        .flex_none()
-        .rounded(px(12.))
-        .bg(crate::theme::raised(Theme::bg_body()))
-        .border_1()
-        .border_color(Theme::button_border())
-        .shadow(theme::shadow_button())
 }
 
 /// Column headers of the page lists: tertiary text (measured #88898B on
@@ -840,20 +835,6 @@ pub(crate) fn squircle_path(b: Bounds<Pixels>, radius: f32, i: f32, mut pb: Path
     for p in &pts[1..] { pb.line_to(*p); }
     pb.close();
     pb.build().ok()
-}
-
-/// A squircle-cornered fill (see `squircle_points`).
-pub fn squircle_surface(radius: f32, color: Hsla) -> Div {
-    div().relative().child(canvas(|b, _, _| b, move |_, b, window, _| {
-        if let Some(p) = squircle_path(b, radius, 0., PathBuilder::fill()) { window.paint_path(p, color); }
-    }).absolute().inset_0())
-}
-
-/// A `width` line along the inside of the squircle edge.
-pub fn squircle_outline(radius: f32, width: f32, color: Hsla) -> impl IntoElement {
-    canvas(|b, _, _| b, move |_, b, window, _| {
-        if let Some(p) = squircle_path(b, radius, width / 2., PathBuilder::stroke(px(width))) { window.paint_path(p, color); }
-    }).absolute().inset_0()
 }
 
 pub fn header_icon(id: &'static str, name: &'static str) -> Stateful<Div> {

@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="La pantalla de inicio de Quiet.md: el árbol de documentos a la izquierda y todas las notas en cuadrícula a la derecha.">
+  <img src="docs/images/home.png" width="100%" alt="La pantalla de inicio de Quiet.md, con el árbol de documentos a la izquierda y la lista de carpetas y notas a la derecha.">
 </p>
 
 > [!NOTE]

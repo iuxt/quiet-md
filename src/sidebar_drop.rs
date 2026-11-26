@@ -49,7 +49,7 @@ impl Workspace {
             cx.notify();
         }
         // Over the sidebar, the page's own drop veil steps back.
-        if self.sidebar_drop.is_some() && let Some(d) = self.home.folders.file_drop.as_mut() { d.leave(); cx.notify(); }
+        if self.sidebar_drop.is_some() && let Some(d) = self.home.file_drop.as_mut() { d.leave(); cx.notify(); }
         self.sidebar_drop.is_some()
     }
 

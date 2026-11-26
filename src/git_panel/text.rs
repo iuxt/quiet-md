@@ -1,4 +1,4 @@
-//! Inert library text previews. Formulas reuse the editor's KaTeX layout and
+//! Read-only text for Git comparisons. Formulas reuse the editor's KaTeX layout and
 //! line-breaking rules; no selection, caret, hitboxes, or editing listeners.
 use crate::editor::{math, text::wrap_spaced};
 use crate::model::{Align, RichText};
@@ -10,7 +10,6 @@ pub struct PreviewText {
     pub text: RichText,
     pub runs: Vec<TextRun>,
     pub size: f32,
-    pub scale: f32,
     pub line_height: f32,
     pub align: Align,
     pub eq_counter: u32,
@@ -30,21 +29,21 @@ enum Body { Math(Rc<math::Math>), Invalid(ShapedLine) }
 struct Placed { equation: Rc<Equation>, x: Pixels, baseline: Pixels }
 pub struct Prepared { lines: Vec<(WrappedLine, Vec<Pixels>)>, equations: Vec<Placed>, height: Pixels, width: Pixels }
 
-fn equation(ix: usize, source: &str, width: f32, color: Hsla, eqno: u32, scale: f32, window: &Window) -> Rc<Equation> {
-    let pad = 2. * scale;
+fn equation(ix: usize, source: &str, width: f32, color: Hsla, eqno: u32, window: &Window) -> Rc<Equation> {
+    let pad = 2.;
     let display = math::is_block(source);
-    if let Some(mut m) = math::layout(source, display, math::FONT_PX * scale, color, eqno, window) {
-        let tag = m.tag.as_ref().map_or(0., |t| t.width + 8. * scale);
-        let fit = ((width - 2. * pad).max(scale) / (m.width + tag).max(scale)).min(1.);
-        if fit < 1. { m = math::layout(source, display, math::FONT_PX * scale * fit, color, eqno, window).unwrap_or(m); }
-        let w = m.width + m.tag.as_ref().map_or(0., |t| t.width + 8. * scale);
-        let margin = if display { 15. * scale } else { 0. };
+    if let Some(mut m) = math::layout(source, display, math::FONT_PX, color, eqno, window) {
+        let tag = m.tag.as_ref().map_or(0., |t| t.width + 8.);
+        let fit = ((width - 2. * pad).max(1.) / (m.width + tag).max(1.)).min(1.);
+        if fit < 1. { m = math::layout(source, display, math::FONT_PX * fit, color, eqno, window).unwrap_or(m); }
+        let w = m.width + m.tag.as_ref().map_or(0., |t| t.width + 8.);
+        let margin = if display { 15. } else { 0. };
         Rc::new(Equation { ix, display, advance: if display { width } else { w + 2. * pad }, ascent: m.ascent + margin, depth: m.depth + margin,
             left: if display { ((width - w) / 2.).max(pad) } else { pad }, body: Body::Math(m) })
     } else {
         let label: SharedString = if source.trim().is_empty() { crate::settings::text("公式") } else { crate::settings::text("无效公式") }.into();
         let run = TextRun { len: label.len(), font: font(theme::UI_FONT), color: Theme::text_caption(), background_color: None, underline: None, strikethrough: None };
-        let line = window.text_system().shape_line(label, px(13. * scale), &[run], None);
+        let line = window.text_system().shape_line(label, px(13.), &[run], None);
         Rc::new(Equation { ix, display: false, advance: f32::from(line.width) + pad * 2., ascent: line.ascent.into(), depth: line.descent.into(), left: pad, body: Body::Invalid(line) })
     }
 }
@@ -99,13 +98,12 @@ impl Element for PreviewText {
         let text: SharedString = text.into();
         let (fs, lh, align) = (px(self.size), px(self.line_height), self.align);
         let eq_counter = self.eq_counter;
-        let scale = self.scale;
         let mut style = Style::default(); style.size.width = relative(1.).into();
         let id = window.request_measured_layout(style, move |known, available, window, _| {
-            let width = known.width.or(match available.width { AvailableSpace::Definite(w) => Some(w), _ => None }).unwrap_or(px(690. * scale)).max(px(1.));
+            let width = known.width.or(match available.width { AvailableSpace::Definite(w) => Some(w), _ => None }).unwrap_or(px(690.)).max(px(1.));
             let mut eqno = eq_counter;
             let eqs: Vec<_> = sources.iter().map(|(ix, src)| {
-                let eq = equation(*ix, src, width.into(), colors.iter().find(|c| c.0 == *ix).map_or(Theme::text(), |c| c.1), eqno, scale, window);
+                let eq = equation(*ix, src, width.into(), colors.iter().find(|c| c.0 == *ix).map_or(Theme::text(), |c| c.1), eqno, window);
                 eqno += math::numbers_in(src);
                 eq
             }).collect();
@@ -149,7 +147,7 @@ impl Element for PreviewText {
             for placed in &ready.equations {
                 let origin = point(bounds.left() + placed.x + px(placed.equation.left), bounds.top() + placed.baseline);
                 match &placed.equation.body {
-                    Body::Math(math) => { math.paint(origin, window, cx); if let Some(tag) = &math.tag { tag.paint(point(origin.x + px(math.width + 8. * self.scale), origin.y), window, cx); } }
+                    Body::Math(math) => { math.paint(origin, window, cx); if let Some(tag) = &math.tag { tag.paint(point(origin.x + px(math.width + 8.), origin.y), window, cx); } }
                     Body::Invalid(line) => { let _ = line.paint(point(origin.x, origin.y - line.ascent), line.ascent + line.descent, window, cx); }
                 }
             }

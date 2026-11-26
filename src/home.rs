@@ -1,26 +1,17 @@
-//! 主页: the local library's home — the 新建 / 上传
-//! cards (a new document, or 导入为文档 at once: no menus), the 最近访问 and 收藏 lists (list or grid view), 显示设置 for the
-//! list columns and the sort dropdown. Dressed as 所有文档: a
-//! hairline list with quiet hover fills, white cards and pills, native menus.
+//! Library home, sorting and document rows.
 
 use crate::app::{RowMenu, Workspace};
-#[path = "home_preview_style.rs"]
-mod bs;
-#[path = "home_text.rs"]
-mod text_preview;
 #[path = "home_scrollbar.rs"]
 pub(crate) mod scrollbar;
 use crate::settings::display_title;
-use crate::model::BlockKind;
 use crate::search::doc_icon;
 use crate::store::Entry;
-use crate::editor::image::picture;
 use crate::theme::{self, Theme};
 use crate::trash::{empty_state, list_header_text, list_line, menu_label, page_header, row_hover};
 use crate::ui::{ROW_RADIUS, TipExt, icon, menu_glyph, menu_row, popover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,267 +45,6 @@ impl Col {
 const RECENT_COLS: [Col; 3] = [Col::Modified, Col::Created, Col::Visited];
 const STARRED_COLS: [Col; 4] = [Col::Modified, Col::Created, Col::Visited, Col::Starred];
 
-/// Bounded document trees retain formatting without retaining a whole long document.
-type EquationNumbers = HashMap<crate::model::BlockId, u32>;
-struct ThumbContent { blocks: Vec<crate::model::Block>, eqnos: EquationNumbers, has_subpages: bool }
-type Thumb = Rc<ThumbContent>;
-
-fn has_subpage_list(blocks: &[crate::model::Block]) -> bool {
-    blocks.iter().any(|b| match &b.kind {
-        BlockKind::SubPageList => true,
-        BlockKind::Table(t) => t.rows.iter().any(|row| row.iter().any(|cell| has_subpage_list(&cell.blocks))),
-        _ => has_subpage_list(&b.children),
-    })
-}
-
-fn thumb_blocks(blocks: &[crate::model::Block], budget: &mut usize, depth: usize, numbers: &EquationNumbers, eqnos: &mut EquationNumbers) -> Vec<crate::model::Block> {
-    if depth > 8 { return vec![]; }
-    let mut out = vec![];
-    let mut sequence = 0;
-    for b in blocks {
-        if *budget == 0 { break; }
-        *budget -= 1;
-        let end = b.text.text.char_indices().nth(600).map_or(b.text.text.len(), |(i, _)| i);
-        // A table owns its cell trees inside the kind, so bound those before cloning.
-        let kind = match &b.kind {
-            BlockKind::Table(t) => {
-                let nr = t.rows.len().min(6); let nc = t.col_widths.len().min(6);
-                let rows = t.rows.iter().take(nr).enumerate().map(|(r, row)| row.iter().take(nc).enumerate().map(|(c, cell)| {
-                    crate::model::TableCell { blocks: thumb_blocks(&cell.blocks, budget, depth + 1, numbers, eqnos), bg: cell.bg.clone(), valign: cell.valign.clone(),
-                        colspan: cell.colspan.min((nc - c) as u32), rowspan: cell.rowspan.min((nr - r) as u32) }
-                }).collect()).collect();
-                BlockKind::Table(crate::model::Table { col_widths: t.col_widths.iter().take(nc).copied().collect(), header_rows: t.header_rows.min(nr), header_col: t.header_col, rows })
-            }
-            BlockKind::Image { src, width, height, .. } => {
-                let mut kind = b.kind.clone();
-                // Resolve missing dimensions once per cached thumbnail, not each frame.
-                let dimensions = crate::store::image_path(src).and_then(|p| image::ImageReader::open(p).ok())
-                    .and_then(|r| r.with_guessed_format().ok()).and_then(|r| r.into_dimensions().ok());
-                let (iw, ih) = dimensions.map(|(w, h)| (w.max(1) as f32, h.max(1) as f32)).unwrap_or((690., 460.));
-                let w = width.unwrap_or_else(|| height.map(|h| h * iw / ih).unwrap_or(iw)).max(1.);
-                let h = height.unwrap_or(w * ih / iw).max(1.);
-                // No wider than the page: a 1536 px picture would otherwise reserve its full height below a narrower drawing.
-                let (w, h) = if w > 690. { (690., h * 690. / w) } else { (w, h) };
-                if let BlockKind::Image { width, height, .. } = &mut kind { *width = Some(w); *height = Some(h); }
-                kind
-            }
-            BlockKind::Raw { tag, .. } => BlockKind::Raw { tag: tag.clone(), xml: String::new() },
-            kind => kind.clone(),
-        };
-        let text = b.text.slice(0..end);
-        let preview = preview_text(&text);
-        let mut copy = crate::model::Block::new(kind, preview);
-        if let Some(n) = numbers.get(&b.id) { eqnos.insert(copy.id, *n); }
-        if let BlockKind::Ordered { seq } = &mut copy.kind { sequence = seq.unwrap_or(sequence + 1); *seq = Some(sequence); } else { sequence = 0; }
-        copy.bg = b.bg.clone(); copy.align = b.align;
-        copy.children = thumb_blocks(&b.children, budget, depth + 1, numbers, eqnos);
-        out.push(copy);
-    }
-    out
-}
-
-fn preview_text(text: &crate::model::RichText) -> crate::model::RichText {
-    let mut preview = crate::model::RichText::default();
-    for (range, marks) in text.spans() {
-        let mut marks = marks.clone();
-        if marks.inline.as_ref().is_some_and(|i| i.equation().is_some()) {
-            preview.push(&text.text[range], marks);
-            continue;
-        }
-        let label = marks.inline.as_ref().map(|inline| match &inline.kind {
-            crate::model::InlineKind::Equation(_) => unreachable!(),
-            crate::model::InlineKind::File(file) => file.name.clone(),
-            crate::model::InlineKind::Button(button) => button.text.clone(),
-            crate::model::InlineKind::Reminder(reminder) => crate::editor::reminder::reminder_label(reminder, " "),
-            crate::model::InlineKind::DocLink(doc) => display_title(&doc.title).to_string(),
-            crate::model::InlineKind::Other { tag } => tag.clone(),
-        }).map(|label| label.chars().take(160).collect::<String>());
-        if let Some(inline) = &marks.inline { match &inline.kind {
-            crate::model::InlineKind::Equation(_) => {},
-            crate::model::InlineKind::Button(_) => marks.bold = true,
-            crate::model::InlineKind::DocLink(_) | crate::model::InlineKind::File(_) => marks.link = Some(String::new()),
-            _ => {},
-        } }
-        marks.inline = None;
-        preview.push(&text.text[range].replace('\u{fffc}', label.as_deref().unwrap_or("")), marks);
-    }
-    preview
-}
-
-/// Home cards decode pictures at this share of the size they are drawn:
-/// a card is small and glanced at, so a softer picture costs nothing.
-const THUMB: f32 = 0.75;
-
-/// Long edge drawn for a picture `w` wide with this width / height `ratio`.
-fn thumb_long(w: f32, ratio: f32) -> f32 { (if ratio >= 1. { w } else { w / ratio }) * THUMB }
-
-fn thumb_block(b: &crate::model::Block, depth: usize, inherited: Hsla, quote: bool, eqnos: &EquationNumbers) -> AnyElement {
-    thumb_block_in(b, depth, inherited, quote, (false, 0), eqnos, bs::SCALE)
-}
-
-/// Inert document rendering for the Git panel, at the normal reading size.
-pub(crate) fn formatted_block(b: &crate::model::Block, eqnos: &EquationNumbers) -> AnyElement {
-    thumb_block_in(b, 0, Theme::text(), false, (false, 0), eqnos, 1.)
-}
-
-fn thumb_block_in(b: &crate::model::Block, depth: usize, inherited: Hsla, quote: bool, list: (bool, usize), eqnos: &EquationNumbers, s: f32) -> AnyElement {
-    let (cell, list_depth) = list;
-    let metrics = bs::typography(&b.kind);
-    let (font_size, line_height) = if cell && !matches!(b.kind, BlockKind::Heading { .. } | BlockKind::Code { .. }) { (14., 22.) } else { (metrics.size, metrics.line_height) };
-    let done = matches!(b.kind, BlockKind::Todo { done: true });
-    let color = if done { Theme::todo_done() } else { inherited };
-    let mut node = div().w_full().min_w_0().flex_none().flex().flex_col()
-        .text_size(px(font_size * s)).line_height(px(line_height * s)).text_color(color)
-        .when(b.kind.has_text(), |d| d.min_h(px(line_height * s)));
-    if let Some(bg) = b.bg.as_ref().and_then(|c| theme::block_bg(&c.0)) { node = node.rounded(px(6. * s)).bg(bs::display_fill(bg)); }
-    match &b.kind {
-        BlockKind::Drawing(d) => {
-            let w = (d.width as f32 / 2.).clamp(32., 640.);
-            let h = (w * d.height as f32 / d.width as f32).clamp(42., 420.);
-            let preview = crate::editor::image::drawing_picture(d, w.max(h) * s);
-            return node.child(div().w(px(w * s)).h(px(h * s)).max_w_full().rounded(px(bs::RADIUS * s)).overflow_hidden()
-                .child(preview)).into_any_element();
-        }
-        BlockKind::Image { src, width, height, caption, .. } => {
-            let path = crate::store::image_path(src);
-            let ratio = width.unwrap_or(690.).max(1.) / height.unwrap_or(460.).max(1.);
-            node = match b.align { crate::model::Align::Left => node.items_start(), crate::model::Align::Center => node.items_center(), crate::model::Align::Right => node.items_end() };
-            // Reserve the proportional height at the available width before loading.
-            let media = div().relative().flex_none().w_full().max_w_full().overflow_hidden().when_some(*width, |d, w| d.w(px(w * s)))
-                .map(|mut d| { d.style().aspect_ratio = Some(ratio); d });
-            node = node.child(if let Some(path) = path {
-                media.child(picture(&path, thumb_long(width.unwrap_or(690.).min(690.), ratio) * s).absolute().inset_0().size_full().min_w_0().min_h_0().rounded(px(bs::RADIUS * s)).object_fit(ObjectFit::Contain)).into_any_element()
-            } else {
-                media.rounded(px(bs::RADIUS * s)).bg(bs::code_surface()).flex().items_center().justify_center().child(icon("image-broken", 24. * s, Theme::text_disabled())).into_any_element()
-            });
-            return node.when_some(caption.as_ref().filter(|c| !c.is_empty()), |d, caption| d.child(div().w_full().max_w_full().when_some(*width, |d, w| d.w(px(w * s))).mt(px(6. * s)).text_size(px(13. * s)).line_height(px(20. * s)).text_color(Theme::text_caption()).text_center().child(caption.clone()))).into_any_element();
-        }
-        BlockKind::Divider => return node.h(px(25. * s)).justify_center().child(div().h(px(s)).w_full().bg(Theme::line_divider())).into_any_element(),
-        BlockKind::Grid => node = node.flex_row().gap(px(20. * s)),
-        BlockKind::Column { .. } => node = node.flex_1(),
-        BlockKind::Quote => node = node.relative().py(px(bs::QUOTE_PAD * s)).pl(px(bs::QUOTE_INSET * s))
-            .child(div().absolute().left_0().top_0().bottom_0().w(px(bs::QUOTE_BAR * s)).rounded_full().bg(color)),
-        BlockKind::Callout { emoji, bg, border, text_color } => {
-            let tc = text_color.as_ref().and_then(|c| theme::text_color(&c.0)).map(bs::display_ink).unwrap_or(color);
-            let mut body = div().flex_1().min_w_0().flex().flex_col();
-            if s == 1. || depth < 8 { for (i, child) in b.children.iter().enumerate() {
-                let gap = if i == 0 { 0. } else { bs::gap(&b.children[i - 1].kind).1.max(bs::gap(&child.kind).0) };
-                body = body.child(div().mt(px(gap * s)).child(thumb_block_in(child, depth + 1, tc, quote, (cell, list_depth), eqnos, s)));
-            } }
-            let first_line = b.children.first().map(|b| bs::typography(&b.kind).line_height).unwrap_or(theme::BODY_LINE);
-            return node.relative().p(px(bs::INSET * s)).rounded(px(bs::CALLOUT_RADIUS * s)).border(px(s)).border_color(bs::border(border.as_ref().map(|c| c.0.as_str()))).bg(bs::fill(bg.as_ref().map(|c| c.0.as_str())))
-                .child(div().flex().gap(px(bs::ICON_GAP * s)).child(div().size(px(bs::ICON * s)).mt(px((first_line - bs::ICON) / 2. * s)).text_size(px(20. * s)).line_height(px(22. * s)).flex_none().child(emoji.clone())).child(body)).into_any_element();
-        }
-        BlockKind::Code { lang, caption, wrap } => {
-            node = node.rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(bs::code_surface()).font_family(theme::MONO_FONT)
-                .child(div().h(px(bs::CODE_HEADER * s)).pl(px(28. * s)).pr(px(8. * s)).rounded_t(px((bs::RADIUS - 1.) * s)).bg(bs::code_header()).flex().items_center().font_family(theme::UI_FONT).text_size(px(13. * s)).text_color(Theme::text_caption()).child(caption.clone().unwrap_or_else(|| crate::settings::text("代码块").into())));
-            let spans = crate::highlight::spans(lang, &b.text.text);
-            let mut body = div().pt(px(14. * s)).pb(px(18. * s)).pr(px(20. * s)).flex().flex_col();
-            let mut off = 0;
-            for (i, line) in b.text.text.split('\n').enumerate() {
-                let end = off + line.len();
-                let mut cuts = vec![off, end];
-                for (r, _, _) in &spans {
-                    if r.start > off && r.start < end { cuts.push(r.start); }
-                    if r.end > off && r.end < end { cuts.push(r.end); }
-                }
-                cuts.sort_unstable(); cuts.dedup();
-                let runs = cuts.windows(2).map(|r| {
-                    let h = spans.iter().find(|(h, _, _)| h.start <= r[0] && r[1] <= h.end);
-                    let mut f = font(theme::MONO_FONT); if h.is_some_and(|(_, _, it)| *it) { f.style = FontStyle::Italic; }
-                    TextRun { len: r[1] - r[0], font: f, color: h.map_or(Theme::text_code(), |(_, c, _)| *c), background_color: None, underline: None, strikethrough: None }
-                }).collect::<Vec<_>>();
-                body = body.child(div().flex().items_start()
-                    .child(div().w(px(bs::CODE_GUTTER * s)).mr(px(bs::CODE_GAP * s)).flex_none().text_right().text_color(Theme::text_caption()).child((i + 1).to_string()))
-                    .child(div().min_w_0().flex_1().when(s != 1., |d| d.overflow_hidden()).when(!*wrap, |d| d.whitespace_nowrap()).child(if line.is_empty() { StyledText::new(" ") } else { StyledText::new(line.to_string()).with_runs(runs) })));
-                off = end + 1;
-            }
-            return node.child(if s == 1. {
-                div().id(("diff-code", b.id.0)).w_full().overflow_x_scroll().child(body).into_any_element()
-            } else { body.into_any_element() }).into_any_element();
-        }
-        BlockKind::Table(table) => {
-            let widths: Vec<f32> = table.col_widths.iter().map(|w| w * s).collect();
-            let mut table_el = div().grid().grid_col_widths(widths.clone()).w(px(widths.iter().sum())).when(s != 1., |d| d.max_w_full());
-            for (r, c, value) in table.cells() {
-                let (rs, cs) = (value.rowspan as usize, value.colspan as usize);
-                let header = r < table.header_rows || (table.header_col && c == 0);
-                let mut col = div().min_w_0().flex().flex_col().row_start(r as i16 + 1).row_end((r + rs) as i16 + 1).col_start(c as i16 + 1).col_end((c + cs) as i16 + 1)
-                    .p(px(8. * s)).border_r(px(s)).border_b(px(s)).when(r == 0, |d| d.border_t(px(s))).when(c == 0, |d| d.border_l(px(s))).border_color(bs::table_line())
-                    .when(header, |d| d.bg(Theme::table_header())).when_some(value.bg.as_ref().and_then(|c| theme::block_bg(&c.0)), |d, c| d.bg(bs::display_fill(c)))
-                    .map(|d| match value.valign.as_deref() { Some("middle") => d.justify_center(), Some("bottom") => d.justify_end(), _ => d });
-                for (i, child) in value.blocks.iter().enumerate() {
-                    let gap = if i == 0 { 0. } else { bs::gap(&value.blocks[i - 1].kind).1.min(6.).max(bs::gap(&child.kind).0.min(8.)) };
-                    col = col.child(div().mt(px(gap * s)).child(thumb_block_in(child, depth + 1, color, quote, (true, 0), eqnos, s)));
-                }
-                table_el = table_el.child(col);
-            }
-            return node.child(if s == 1. {
-                div().id(("diff-table", b.id.0)).w_full().overflow_x_scroll().child(table_el).into_any_element()
-            } else { table_el.into_any_element() }).into_any_element();
-        }
-        BlockKind::File(f) => return node.p(px(12. * s)).rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(bs::code_surface()).flex_row().items_center().gap(px(12. * s))
-            .child(icon("file-text", 30. * s, Theme::icon())).child(div().flex_1().min_w_0().text_size(px(15. * s)).font_weight(FontWeight::MEDIUM).child(f.name.clone())).into_any_element(),
-        BlockKind::Countdown(c) => {
-            let left = c.remaining(crate::time::now_ms());
-            let color = u32::from_str_radix(c.color.trim_start_matches('#'), 16).map(theme::c).unwrap_or(Theme::primary_500());
-            let mut ink = bs::display_ink(color); ink.l = ink.l.min(0.38);
-            let mut row = div().flex().justify_center().gap(px(16. * s));
-            for (i, value) in [left / 86400, left / 3600 % 24, left / 60 % 60, left % 60].into_iter().enumerate() {
-                row = row.child(div().flex().flex_col().items_center().child(div().size(px(52. * s)).rounded(px(8. * s)).bg(bs::highlight(color)).flex().items_center().justify_center().font_family(theme::MONO_FONT).font_weight(FontWeight::MEDIUM).text_size(px(26. * s)).text_color(ink).child(format!("{value:02}")))
-                    .child(div().mt(px(4. * s)).text_size(px(14. * s)).line_height(px(20. * s)).text_color(Theme::text_caption()).child([crate::settings::text("天"), crate::settings::text("时"), crate::settings::text("分"), crate::settings::text("秒")][i])));
-            }
-            return node.py(px(18. * s)).rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(bs::code_surface()).child(row).into_any_element();
-        }
-        BlockKind::SubPageList => {
-            node = node.p(px(8. * s)).rounded(px(bs::RADIUS * s)).border(px(s)).border_color(Theme::line_border()).bg(Theme::bg_overlay());
-            if b.children.is_empty() { return node.h(px(96. * s)).justify_center().text_center().text_color(Theme::text_caption()).child(crate::settings::text("目录下暂无子页面")).into_any_element(); }
-            for child in &b.children { node = node.child(div().py(px(9. * s)).px(px(6. * s)).flex().items_start().gap(px(6. * s)).child(icon("doc", 16. * s, Theme::icon())).child(div().flex_1().min_w_0().font_weight(FontWeight::MEDIUM).child(child.text.text.clone()))); }
-            return node.into_any_element();
-        }
-        BlockKind::Raw { tag, .. } => return node.p(px(8. * s)).rounded(px(8. * s)).bg(Theme::bg_overlay()).text_color(Theme::text_caption()).child(crate::localized_format!("<{tag}> 已保留的内容", "<{tag}> Preserved content")).into_any_element(),
-        _ => {}
-    }
-    if b.kind.has_text() {
-        let text = preview_text(&b.text);
-        let runs = text.runs.iter().map(|r| {
-            let mut f = font(if r.marks.code { theme::MONO_FONT } else { theme::UI_FONT });
-            f.weight = if r.marks.bold { FontWeight::BOLD } else { bs::weight(&b.kind) };
-            if r.marks.italic || quote { f.style = FontStyle::Italic; }
-            let mut ink = if r.marks.link.is_some() { Theme::link() } else { r.marks.text_color.as_ref().and_then(|c| theme::text_color(&c.0)).map(bs::display_ink).unwrap_or(color) };
-            if done { ink.a = 0.5; }
-            let mark = r.marks.bg_color.as_ref().and_then(|c| theme::bg_color(&c.0)).map(bs::highlight);
-            TextRun { len: r.len, font: f, color: if mark.is_some() { crate::theme::on_mark(ink) } else { ink },
-                background_color: mark.or_else(|| r.marks.code.then(bs::code_surface)),
-                underline: (r.marks.underline || r.marks.link.is_some()).then_some(UnderlineStyle { thickness: px(s), color: None, wavy: false }),
-                strikethrough: (r.marks.strike || done).then_some(StrikethroughStyle { thickness: px(s), color: None }) }
-        }).collect::<Vec<_>>();
-        let marker = match b.kind {
-            BlockKind::Bullet => Some(div().w(px(24. * s)).h(px(line_height * s)).pl(px(4. * s)).flex_none().flex().items_center().child(match list_depth % 3 {
-                0 => div().size(px(5.5 * s)).rounded_full().bg(Theme::text_caption()),
-                1 => div().size(px(5.5 * s)).rounded_full().border(px(s)).border_color(Theme::text_caption()),
-                _ => div().size(px(5. * s)).bg(Theme::text_caption()),
-            }).into_any_element()),
-            BlockKind::Ordered { seq } => Some(div().min_w(px(18. * s)).mr(px(6. * s)).flex_none().text_color(Theme::text_caption()).child(crate::editor::core::ordered_marker(seq.unwrap_or(1), list_depth)).into_any_element()),
-            BlockKind::Todo { done } => Some(div().w(px(24. * s)).h(px(line_height * s)).flex_none().flex().items_center().child(div().size(px(16. * s)).rounded(px(4. * s)).border(px(s)).border_color(if done { Theme::primary_500() } else { Theme::text_disabled() }).bg(if done { Theme::primary_500() } else { Theme::bg_body() }).flex().items_center().justify_center().when(done, |d| d.child(icon("todo-check", 12. * s, gpui::white())))).into_any_element()),
-            _ => None,
-        };
-        let text = if text.runs.iter().any(|r| r.marks.inline.as_ref().is_some_and(|i| i.equation().is_some())) {
-            text_preview::PreviewText { text: text.clone(), runs, size: font_size * s, line_height: line_height * s, align: b.align, scale: s, eq_counter: eqnos.get(&b.id).copied().unwrap_or(0) }.into_any_element()
-        } else { StyledText::new(text.text.clone()).with_runs(runs).into_any_element() };
-        node = node.child(div().flex().items_start().children(marker).child(div().min_w_0().flex_1().map(|d| match b.align { crate::model::Align::Center => d.text_center(), crate::model::Align::Right => d.text_right(), _ => d }).child(text)));
-    }
-    if s == 1. || depth < 8 { for (i, child) in b.children.iter().enumerate() {
-        let nested = b.kind.nests();
-        let gap = if i == 0 { if nested { 8. } else { 0. } } else { bs::gap(&b.children[i - 1].kind).1.max(bs::gap(&child.kind).0) };
-        node = node.child(div().min_w_0().when(!matches!(b.kind, BlockKind::Grid), |d| d.mt(px(gap * s)))
-            .when(nested, |d| d.pl(px(25. * s)))
-            .when(matches!(b.kind, BlockKind::Grid), |d| d.flex().w_0().map(|mut d| { d.style().flex_grow = Some(match child.kind { BlockKind::Column { ratio } => ratio, _ => 1. }); d }))
-            .child(thumb_block_in(child, depth + 1, color, quote || matches!(b.kind, BlockKind::Quote), (cell, list_depth + usize::from(nested)), eqnos, s)));
-    } }
-    node.into_any_element()
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HomeSort { Manual, Visited, Modified, Created, Title }
 impl HomeSort {
@@ -335,45 +65,38 @@ impl HomeSort {
 
 pub struct Home {
     pub tab: HomeTab,
-    pub grid: bool,
-    grid_scroll: UniformListScrollHandle,
     list_scroll: ScrollHandle,
-    /// A folder's page has its own scroll positions, so 主页 keeps its place.
-    folder_grid_scroll: UniformListScrollHandle,
-    folder_list_scroll: ScrollHandle,
-    grid_scrollbar: Rc<scrollbar::Scrollbar>,
+    pub(crate) folder_scroll: ScrollHandle,
     list_scrollbar: Rc<scrollbar::Scrollbar>,
+    pub(crate) folder_scrollbar: Rc<scrollbar::Scrollbar>,
     /// The 搜索 dialog's results (`search.rs`).
     pub(crate) search_scrollbar: Rc<scrollbar::Scrollbar>,
     sort: HomeSort,
     folders_first: bool,
     pub sort_menu: bool,
-    thumbs: RefCell<HashMap<String, (u64, Thumb, std::time::Instant)>>,
     /// Last-frame bounds of the controls the popovers hang from.
     anchors: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
-    /// Folder cards and dragging into them (`home_folder.rs`).
-    pub(crate) folders: crate::home_folder::HomeFolders,
+    pub(crate) file_drop: Option<crate::file_drop::FileDrop>,
+    /// Visible folder rows, used for file drops on the page.
+    pub(crate) folder_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
 }
 
 impl Default for Home {
     fn default() -> Self {
         Home {
             tab: HomeTab::Recent,
-            grid: true,
-            grid_scroll: Default::default(),
             list_scroll: Default::default(),
-            folder_grid_scroll: Default::default(),
-            folder_list_scroll: Default::default(),
-            grid_scrollbar: Default::default(),
+            folder_scroll: Default::default(),
             list_scrollbar: Default::default(),
+            folder_scrollbar: Default::default(),
             search_scrollbar: Default::default(),
             // Manual: the sidebar's order (`Meta::place`), so both lists read the same.
             sort: HomeSort::Manual,
             folders_first: false,
             sort_menu: false,
-            thumbs: Default::default(),
             anchors: Default::default(),
-            folders: Default::default(),
+            file_drop: None,
+            folder_bounds: Default::default(),
         }
     }
 }
@@ -423,19 +146,25 @@ fn cell_text(e: &Entry, c: Col) -> String {
     }
 }
 
-/// The title column grows three times as fast as the others.
-fn weight3(mut d: Div) -> Div {
-    d.style().flex_grow = Some(3.);
-    d
-}
-
 /// A document's icon: its emoji, or the monochrome page glyph.
-fn entry_icon(e: &Entry) -> AnyElement {
+pub(crate) fn entry_icon(e: &Entry) -> AnyElement {
     if e.meta.folder.is_some() { return icon("folder", 22., Theme::icon()).mr(px(13.)).into_any_element(); }
     match &e.icon {
         _ if e.meta.markdown => crate::search::doc_icon_named("doc-md").mr(px(12.)).into_any_element(),
         Some(em) => div().size(px(24.)).mr(px(12.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(em.clone()).into_any_element(),
         None => doc_icon().mr(px(12.)).into_any_element(),
+    }
+}
+
+#[derive(Clone)]
+struct HomeRowDrag { id: String, title: String, markdown: bool }
+
+impl Render for HomeRowDrag {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().h(px(32.)).w(px(220.)).px(px(8.)).flex().items_center().gap(px(8.)).rounded(px(ROW_RADIUS))
+            .bg(theme::raised(Theme::bg_body())).shadow(theme::shadow_menu())
+            .child(icon(if self.markdown { "doc-md" } else { "doc" }, 16., Theme::icon()))
+            .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).child(ui_text(self.title.clone())))
     }
 }
 
@@ -449,12 +178,12 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The row's / card's checkbox while 批量管理 is on.
-    fn home_check(&self, e: &Entry) -> Option<Div> {
+    /// The row checkbox while 批量管理 is on.
+    pub(crate) fn home_check(&self, e: &Entry) -> Option<Div> {
         use crate::sidebar::{BATCH_LIMIT, Check, checkbox};
         let sel = self.batch.as_ref()?;
         let on = sel.contains(&e.id);
-        Some(checkbox(if on { Check::On } else { Check::Off }, !on && sel.len() >= BATCH_LIMIT, "home-card"))
+        Some(checkbox(if on { Check::On } else { Check::Off }, !on && sel.len() >= BATCH_LIMIT, "home-row"))
     }
 
     pub(crate) fn home_entries(&self) -> Vec<Entry> {
@@ -497,64 +226,6 @@ impl Workspace {
         v
     }
 
-    fn thumb(&self, e: &Entry) -> Thumb {
-        use std::hash::{Hash, Hasher};
-        let mut stamp = rustc_hash::FxHasher::default();
-        e.meta.modified.hash(&mut stamp);
-        crate::settings::feishu().hash(&mut stamp);
-        let base_stamp = stamp.finish();
-        // If the preview contains no sibling subpages, modified + settings uniquely
-        // identifies it without rebuilding the whole tree on every frame.
-        if let Some((m, t, used)) = self.home.thumbs.borrow_mut().get_mut(&e.id)
-            && !t.has_subpages && *m == base_stamp { *used = std::time::Instant::now(); return t.clone(); }
-        // A child-page list shows the other pages in the document's folder, as in
-        // the open document (`sync_sub_pages`).
-        let tree = crate::tree::Tree::new(&self.entries);
-        let children: Vec<&Entry> = tree.children(e.meta.parent.as_deref()).iter().copied().filter(|p| p.id != e.id).collect();
-        let mut full_stamp = rustc_hash::FxHasher::default();
-        e.meta.modified.hash(&mut full_stamp);
-        crate::settings::feishu().hash(&mut full_stamp);
-        for child in &children { (&child.id, &child.title, &child.icon).hash(&mut full_stamp); }
-        let full_stamp = full_stamp.finish();
-        if let Some((m, t, used)) = self.home.thumbs.borrow_mut().get_mut(&e.id)
-            && *m == full_stamp { *used = std::time::Instant::now(); return t.clone(); }
-        // The derived rows exist only in this preview tree and never enter the editor/store.
-        fn subpages(blocks: &mut [crate::model::Block], entries: &[&Entry], budget: &mut usize) {
-            for b in blocks {
-                if matches!(b.kind, BlockKind::SubPageList) {
-                    b.children = entries.iter().take(*budget).map(|e| crate::model::Block::text(&format!("{}{}", e.icon.as_ref().map(|i| format!("{i} ")).unwrap_or_default(), display_title(&e.title)))).collect();
-                    *budget -= b.children.len();
-                } else {
-                    subpages(&mut b.children, entries, budget);
-                    if let BlockKind::Table(t) = &mut b.kind { for row in &mut t.rows { for cell in row { subpages(&mut cell.blocks, entries, budget); } } }
-                }
-            }
-        }
-        let mut budget = 32;
-        let mut eqnos = HashMap::new();
-        let loaded = self.store.load(&e.id).map(|doc| {
-            let numbers = crate::editor::equation_numbers(&doc);
-            thumb_blocks(&doc.blocks, &mut budget, 0, &numbers, &mut eqnos)
-        });
-        let read = loaded.is_ok();
-        let mut blocks = loaded.unwrap_or_default();
-        let has_subpages = has_subpage_list(&blocks);
-        if has_subpages { subpages(&mut blocks, &children, &mut budget); }
-        let stamp = if has_subpages { full_stamp } else { base_stamp };
-        let t: Thumb = Rc::new(ThumbContent { blocks, eqnos, has_subpages });
-        // A failed read (mid-write by another process, still in iCloud) is not
-        // remembered: the card would stay blank until the document changes.
-        if !read { return t; }
-        let mut thumbs = self.home.thumbs.borrow_mut();
-        // Keep recent previews warm without retaining every document ever visited.
-        if thumbs.len() >= 128 && !thumbs.contains_key(&e.id) {
-            let oldest = thumbs.iter().min_by_key(|(_, (_, _, used))| *used).map(|(id, _)| id.clone());
-            if let Some(id) = oldest { thumbs.remove(&id); }
-        }
-        thumbs.insert(e.id.clone(), (stamp, t.clone(), std::time::Instant::now()));
-        t
-    }
-
     fn open_row_menu(&mut self, id: &str, key: &str, cx: &mut Context<Self>) {
         let b = self.more_bounds.borrow().get(key).copied();
         let Some(b) = b else { return };
@@ -562,7 +233,7 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(crate) fn home_more(&self, e: &Entry, key: String, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn home_more(&self, e: &Entry, key: String, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = e.id.clone();
         let (rec, k2) = (self.more_bounds.clone(), key.clone());
         let open = self.row_menu.as_ref().is_some_and(|m| m.id == e.id && m.pos.x > px(0.) && m.corner == Corner::TopRight);
@@ -589,48 +260,55 @@ impl Workspace {
             }))
     }
 
-    /// The grid / list switcher: one white pill, the current view on a quiet
-    /// fill. 主页 and folder pages share it, so a folder opens in the view its parent showed.
-    pub(crate) fn view_switch(&self, cx: &mut Context<Self>) -> Div {
-        let toggle = |id: &'static str, ic: &'static str, on: bool, tip: &'static str, grid: bool| {
-            div()
-                .id(id)
-                .w(px(30.))
-                .h(px(24.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(7.))
-                .cursor_pointer()
-                .when(on, |d| d.bg(Theme::fill_hover_strong()))
-                .when(!on, |d| d.tip(tip, None).hover(|s| s.bg(Theme::fill_hover())))
-                .child(icon(ic, 14., Theme::icon()))
-                .on_click(cx.listener(move |w, _, _, cx| {
-                    w.home.grid = grid;
-                    w.save_home();
-                    w.home.sort_menu = false;
-                    cx.notify();
-                }))
-        };
-        crate::ui::pill()
-            .p(px(1.))
-            .flex()
-            .gap(px(2.))
-            .rounded(px(9.))
-            .child(toggle("home-grid", "view-grid", self.home.grid, crate::settings::text("切换为宫格视图"), true))
-            .child(toggle("home-list", "view-list", !self.home.grid, crate::settings::text("切换为列表视图"), false))
+    pub(crate) fn home_row(&self, e: &Entry, key: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
+        let (id, menu_id) = (e.id.clone(), e.id.clone());
+        let row = div().id(SharedString::from(format!("{key}-{}", e.id))).relative().flex().items_center().cursor_pointer().group("home-row")
+            .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.home_click(&id, ev.modifiers(), window, cx)))
+            .when(self.batch.is_none(), |d| d.on_mouse_down(MouseButton::Right, cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
+                w.row_menu = Some(RowMenu { id: menu_id.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
+                cx.notify();
+            })));
+        if e.meta.folder.is_some() {
+            let bounds = self.home.folder_bounds.clone();
+            let (id, target) = (e.id.clone(), e.id.clone());
+            row.child(canvas(move |b, window, _| {
+                let mask = window.content_mask().bounds;
+                if b.intersects(&mask) { bounds.borrow_mut().insert(id.clone(), b.intersect(&mask)); }
+            }, |_, _, _, _| {}).absolute().inset_0())
+                .when(self.batch.is_none(), |d| d.drag_over::<HomeRowDrag>(|s, _, _, _| s.bg(Theme::fill_hover_strong()))
+                    .on_drop(cx.listener(move |w, drag: &HomeRowDrag, _, cx| {
+                        if w.entries.iter().any(|e| e.id == drag.id && e.meta.folder.is_none()) {
+                            w.move_into_folder(&drag.id, &target, cx);
+                        }
+                    })))
+        } else {
+            row.when(self.batch.is_none(), |d| d.on_drag(HomeRowDrag { id: e.id.clone(), title: display_title(&e.title), markdown: e.meta.markdown },
+                |drag, _, _, cx| cx.new(|_| drag.clone())))
+        }
+    }
+
+    pub(crate) fn home_row_actions(&self, e: &Entry, cx: &mut Context<Self>) -> Div {
+        div().flex_none().flex().items_center()
+            .when(self.batch.is_none(), |d| d
+                .when(e.meta.folder.is_some(), |d| {
+                    let folder = e.id.clone();
+                    d.child(div().id(SharedString::from(format!("row-new-{}", e.id))).size(px(24.)).rounded(px(6.)).flex().items_center().justify_center().cursor_pointer()
+                        .hover(|s| s.bg(Theme::fill_hover_strong())).tip(crate::settings::tr("新建文档", "New document"), None)
+                        .child(icon("plus", 15., Theme::icon()))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation(); w.new_child(&folder, window, cx); })))
+                })
+                .child(self.home_more(e, format!("home-more-{}", e.id), cx)))
     }
 
     /// A newly opened folder page starts at its top.
     pub(crate) fn reset_folder_scroll(&self) {
-        self.home.folder_grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
-        self.home.folder_list_scroll.set_offset(point(px(0.), px(0.)));
+        self.home.folder_scroll.set_offset(point(px(0.), px(0.)));
     }
 
-    /// 主页's view and sort order are remembered (`settings.json`).
+    /// 主页's sort order is remembered (`settings.json`).
     pub(crate) fn load_home(&mut self) {
         let s = self.store.settings();
-        self.home.grid = !s.home_list;
         self.home.folders_first = s.home_folders_first;
         self.home.sort = s.home_sort.as_deref().map(HomeSort::of).unwrap_or(HomeSort::Manual);
     }
@@ -638,8 +316,8 @@ impl Workspace {
     fn save_home(&mut self) {
         let mut s = self.store.settings();
         s.home_folders_first = self.home.folders_first;
-        (s.home_list, s.home_sort) = (!self.home.grid, Some(self.home.sort.key().to_string()));
-        if let Err(e) = self.store.save_settings(&s) { eprintln!("无法保存主页视图：{e}"); }
+        s.home_sort = Some(self.home.sort.key().to_string());
+        if let Err(e) = self.store.save_settings(&s) { eprintln!("无法保存主页排序：{e}"); }
     }
 
     pub(crate) fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -736,17 +414,13 @@ impl Workspace {
                     .child(icon("sort-down", 14., Theme::icon())).child(crate::settings::label(self.home.sort.label()))
                     .child(self.home.track("home-sort"))
                     .on_click(cx.listener(|w, _, _, cx| { w.home.sort_menu = !w.home.sort_menu; cx.notify(); })),
-            )
-            .child(self.view_switch(cx).ml(px(16.))
             ) };
 
         let entries = self.home_entries();
-        let body = if entries.is_empty() && (self.home.grid || self.home.tab == HomeTab::Recent) {
+        let body = if entries.is_empty() && self.home.tab == HomeTab::Recent {
             empty_state("illus/empty-list.svg", crate::settings::text("当前列表暂无内容")).into_any_element()
-        } else if self.home.grid {
-            self.render_home_grid(&entries, false, window, cx)
         } else {
-            self.render_home_list(&entries, false, cx)
+            self.render_home_list(&entries, window, cx)
         };
         div()
             .flex_1()
@@ -761,13 +435,18 @@ impl Workspace {
             .into_any_element()
     }
 
-    pub(crate) fn render_home_list(&self, entries: &[Entry], in_folder: bool, cx: &mut Context<Self>) -> AnyElement {
-        let list_scroll = if in_folder { &self.home.folder_list_scroll } else { &self.home.list_scroll };
+    fn render_home_list(&self, entries: &[Entry], window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let list_scroll = &self.home.list_scroll;
         let cols = self.home.cols();
         let sort = self.home.sort_col();
-        // The title is sized at about three times a column.
-        let title_cell = || div().flex_grow().flex_shrink().flex_basis(relative(0.)).min_w(px(200.));
-        let col_cell = || div().flex_grow().flex_shrink().flex_basis(relative(0.)).max_w(px(240.)).min_w(px(120.));
+        let pane_width = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
+        let compact = pane_width < 700.;
+        let date_inset = px(if compact { 8. } else { 24. });
+        let title_cell = || div().flex_shrink().flex_basis(relative(0.)).min_w_0().map(|mut d| {
+            d.style().flex_grow = Some(if compact { 2. } else { 3. });
+            d
+        });
+        let col_cell = || div().flex_grow().flex_shrink().flex_basis(relative(0.)).max_w(px(240.)).min_w_0();
         // The list: 13pt tertiary headers over a hairline; the
         // sorted column in the text colour, semibold, with its arrow.
         let mut header = div()
@@ -779,14 +458,14 @@ impl Workspace {
             .border_b_1()
             .border_color(list_line())
             .child(
-                weight3(title_cell()).pl(px(20.)).child(
+                title_cell().pl(px(20.)).child(
                     div().id("home-col-title").px(px(4.)).text_size(px(13.)).line_height(px(24.)).text_color(list_header_text()).child(crate::settings::text("标题")),
                 ),
             );
         for c in &cols {
             let sorted = !matches!(self.home.sort, HomeSort::Title | HomeSort::Manual) && *c == sort;
             header = header.child(
-                col_cell().pl(px(20.)).child(
+                col_cell().pl(date_inset - px(4.)).overflow_hidden().child(
                     div()
                         .id(SharedString::from(format!("home-col-{}", c.label())))
                         .relative()
@@ -801,7 +480,7 @@ impl Workspace {
                         .when(sorted, |d| d.font_weight(FontWeight::SEMIBOLD))
                         .hover(|s| s.bg(Theme::fill_hover()))
                         .when(sorted && self.home.sort_menu, |d| d.bg(Theme::fill_hover_strong()))
-                        .child(crate::settings::label(c.label()))
+                        .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(crate::settings::label(c.label()))))
                         .when(sorted, |d| {
                             d.child(icon("sort-down", 12., Theme::icon()))
                                 .cursor_pointer()
@@ -819,28 +498,16 @@ impl Workspace {
             rows = rows.child(div().pt(px(72.)).child(empty_state("illus/empty-list.svg", crate::settings::text("当前列表暂无内容"))));
         }
         for (i, e) in entries.iter().enumerate() {
-            let (id, id2) = (e.id.clone(), e.id.clone());
             let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
             let check = self.home_check(e);
-            let mut row = div()
-                .id(SharedString::from(format!("home-row-{}", e.id)))
+            let mut row = self.home_row(e, "home-row", cx)
                 .h(px(56.))
-                .flex()
-                .items_center()
                 .when(i > 0, |d| d.border_t_1().border_color(list_line()))
-                .cursor_pointer()
                 .hover(row_hover)
                 .when(menu_on, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
-                .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.home_click(&id, ev.modifiers(), window, cx)))
-                .when(check.is_none(), |d| d.on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
-                        w.row_menu = Some(RowMenu { id: id2.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
-                        cx.notify();
-                    }),
-                ))
+                .when(self.file_drop_over(&e.id), |d| d.bg(Theme::fill_hover_strong()).rounded(px(ROW_RADIUS)))
                 .child(
-                    weight3(title_cell())
+                    title_cell()
                         .pl(px(24.))
                         .pr(px(16.))
                         .flex()
@@ -851,138 +518,13 @@ impl Workspace {
                         .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., Theme::pinned()).ml(px(6.)))),
                 );
             for c in &cols {
-                row = row.child(col_cell().pl(px(24.)).text_size(px(13.)).text_color(Theme::text_caption()).whitespace_nowrap().overflow_hidden().child(cell_text(e, *c)));
+                row = row.child(col_cell().pl(date_inset).text_size(px(13.)).text_color(Theme::text_caption()).whitespace_nowrap().overflow_hidden().text_ellipsis().child(ui_text(cell_text(e, *c))));
             }
-            row = row.child(div().w(px(60.)).flex_none().flex().justify_end().pr(px(12.)).when(self.batch.is_none(), |d| d.child(self.home_more(e, format!("home-more-{}", e.id), cx))));
+            row = row.child(div().w(px(60.)).flex_none().flex().justify_end().pr(px(12.)).child(self.home_row_actions(e, cx)));
             rows = rows.child(row);
         }
         div().flex_1().min_h_0().flex().flex_col().child(header.mx(px(24.)))
             .child(div().relative().flex_1().min_h_0().flex().flex_col().child(rows).child(self.home.list_scrollbar.render(list_scroll))).into_any_element()
-    }
-
-    pub(crate) fn render_home_grid(&self, entries: &[Entry], in_folder: bool, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let grid_scroll = if in_folder { &self.home.folder_grid_scroll } else { &self.home.grid_scroll };
-        let main_w = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
-        let avail = (main_w - 48.).max(1.);
-        let entries = entries.to_vec();
-        let mixed = entries.iter().any(|e| e.meta.folder.is_some());
-        // Folders spill past their cell (shadow, tab, the front flaring open), so
-        // a level holding them gets more air between cells.
-        let gap = if mixed { 24. } else { 16. };
-        let wide_cols = (((avail + gap) / (200. + gap)).floor() as usize).max(1);
-        let n = if wide_cols >= 4 { (((avail + gap) / (240. + gap)).floor() as usize).max(4) } else { (((avail + gap) / (160. + gap)).floor() as usize).clamp(1, 3) };
-        // A document card is always 5:6 at its column's width; folders stand
-        // taller by their tab so the pages line up beside them.
-        let col_w = (avail - gap * (n - 1) as f32) / n as f32;
-        let doc_h = col_w * (6. / 5.);
-        let card_h = if mixed { doc_h / (1. - crate::home_folder::TAB) } else { doc_h };
-        let rows = entries.len().div_ceil(n);
-        let grid = uniform_list("home-grid-area", rows, cx.processor(move |workspace, range: std::ops::Range<usize>, window, cx| {
-            range.map(|row| {
-                let start = row * n;
-                let end = (start + n).min(entries.len());
-                div().w_full().h(px(card_h + gap)).px(px(24.)).pb(px(gap))
-                    .grid().grid_cols(n as u16).gap(px(gap))
-                    .children(entries[start..end].iter().map(|e| {
-                        if e.meta.folder.is_some() { workspace.render_folder_card(e, col_w, card_h, window, cx) }
-                        else if mixed { div().w_full().min_w_0().h(px(card_h)).flex().flex_col().justify_end()
-                            .child(workspace.render_home_card(e, doc_h, cx)).into_any_element() }
-                        else { workspace.render_home_card(e, card_h, cx) }
-                    }))
-            }).collect()
-        }))
-        // The last row's own 16 plus 16 more: 32 below the cards, like the
-        // list view's 24 and clear of the window's rounded corner.
-        // The top padding sits inside the list's clip, so a folder's papers can
-        // rise above the first row without being cut off.
-        .flex_1().min_h_0().pt(px(14.)).pb(px(16.)).track_scroll(grid_scroll.clone());
-        let scroll = grid_scroll.0.borrow().base_handle.clone();
-        div().relative().flex_1().min_h_0().mt(px(-4.)).flex().flex_col()
-            .on_mouse_move(cx.listener(|w, ev: &MouseMoveEvent, _, cx| w.track_home_press(ev, cx)))
-            .child(grid).child(self.home.grid_scrollbar.render(&scroll)).into_any_element()
-    }
-
-    /// A document's first page in miniature: a card's face, and the papers
-    /// in a folder that show one (`home_folder.rs`). `pad`: its margin.
-    pub(crate) fn thumb_page(&self, e: &Entry, pad: f32) -> Div {
-        let thumb = self.thumb(e);
-        self.thumb_page_with(e, &thumb, pad)
-    }
-
-    fn thumb_page_with(&self, e: &Entry, thumb: &Thumb, pad: f32) -> Div {
-        if thumb.blocks.is_empty() && e.title.trim().is_empty() {
-                div()
-                    .size_full()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .child(img("illus/blank-doc.svg").size(px(64.)))
-                    .child(div().mt(px(4.)).text_size(px(14.)).line_height(px(22.)).text_color(Theme::text_placeholder()).child(crate::settings::text("空白文档")))
-            } else {
-                let mut p = div().size_full().p(px(pad)).overflow_hidden().flex().flex_col();
-                p = p.child(div().flex_none().flex().items_start().gap(px(6.)).mb(px(8.))
-                    .when_some(e.icon.as_ref(), |d, emoji| d.child(div().flex_none().text_size(px(14.)).line_height(px(20.)).child(emoji.clone())))
-                    .child(div().min_w_0().text_size(px(14.)).line_height(px(20.)).font_weight(FontWeight::BOLD).child(e.title.clone())));
-                for (i, block) in thumb.blocks.iter().enumerate() {
-                    let (mt, _) = bs::gap(&block.kind);
-                    let prev = if i == 0 { 0. } else { bs::gap(&thumb.blocks[i - 1].kind).1 };
-                    p = p.child(div().flex_none().mt(px(mt.max(prev) * bs::SCALE)).child(thumb_block(block, 0, Theme::text(), false, &thumb.eqnos)));
-                }
-                p
-            }
-    }
-
-    fn render_home_card(&self, e: &Entry, card_h: f32, cx: &mut Context<Self>) -> AnyElement {
-            const RING: f32 = 3.;
-            let id = e.id.clone();
-            let id2 = e.id.clone();
-            let thumb = self.thumb(e);
-            let page = self.thumb_page_with(e, &thumb, 18.);
-            let radius = 32.;
-            let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
-            let check = self.home_check(e);
-            let arm = e.id.clone();
-            // Carried away as a paper: its place stays as an empty slot of the
-            // card's shape (no page, no cover), so nothing half-shows through.
-            if self.home_dragging(&e.id) {
-                return div().id(SharedString::from(format!("home-card-{}", e.id))).w_full().min_w_0().h(px(card_h)).relative()
-                    .child(self.record_home_card(&e.id))
-                    .child(crate::ui::squircle_surface(radius, Theme::fill_hover()).size_full())
-                    .into_any_element();
-            }
-                div()
-                    .id(SharedString::from(format!("home-card-{}", e.id)))
-                    .when(check.is_none(), |d| d.on_mouse_down(MouseButton::Left, cx.listener(move |w, ev: &MouseDownEvent, _, cx| w.arm_home_drag(&arm, ev.position, cx))))
-                    .child(self.record_home_card(&e.id))
-                    .w_full().min_w_0().h(px(card_h)).relative().group("home-card")
-                    .flex_none()
-                    // A loose sheet on the home page: squircle corners, a 0.5pt
-                    // hairline and the faintest lift; hover darkens the hairline.
-                    .cursor_pointer()
-                    // Inset as the folder card's shadow box is (6 a side, 10 from the top).
-                    .child(div().absolute().left(px(6.)).right(px(6.)).top(px(10.)).bottom_0().rounded(px(radius * 0.6)).shadow(theme::shadow_sheet()))
-                    .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.home_click(&id, ev.modifiers(), window, cx)))
-                    .when(check.is_none(), |d| d.on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |w, ev: &MouseDownEvent, _, cx| {
-                            w.row_menu = Some(RowMenu { id: id2.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
-                            cx.notify();
-                        }),
-                    ))
-                    .child(crate::ui::squircle_surface(radius, Theme::bg_body()).size_full().overflow_hidden().child(page.relative()))
-                    .child(crate::ui::squircle_outline(radius, 0.5, Theme::line_sheet()))
-                    // Hovered, or its menu open: a soft grey ring around the card.
-                    .child(div().absolute().left(px(-RING)).right(px(-RING)).top(px(-RING)).bottom(px(-RING))
-                        .when(!menu_on, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
-                        .child(crate::ui::squircle_outline(radius + RING, RING, Theme::ring_sheet())))
-                    .when_some(check, |d, c| d.child(div().absolute().top(px(12.)).left(px(12.)).child(c)))
-                    .when(self.batch.is_none(), |d| d.child(
-                        div().absolute().top(px(8.)).right(px(8.))
-                            .when(!menu_on, |d| d.opacity(0.).group_hover("home-card", |s| s.opacity(1.)))
-                            .child(self.home_more(e, format!("home-gmore-{}", e.id), cx).rounded_full().bg(Theme::bg_overlay())),
-                    ))
-            .into_any_element()
     }
 
     /// 显示设置 and the sort dropdown: the menu panel; the sort item is a
@@ -1009,7 +551,6 @@ impl Workspace {
                             w.home.sort = order;
                             w.save_home();
                             w.home.sort_menu = false;
-                            w.home.grid_scroll.scroll_to_item(0, ScrollStrategy::Top);
                             w.home.list_scroll.set_offset(point(px(0.), px(0.)));
                             cx.notify();
                         })));

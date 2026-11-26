@@ -167,9 +167,7 @@ pub struct Settings {
     /// 隐藏引用列表's 不再提示.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub refs_hide_no_ask: bool,
-    /// 主页: list instead of grid, and the sort order ("visited" …).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub home_list: bool,
+    /// 主页's sort order ("visited" …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_sort: Option<String>,
     #[serde(default)]
