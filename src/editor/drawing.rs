@@ -176,7 +176,7 @@ enum Gesture {
     CropPan { index: usize, pointer: World, delta: World },
     Crop { pointer: World, corner: usize, start: scene::bounds::Bounds, rect: scene::bounds::Bounds, index: usize },
     Box { start: World, end: World, previous: Vec<usize>, deep: bool },
-    Vertex { start: World, delta: World, indices: Vec<usize>, insert: Option<(usize, World)>, index: usize },
+    Vertex { start: World, delta: World, indices: Vec<usize>, insert: Option<(usize, World)>, index: usize, drag_only: bool },
     Endpoint { pointer: World, start: World, end: World, endpoint: usize, index: usize },
     Resize { pointer: World, corner: usize, start: scene::bounds::Bounds, rect: scene::bounds::Bounds },
     Rotate { start: f64, angle: f64 },
@@ -623,7 +623,7 @@ impl DrawingEditor {
         true
     }
 
-    fn label_dragged(&self, start: World) -> bool { start.distance(self.pointer) * self.zoom > 1. }
+    fn pointer_dragged(&self, start: World) -> bool { start.distance(self.pointer) * self.zoom > 1. }
 
     fn down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.discard || self.reset_confirmation { return; }
@@ -656,40 +656,46 @@ impl DrawingEditor {
                 }
                 self.crop = None;
             }
-            if event.click_count == 1 && let Some(i) = self.selected() && self.doc.scene.elements[i].is_linear()
-                && let Some(index) = self.bound_text_index(&self.doc.scene.elements[i])
-                && scene::collision::hit_test_rectangle(&self.doc.scene.elements[index], p)
-                && self.start_label_drag(i, index, p) {
-                cx.notify(); return;
-            }
+            let label = self.selected().and_then(|i| {
+                let e = &self.doc.scene.elements[i];
+                if !e.is_linear() || e.base().locked { return None; }
+                self.bound_text_index(e).filter(|&n| !self.doc.scene.elements[n].base().locked
+                    && scene::collision::hit_test_rectangle(&self.doc.scene.elements[n], p)).map(|index| (i, index))
+            });
             let node_index = self.line_edit.or_else(|| self.selected().filter(|i| linear_points(&self.doc.scene.elements[*i]).is_some()));
             if let Some(index) = node_index.filter(|_| self.line_edit.is_some() || !event.modifiers.shift) {
                 let detailed = self.line_edit.is_some();
                 let e = &self.doc.scene.elements[index];
-                if let Some(points) = linear_points(e) {
+                if let Some(points) = linear_points(e) && (label.is_none() || event.click_count == 1) {
                     let points: Vec<_> = points.iter().map(|q| q.rotate(e.base().angle, element_center(e))).collect();
                     let elbow = matches!(e, Element::Arrow(a) if a.elbowed);
                     if let Some(point) = points.iter().enumerate().position(|(n, q)| (!elbow || n == 0 || n + 1 == points.len()) && (detailed || n > 0 && n + 1 < points.len()) && p.distance(*q) <= 9. / self.zoom) {
                         if event.modifiers.shift {
                             if self.selected_points.contains(&point) { self.selected_points.retain(|i| *i != point); } else { self.selected_points.push(point); }
                         } else if !detailed || !self.selected_points.contains(&point) { self.selected_points = vec![point]; }
-                        self.gesture = Some(Gesture::Vertex { start: p, delta: World::zero(), indices: self.selected_points.clone(), insert: None, index });
+                        self.gesture = Some(Gesture::Vertex { start: p, delta: World::zero(), indices: self.selected_points.clone(), insert: None, index, drag_only: false });
                         cx.notify(); return;
                     }
                     if points.len() < MAX_POINTS && self.doc.remaining_points() > 0 {
                         let segment = points.windows(2).enumerate().find(|(n, pair)| (detailed || points.len() == 2 || elbow) && (!elbow || *n > 0 && *n + 2 < points.len()) && p.distance(pair[0].lerp(pair[1], 0.5)) <= 9. / self.zoom);
-                        let segment = segment.or_else(|| (!elbow && event.modifiers.alt).then(|| points.windows(2).enumerate().min_by(|(_, a), (_, b)| {
+                        let segment = segment.or_else(|| (label.is_none() && !elbow && event.modifiers.alt).then(|| points.windows(2).enumerate().min_by(|(_, a), (_, b)| {
                             scene::collision::distance_to_segment(p, a[0], a[1]).total_cmp(&scene::collision::distance_to_segment(p, b[0], b[1]))
                         })).flatten());
                         if let Some((n, pair)) = segment {
                             let at = if event.modifiers.alt { p } else { pair[0].lerp(pair[1], 0.5) };
-                            self.selected_points = if elbow { vec![n, n + 1] } else { vec![n + 1] };
-                            self.gesture = Some(Gesture::Vertex { start: p, delta: World::zero(), indices: self.selected_points.clone(), insert: (!elbow).then_some((n + 1, at)), index });
+                            let indices = if elbow { vec![n, n + 1] } else { vec![n + 1] };
+                            // A click on the label can be the first half of a double-click.
+                            let drag_only = label.is_some() && !elbow;
+                            if !drag_only { self.selected_points.clone_from(&indices); }
+                            self.gesture = Some(Gesture::Vertex { start: p, delta: World::zero(), indices, insert: (!elbow).then_some((n + 1, at)), index, drag_only });
                             cx.notify(); return;
                         }
                     }
                 }
-                self.line_edit = None; self.selected_points.clear();
+                if label.is_none() || event.click_count != 1 { self.line_edit = None; self.selected_points.clear(); }
+            }
+            if event.click_count == 1 && let Some((line, index)) = label && self.start_label_drag(line, index, p) {
+                cx.notify(); return;
             }
             if let Some(index) = self.selected() {
                 let e = &self.doc.scene.elements[index];
@@ -922,7 +928,7 @@ impl DrawingEditor {
         }
         let mut next = self.doc.scene.clone();
         let changed = match &gesture {
-            Some(Gesture::Label { index, path, start, offset, .. }) if self.label_dragged(*start) => {
+            Some(Gesture::Label { index, path, start, offset, .. }) if self.pointer_dragged(*start) => {
                 edit::place_label(&mut next, *index, edit::project_label(path, self.pointer + *offset));
                 touch(&mut next.elements[*index]); true
             }
@@ -931,7 +937,9 @@ impl DrawingEditor {
             Some(Gesture::Endpoint { start, end, endpoint, index, .. }) if start.distance(*end) > 0.5 => {
                 move_endpoint_binding(&mut next, *index, *endpoint, *end, self.arrow_snap(!self.binding_disabled)); true
             }
-            Some(Gesture::Vertex { start, delta, indices, insert, index }) if insert.is_some() || delta.length() > 0.5 => {
+            Some(Gesture::Vertex { start, delta, indices, insert, index, drag_only })
+                if (insert.is_some() && !drag_only || delta.length() > 0.5) && (!drag_only || self.pointer_dragged(*start)) => {
+                if *drag_only { self.selected_points.clone_from(indices); }
                 edit::move_vertices(&mut next, *index, indices, *insert, *start, *delta, self.arrow_snap(!self.binding_disabled)); true
             }
             Some(Gesture::Move { delta, copy, .. }) if delta.length() > MOVE_THRESHOLD => {

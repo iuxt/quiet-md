@@ -607,8 +607,9 @@ impl DrawingEditor {
     pub(super) fn preview_scene(&self) -> Option<Scene> {
         match &self.gesture {
             Some(Gesture::Move { delta, .. }) if delta.length() > MOVE_THRESHOLD => {}
-            Some(Gesture::Label { start, .. }) if self.label_dragged(*start) => {}
-            Some(Gesture::Crop { .. } | Gesture::CropPan { .. } | Gesture::Endpoint { .. } | Gesture::Vertex { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. }) => {}
+            Some(Gesture::Label { start, .. }) if self.pointer_dragged(*start) => {}
+            Some(Gesture::Vertex { start, delta, drag_only, .. }) if !drag_only || delta.length() > 0.5 && self.pointer_dragged(*start) => {}
+            Some(Gesture::Crop { .. } | Gesture::CropPan { .. } | Gesture::Endpoint { .. } | Gesture::Resize { .. } | Gesture::Rotate { .. }) => {}
             _ => return None,
         }
         let mut doc = self.doc.scene.clone();
@@ -617,7 +618,7 @@ impl DrawingEditor {
             Some(Gesture::CropPan { index,delta,.. }) => pan_crop(&mut doc.elements[*index],*delta),
             Some(Gesture::Crop { start, rect, index, .. }) => crop_image(&mut doc.elements[*index], *start, *rect, self.image_dimensions(*index)),
             Some(Gesture::Endpoint { index, endpoint, start, end, .. }) if start.distance(*end) > 0.5 => move_endpoint_binding(&mut doc, *index, *endpoint, *end, self.arrow_snap(!self.binding_disabled)),
-            Some(Gesture::Vertex { index, start, delta, indices, insert }) => move_vertices(&mut doc, *index, indices, *insert, *start, *delta, self.arrow_snap(!self.binding_disabled)),
+            Some(Gesture::Vertex { index, start, delta, indices, insert, .. }) => move_vertices(&mut doc, *index, indices, *insert, *start, *delta, self.arrow_snap(!self.binding_disabled)),
             Some(Gesture::Move { delta, .. }) => {
                 let b = selection_bounds(&doc, &self.selection)?;
                 transform_selection(&mut doc, &self.selection, b, Rect::new(b.min_x + delta.x, b.min_y + delta.y, b.max_x + delta.x, b.max_y + delta.y), 0.);

@@ -82,7 +82,7 @@ labelled_arrow = [dict(arrow[0], height=0, points=[[0, 0], [400, 0]], boundEleme
                   dict(shapes[-1], x=270, y=87.5, containerId="arrow")]
 # Move once before comparing screenshots so Save and Undo are enabled in both.
 scene = run("drag-arrow-label", """click 480 499
-pointer drag 600 499 660 499
+pointer drag 615 499 675 499
 pointer down 675 499
 pointer dragto 735 499
 shot dragging
@@ -96,6 +96,27 @@ assert label["containerId"] == connection["id"] and math.isclose(label["labelPos
 assert math.isclose(label["x"] + label["width"] / 2, 420)
 shots = work / "drag-arrow-label"
 assert (shots / "dragging.png").read_bytes() == (shots / "settled.png").read_bytes()
+
+scene = run("labelled-arrow-middle-bend", """click 480 499
+drag 600 499 600 599
+drag 600 599 600 649
+key cmd-z
+key cmd-shift-z
+""", labelled_arrow)
+label, = live(scene, "text")
+connection, = live(scene, "arrow")
+assert connection["points"] == [[0, 0], [200, 150], [400, 0]], connection
+assert (connection["x"], connection["y"]) == (100, 100)
+assert label["containerId"] == connection["id"] and label["originalText"] == "Label"
+
+scene = run("edit-arrow-label-over-midpoint", """click 480 499
+dclick 600 499
+key cmd-a
+type Updated
+key cmd-enter
+""", labelled_arrow)
+assert live(scene, "arrow")[0]["points"] == [[0, 0], [400, 0]]
+assert live(scene, "text")[0]["originalText"] == "Updated"
 
 labelled_line = [dict(line[0], height=0, angle=math.pi / 2, strokeStyle="dashed", points=[[0, 0], [400, 0]],
                       boundElements=[dict(id="label", type="text")]),
