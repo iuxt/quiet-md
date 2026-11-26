@@ -602,12 +602,14 @@ impl Workspace {
         ws.sort();
         ws.load_home();
         window.focus(&ws.focus);
-        // An empty library opens on 主页's empty state; only a quick note
-        // window starts a document of its own.
-        match document.or_else(|| (!quick).then(|| ws.entries.first().map(|e| e.id.clone())).flatten()) {
+        // A main window starts on the latest document or a blank tab.
+        let document = document.or_else(|| {
+            if quick { None } else { ws.entries.iter().find(|e| e.meta.folder.is_none()).map(|e| e.id.clone()) }
+        });
+        match document {
             Some(id) => ws.open(&id, window, cx),
             None if quick => ws.new_doc(window, cx),
-            None => ws.view = View::Home,
+            None => ws.new_tab(window, cx),
         }
         // Kept in the top bar (not just a toast): the user should notice.
         let warnings = ws.store.take_warnings();
@@ -1658,7 +1660,7 @@ impl Render for Workspace {
                 .flex()
                 .flex_col()
                 .child(self.top_bar(f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. }, cx))
-                .children(if self.trash_document { None } else { self.render_document_tabs(window, cx) })
+                .children(self.render_document_tabs(window, cx))
                 .children(self.render_history_banner(cx))
                 .children(self.render_trash_banner(cx))
                 .child(

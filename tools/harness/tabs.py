@@ -28,6 +28,7 @@ preferences = json.dumps({
 script = work / "steps.txt"
 script.write_text("""resize 1080 700
 move 1040 650
+check-tabs startup
 check-tabs prepare
 wait 700
 key cmd-t
@@ -37,7 +38,7 @@ shot new-tab
 click 85 195
 check-tabs second
 shot two-tabs
-click 500 62
+click 631 65
 wait 300
 check-tabs plus
 key cmd-t
@@ -75,7 +76,7 @@ subprocess.run([sys.executable, str(here / "run.py"), str(script), str(source), 
                check=True, timeout=60, env=dict(os.environ, FDL_NOBLINK="1"))
 log = (run / "log").read_text()
 assert "panicked" not in log, log
-for phase in ["prepare", "blank", "second", "plus", "undo", "peer", "conflict-prepare", "conflict", "replace", "single", "recent", "home"]:
+for phase in ["startup", "prepare", "blank", "second", "plus", "undo", "peer", "conflict-prepare", "conflict", "replace", "single", "recent", "home"]:
     assert f"tabs: {phase} checked" in log, log
 
 empty = work / "empty"
@@ -83,7 +84,7 @@ empty = work / "empty"
 (empty / ".quiet/preferences.json").write_text(preferences)
 (empty / "quiet.json").write_text('{"version":2,"folders":[],"notes":[],"trash":[]}')
 empty_script = work / "empty-steps.txt"
-empty_script.write_text("wait 650\nkey cmd-t\ncheck-tabs empty\n")
+empty_script.write_text("wait 650\ncheck-tabs empty\nshot empty-tab\n")
 empty_run = work / "empty-run"
 subprocess.run([sys.executable, str(here / "run.py"), str(empty_script), str(empty), str(empty_run)],
                check=True, timeout=30, env=dict(os.environ, FDL_NOBLINK="1"))

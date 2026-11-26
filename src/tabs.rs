@@ -34,10 +34,6 @@ pub(crate) struct Tabs {
 }
 
 impl Tabs {
-    pub(crate) fn show_bar(&self) -> bool {
-        self.items.len() >= 2 || self.items.first().is_some_and(|tab| tab.document.is_none())
-    }
-
     pub(crate) fn get_mut(&mut self, id: &str) -> Option<&mut Tab> {
         self.items.iter_mut().find(|tab| tab.document.as_deref() == Some(id))
     }
@@ -251,33 +247,41 @@ impl Workspace {
             .into_any_element()
     }
 
+    pub(crate) fn shows_document_tabs(&self) -> bool {
+        !self.quick_note && (self.tab_page_visible() || matches!(self.view, View::Home | View::Folder))
+    }
+
     pub(crate) fn render_document_tabs(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.shows_document_tabs() { return None }
         let tabs = &self.tabs.items;
-        if !self.tabs.show_bar() { return None }
         let width = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
         let selected = self.tabs.selected_index().unwrap_or(0);
         let visible = self.tab_page_visible();
-        let available = width - 36. - 32.;
-        let overflow = tabs.len() as f32 * 124. > available;
-        let count = if overflow { (((available - 30.) / 124.) as usize).max(1) } else { tabs.len() };
+        let available = width - 36. - 30.;
+        let overflow = tabs.len() as f32 * 120. > available;
+        let available = available - if overflow { 30. } else { 0. };
+        let count = if overflow { (available / 120.) as usize } else { tabs.len() };
+        let count = count.max(1);
         let start = (selected + 1).saturating_sub(count);
-        let tab_width = ((available - if overflow { 30. } else { 0. }) / count as f32 - 4.).clamp(84., 160.);
+        let tab_width = (available / count as f32 - 4.).clamp(84., 156.);
         let bounds = self.tabs.overflow_bounds.clone();
         if !overflow { bounds.set(None); }
-        let row = div().id("document-tabs").flex_none().h(px(BAR_H)).px(px(18.)).pb(px(5.)).flex().items_center().gap(px(4.))
+        let row = div().id("document-tabs").flex_none().h(px(BAR_H)).px(px(18.)).flex().items_center().gap(px(4.))
+            .bg(Theme::fill_hover()).border_b_1().border_color(Theme::line_divider())
             .children(tabs.iter().enumerate().skip(start).take(count).map(|(i, tab)| {
                 let (title, glyph) = self.tab_label(tab, cx);
                 let key = tab.key;
                 let group = SharedString::from(format!("document-tab-{key}"));
                 let active = visible && i == selected;
-                div().id(group.clone()).group(group.clone()).no_drag().h(px(28.)).max_w(px(tab_width)).flex().min_w_0().items_center().rounded(px(6.))
-                    .pl(px(8.)).pr(px(3.)).gap(px(5.)).cursor_pointer()
-                    .when(active, |d| d.bg(Theme::sidebar_selected()).text_color(Theme::text()))
-                    .when(!active, |d| d.hover(|s| s.bg(Theme::fill_hover())).text_color(Theme::text_caption()))
+                div().id(group.clone()).group(group.clone()).no_drag().h(px(26.)).w(px(tab_width)).flex_none().flex().items_center().rounded(px(5.))
+                    .pl(px(8.)).pr(px(3.)).gap(px(6.)).cursor_pointer()
+                    .when(active, |d| d.bg(Theme::bg_body()).border_1().border_color(Theme::line_border())
+                        .font_weight(FontWeight::MEDIUM).text_color(Theme::text()))
+                    .when(!active, |d| d.hover(|s| s.bg(Theme::fill_hover_strong())).text_color(Theme::text_caption()))
                     .tip(&title, None)
                     .child(icon(glyph, 14., if active { Theme::icon() } else { Theme::text_caption() }).flex_none())
-                    .child(div().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).child(ui_text(title)))
-                    .child(div().id("close").no_drag().flex_none().size(px(21.)).rounded(px(4.)).flex().items_center().justify_center()
+                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).child(ui_text(title)))
+                    .child(div().id("close").no_drag().flex_none().size(px(20.)).rounded(px(4.)).flex().items_center().justify_center()
                         .hover(|s| s.bg(Theme::fill_hover_strong()))
                         .when(!active, |d| d.opacity(0.).group_hover(group, |s| s.opacity(1.)))
                         .tip(tr("关闭标签页", "Close tab"), None)
@@ -296,7 +300,7 @@ impl Workspace {
     }
 
     pub(crate) fn render_tab_overflow(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !self.tabs.overflow || !(self.tab_page_visible() || matches!(self.view, View::Home | View::Folder)) { return None }
+        if !self.tabs.overflow || !self.shows_document_tabs() { return None }
         let bounds = self.tabs.overflow_bounds.clone();
         let position = bounds.get()?.bottom_right() + point(px(0.), px(4.));
         let group = SharedString::from("document-tabs-menu");
@@ -347,7 +351,8 @@ pub(crate) fn check_tabs(phase: &str, cx: &mut App) {
         assert!(entries.is_empty());
         main.update(cx, |w, _, _| {
             assert_eq!(w.view, View::NewTab);
-            assert!(w.tabs.selected_is_blank() && w.tabs.show_bar());
+            assert!(w.tabs.selected_is_blank() && w.shows_document_tabs());
+            assert_eq!(w.tabs.items.len(), 1);
             assert!(w.current.is_none() && w.editor.is_none() && !w.search_open);
         }).unwrap();
         eprintln!("tabs: {phase} checked");
@@ -377,6 +382,7 @@ pub(crate) fn check_tabs(phase: &str, cx: &mut App) {
         peer.update(cx, |w, window, cx| {
             assert!(w.flush(cx), "{}", w.save_error());
             assert!(w.tabs.items.is_empty());
+            assert!(!w.shows_document_tabs());
             window.remove_window();
         }).unwrap();
     }
@@ -384,6 +390,11 @@ pub(crate) fn check_tabs(phase: &str, cx: &mut App) {
         let current = w.current.clone();
         let count = w.tabs.items.len();
         match phase {
+            "startup" => {
+                assert_eq!(w.view, View::Doc);
+                assert_eq!(current.as_ref(), Some(a));
+                assert!(count == 1 && w.shows_document_tabs());
+            }
             "prepare" => {
                 w.entries = entries;
                 w.sort();
@@ -460,7 +471,7 @@ pub(crate) fn check_tabs(phase: &str, cx: &mut App) {
             "single" => {
                 assert_eq!(current.as_ref(), Some(a));
                 assert_eq!(count, 1);
-                assert!(!w.tabs.show_bar());
+                assert!(w.shows_document_tabs());
                 assert_eq!(w.editor.as_ref().unwrap().read(cx).core.doc.blocks[34].text.text, "modified while parked");
             }
             "recent" => {
@@ -470,7 +481,7 @@ pub(crate) fn check_tabs(phase: &str, cx: &mut App) {
             }
             "home" => {
                 assert_eq!(w.view, View::Home);
-                assert!(current.is_none() && count == 0);
+                assert!(current.is_none() && count == 0 && w.shows_document_tabs());
             }
             _ => panic!("unknown tabs check {phase}"),
         }

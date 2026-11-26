@@ -547,7 +547,7 @@ impl Workspace {
                 .child(div().text_size(px(11.)).text_color(Theme::text_caption())
                     .child(crate::settings::tr("设置 › 文档库可调份数", "Count in Settings"))));
         Some(
-            div().id("history-drawer").absolute().top(px(HEADER_H + if !self.trash_document && self.tabs.show_bar() { crate::tabs::BAR_H } else { 0. }))
+            div().id("history-drawer").absolute().top(px(HEADER_H + if self.shows_document_tabs() { crate::tabs::BAR_H } else { 0. }))
                 .right_0().bottom_0().w(px(DRAWER_W))
                 .flex().flex_col()
                 .bg(crate::theme::raised(Theme::bg_body()))
