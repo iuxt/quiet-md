@@ -532,13 +532,46 @@ impl Store {
         Ok(())
     }
 
-    /// A drawing save writes a new source asset for undo and history.
+    /// A new drawing gets its own source path; later edits update that file.
     pub fn save_drawing(root: &Path, source: &[u8], width: u32, height: u32) -> Result<crate::model::Drawing> {
-        let dir = root.join(DRAWING);
         let id = uuid::Uuid::new_v4();
-        std::fs::create_dir_all(&dir)?;
-        write_atomic(&dir.join(format!("{id}.excalidraw")), source)?;
-        Ok(crate::model::Drawing { source: format!("{DRAWING}/{id}.excalidraw"), preview: String::new(), width, height })
+        Self::write_drawing(root, &format!("{DRAWING}/{id}.excalidraw"), source, width, height, None)
+    }
+
+    pub fn update_drawing(root: &Path, path: &str, previous: &crate::git::Pointer, source: &[u8], width: u32, height: u32) -> Result<crate::model::Drawing> {
+        Self::write_drawing(root, path, source, width, height, Some(previous))
+    }
+
+    /// Copied blocks need independent source files now that edits overwrite them.
+    pub fn copy_drawings(root: &Path, blocks: &mut [crate::model::Block]) -> Result<()> {
+        use crate::model::BlockKind;
+        for block in blocks {
+            match &mut block.kind {
+                BlockKind::Drawing(drawing) => {
+                    let bytes = read_drawing_asset(root, &drawing.source, EXPORT_FILE_LIMIT)?;
+                    drawing.source = Self::save_drawing(root, &bytes, drawing.width, drawing.height)?.source;
+                }
+                BlockKind::Table(table) => for cell in table.rows.iter_mut().flatten() { Self::copy_drawings(root, &mut cell.blocks)?; },
+                _ => {}
+            }
+            Self::copy_drawings(root, &mut block.children)?;
+        }
+        Ok(())
+    }
+
+    fn write_drawing(root: &Path, path: &str, source: &[u8], width: u32, height: u32, previous: Option<&crate::git::Pointer>) -> Result<crate::model::Drawing> {
+        let (dir, name) = path.split_once('/').context("invalid drawing path")?;
+        anyhow::ensure!(dir == DRAWING && !name.contains('/') && name.ends_with(".excalidraw"), "invalid drawing path");
+        let _lock = Self::lock(root)?;
+        let file = crate::git::safe_path(root, path)?;
+        if let Some(previous) = previous {
+            let current = read_bounded(&file, previous.size).context("drawing changed on disk")?;
+            anyhow::ensure!(crate::git::Pointer::of(&current) == *previous, "drawing changed on disk");
+        } else {
+            std::fs::create_dir_all(file.parent().unwrap())?;
+        }
+        write_atomic(&file, source)?;
+        Ok(crate::model::Drawing { source: path.to_string(), preview: String::new(), width, height })
     }
 
     pub fn open() -> Result<Self> { Self::open_library_at(Self::root_dir()) }
@@ -1337,7 +1370,9 @@ impl Store {
 
     pub fn version_copy_document(&self, id: &str, name: &str) -> Result<Document> {
         if let Some(commit) = git_store::git_commit_name(name) { return self.git_version_document(id, commit, false) }
-        self.version_document(id, name)
+        let mut doc = self.version_document(id, name)?;
+        Self::copy_drawings(&self.root, &mut doc.blocks)?;
+        Ok(doc)
     }
 
     /// Diff a snapshot against a baseline. `None` is the document on disk

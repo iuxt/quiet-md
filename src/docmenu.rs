@@ -102,7 +102,9 @@ impl Workspace {
         doc.title = crate::model::RichText::plain(title);
         let width = self.entries.iter().find(|e| e.id == id).map(|e| e.meta.width).unwrap_or_default();
         // A Markdown file copies as Markdown, into the library even from a 本机文件.
-        let made = if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else { self.store.create_from(&doc) };
+        let made = if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else {
+            crate::store::Store::copy_drawings(&crate::store::Store::root_dir(), &mut doc.blocks).and_then(|()| self.store.create_from(&doc))
+        };
         match made {
             Ok(new) => {
                 let _ = self.store.set_width(&new, width);

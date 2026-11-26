@@ -300,11 +300,15 @@ pub fn picture(path: &Path, long: f32) -> Img {
     doc_picture(uri)
 }
 
-/// A drawing revision is immutable, so its source and size identify the raster.
+/// Include the file stamp so an in-place drawing save replaces its cached raster.
 pub(crate) fn drawing_picture(d: &Drawing, long: f32) -> Img {
     let edge = cap(long * SCALE.with(|s| s.get()));
     let root = Store::root_dir();
-    let source = serde_json::to_string(&(root.to_string_lossy(), &d.source, &d.preview)).expect("string tuple is serializable");
+    let stamp = (!d.source.starts_with("git-lfs:")).then(|| {
+        let metadata = root.join(&d.source).metadata().ok()?;
+        Some((metadata.modified().ok()?, metadata.len()))
+    }).flatten();
+    let source = serde_json::to_string(&(root.to_string_lossy(), &d.source, &d.preview, stamp)).expect("drawing cache key is serializable");
     let uri = SharedUri::from(format!("drawing:{edge}:{source}"));
     doc_picture(uri).size_full().object_fit(ObjectFit::Contain).with_fallback(|| {
         div().size_full().flex().justify_center().items_center().bg(Theme::bg_overlay()).text_color(Theme::text_caption()).child("Excalidraw").into_any_element()
@@ -508,7 +512,7 @@ fn key_of(r: &Resource) -> Option<(Arc<Path>, u32)> {
 fn drawing_work(r: &Resource) -> Option<Work> {
     let Resource::Uri(u) = r else { return None };
     let (edge, json) = u.strip_prefix("drawing:")?.split_once(':')?;
-    let (root, source, legacy) = serde_json::from_str(json).ok()?;
+    let (root, source, legacy, _): (_, _, _, Option<(std::time::SystemTime, u64)>) = serde_json::from_str(json).ok()?;
     Some(Work::Drawing(root, source, legacy, edge.parse().ok()?))
 }
 

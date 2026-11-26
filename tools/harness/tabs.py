@@ -38,7 +38,7 @@ shot new-tab
 click 85 195
 check-tabs second
 shot two-tabs
-click 631 65
+click 674 69
 wait 300
 check-tabs plus
 key cmd-t
@@ -65,7 +65,7 @@ check-tabs single
 shot single-tab
 key cmd-t
 wait 300
-click 455 208
+click 455 255
 check-tabs recent
 key cmd-shift-w
 key cmd-shift-w

@@ -803,6 +803,59 @@ mod tests {
     }
 
     #[test]
+    fn connector_label_clips_the_same_continuous_curve_in_export() {
+        use quiet_excalidraw::core::{binding::{label_path, sync_container_text},
+            element::{BoundElement, BoundElementType}, factory::new_text, types::{Roundness, RoundnessType, StrokeStyle}};
+        let mut doc = DrawingScene::new();
+        let style = ElementOptions { roughness: 0., stroke_width: 4., ..Default::default() };
+        let mut arrow = new_arrow(vec![Point::new(30., 60.), Point::new(120., 130.), Point::new(230., 60.)],
+            None, Some(Arrowhead::Arrow), &style);
+        arrow.base_mut().roundness = Some(Roundness { kind: RoundnessType::ProportionalRadius, value: None });
+        arrow.base_mut().angle = 0.5;
+        let mut label = new_text(0., 0., "Label", 20., &style);
+        let Element::Text(t) = &mut label else { unreachable!() };
+        t.container_id = Some(arrow.id().into());
+        t.label_position = Some(0.35);
+        t.base.opacity = 0.;
+        let label_ref = BoundElement { id: label.id().into(), kind: BoundElementType::Text };
+        doc.scene.elements = vec![arrow, label];
+        sync_container_text(&mut doc.scene);
+        doc.export_region = Some(Bounds::new(0., 0., 260., 180.));
+        let settings = ExportOptions { scale: 1., ..ExportOptions::default() };
+        let bare = doc.export_svg(settings).unwrap();
+        let bare_pixels = image::load_from_memory(&doc.export_png(settings).unwrap()).unwrap().into_rgba8();
+        doc.scene.elements[0].base_mut().bound_elements = Some(vec![label_ref]);
+        let clipped = doc.export_svg(settings).unwrap();
+        let paths = |svg: &str| svg.split("<path d=\"").skip(1)
+            .map(|p| p.split('"').next().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(paths(&bare), paths(&clipped));
+        assert!(paths(&bare)[0].contains('C'));
+
+        let b = doc.scene.elements[1].base();
+        let center = Point::new(b.x + b.width / 2., b.y + b.height / 2.);
+        let path = label_path(&doc.scene.elements[0]).unwrap();
+        assert!(path.windows(2).any(|p| quiet_excalidraw::core::collision::distance_to_segment(center, p[0], p[1]) < 1e-6));
+        let clipped_pixels = image::load_from_memory(&doc.export_png(settings).unwrap()).unwrap().into_rgba8();
+        let hole = Bounds::new(b.x, b.y, b.x + b.width, b.y + b.height);
+        let mut cleared = 0;
+        for (x, y, pixel) in bare_pixels.enumerate_pixels() {
+            let at = Point::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
+            let after = clipped_pixels.get_pixel(x, y);
+            if hole.contains(at) && pixel[0] < 100 {
+                assert!(after[0] > 240);
+                cleared += 1;
+            } else if !hole.expand(6.).contains(at) {
+                assert!(after.0.iter().zip(pixel.0).all(|(a, b)| a.abs_diff(b) <= 1));
+            }
+        }
+        assert!(cleared > 20);
+        doc.scene.elements[0].base_mut().stroke_style = StrokeStyle::Dashed;
+        let clipped = doc.export_svg(settings).unwrap();
+        doc.scene.elements[0].base_mut().bound_elements = None;
+        assert_eq!(paths(&clipped), paths(&doc.export_svg(settings).unwrap()));
+    }
+
+    #[test]
     fn bound_text_style_survives_layout_and_export() {
         use quiet_excalidraw::core::{binding::sync_container_text, factory::{new_rectangle, new_text}, types::{FontFamily, TextAlign, VerticalAlign}};
         let mut doc = DrawingScene::new();

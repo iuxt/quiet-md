@@ -105,7 +105,7 @@ Core 的不变量由 `crates/core/src/editor/fuzz_tests.rs` 在每一步随机�
 
 ## 画板
 
-`src/editor/drawing.rs` 在文档窗口内用 GPUI 绘制画布。打开画板时读取 `.excalidraw` 场景，拖动、绘制和画板内撤销都留在草稿里。保存时在后台生成图源和计算预览尺寸，检查原块或插入位置仍有效，再写入图源。 `Core::insert_drawing` / `replace_drawing` 把图源写入文档的画板块。正文和历史可见时在后台将图源渲染成内存像素，共用文档图片缓存。已有 PNG 预览可以继续读取，Git 历史直接读 LFS 对象。 `drawing_ui.rs` 把 Excalidraw 的工具顺序、底部控制区和上下文属性面板接到同一份草稿。画板可在原地保存，随后继续修改已经插入的块。
+`src/editor/drawing.rs` 在文档窗口内用 GPUI 绘制画布。打开画板时读取 `.excalidraw` 场景，拖动、绘制和画板内撤销都留在草稿里。保存时在后台生成图源和计算预览尺寸，检查原块或插入位置仍有效，再写入图源。新画板分配 UUID，后续保存检查磁盘图源自打开或上次保存以来是否有变化，然后原子覆盖同一路径。 `Core::insert_drawing` / `replace_drawing` 更新文档的画板块。正文和历史可见时在后台将图源渲染成内存像素，共用文档图片缓存。正文快照只记录画板引用，已保存的旧图通过 Git 历史直接读 LFS 对象。 `drawing_ui.rs` 把 Excalidraw 的工具顺序、底部控制区和上下文属性面板接到同一份草稿。画板可在原地保存，随后继续修改已经插入的块。
 
 `drawing_edit.rs` 统一处理选区、附属文字和画框成员的变换、引用重映射、剪贴板与本地素材库。`drawing_commands.rs` 处理精确属性输入、辅助工具与流程图快捷操作；预览和提交复用相同场景操作。完整操作见 [DRAWING.md](DRAWING.md)。
 

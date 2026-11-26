@@ -470,7 +470,10 @@ fn drawing_history_reads_assets_without_materializing_previews() {
     let repo = lib.git(); configure(&repo, &Library::new().0);
     let old = repo.commit("legacy drawing").unwrap().unwrap();
 
-    let next = Store::save_drawing(&lib.0, b"second drawing", 200, 400).unwrap();
+    let previous = Pointer::of(b"first drawing");
+    let next = Store::update_drawing(&lib.0, &drawing.source, &previous, b"second drawing", 200, 400).unwrap();
+    assert_eq!(next.source, drawing.source);
+    assert!(Store::update_drawing(&lib.0, &drawing.source, &previous, b"stale drawing", 200, 400).is_err());
     document.blocks[0].kind = BlockKind::Drawing(next.clone());
     store.save(&id, &document).unwrap();
     let head = repo.commit("drawing with source only").unwrap().unwrap();
@@ -489,8 +492,22 @@ fn drawing_history_reads_assets_without_materializing_previews() {
     assert!(new_draw.preview.is_empty());
     assert_eq!(crate::store::read_drawing_asset(&lib.0, &new_draw.source, 1024).unwrap(), b"second drawing");
     assert!(!lib.0.join(".quiet/git-preview").exists());
-    assert_eq!(std::fs::read_dir(lib.0.join("Drawings")).unwrap().count(), 2);
+    let final_source = b"third drawing";
+    let latest = Store::update_drawing(&lib.0, &drawing.source, &Pointer::of(b"second drawing"), final_source, 200, 400).unwrap();
+    assert_eq!(latest, next);
+    let latest_commit = repo.commit("drawing source changed without editing the note").unwrap().unwrap();
+    assert_eq!(repo.revision(&latest_commit, &id).unwrap(), xml);
+    assert_eq!(repo.history(Some(&id), 80).unwrap().into_iter().map(|c| c.id).collect::<Vec<_>>(), vec![latest_commit.clone(), head, old.clone()]);
+    let historical = store.version_document(&id, &format!("git:0-{latest_commit}")).unwrap();
+    let BlockKind::Drawing(latest_draw) = &historical.blocks[0].kind else { panic!("expected a drawing") };
+    assert_eq!(crate::store::read_drawing_asset(&lib.0, &latest_draw.source, 1024).unwrap(), final_source);
+    assert_eq!(std::fs::read_dir(lib.0.join("Drawings")).unwrap().count(), 1);
     assert_eq!(std::fs::read_dir(lib.0.join("Images")).unwrap().count(), 1);
+    let copy = store.version_copy_document(&id, &format!("git:0-{old}")).unwrap();
+    let BlockKind::Drawing(copy_draw) = &copy.blocks[0].kind else { panic!("expected a drawing") };
+    assert_ne!(copy_draw.source, drawing.source);
+    assert_eq!(crate::store::read_drawing_asset(&lib.0, &copy_draw.source, 1024).unwrap(), b"first drawing");
+    assert_eq!(crate::store::read_drawing_asset(&lib.0, &drawing.source, 1024).unwrap(), final_source);
 }
 
 #[test]

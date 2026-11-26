@@ -97,6 +97,8 @@ Quiet.md/
 
 Git 版本化 `Images/`、`Files/` 和 `Drawings/` 中的资源；外链、任意外部文件以及旧版本在启用 Git 之前的资源字节不在此保证内。旧自动快照继续保留，未自动转换成 Git 提交。已有笔记以往的图片变化无法从当前文件反向重建。
 
+每张画板使用固定的图源路径，后续编辑更新同一文件。只修改图源的提交也会出现在对应笔记的 Git 版本历史中。正文撤销和本地正文快照记录画板引用，查看已保存的旧图源需要先把该版本提交到 Git。
+
 ## 实现与验证
 
 文档引擎的 `manifest.rs`、`virtual_store.rs`、`git.rs`、`git/lfs.rs`、`git_store.rs` 不依赖 GPUI；应用层 `src/git.rs` 负责配置和后台任务，`history.rs` 复用原有历史抽屉。临时目录测试覆盖旧格式拒绝 / 重开 / 链接 / 回收站、提交历史、LFS 指针与校验、HTTP batch 上传下载确认、推送克隆拉取、分叉拒绝以及写入失败回滚，不使用真实文档库。`python3 tools/harness/git_ssh.py`（需要 Python `paramiko`）另用临时 SSH / 自签 TLS 服务器验证自定义端口、加密私钥、主机密钥拒绝、LFS CA、上传确认及推送 / 克隆 / 拉取。

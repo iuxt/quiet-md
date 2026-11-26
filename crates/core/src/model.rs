@@ -820,8 +820,7 @@ pub struct Countdown {
     pub time: String,
 }
 
-/// A revision of an Excalidraw scene. Each save creates an immutable source
-/// asset so older document snapshots keep the original drawing.
+/// An Excalidraw scene linked to a source file in the library.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Drawing {
     pub source: String,

@@ -5,11 +5,15 @@ use crate::app::{View, Workspace};
 use crate::editor::{core::Core, view::Editor};
 use crate::settings::{display_title, tr};
 use crate::theme::Theme;
-use crate::ui::{TipExt, TitleBarExt, icon, menu_row, popover, ui_text};
+use crate::ui::{TipExt, TitleBarExt, icon, list_line, menu_row, popover, row_hover, ui_text};
 use gpui::{prelude::FluentBuilder, *};
 use std::sync::Arc;
 
-pub(crate) const BAR_H: f32 = 34.;
+pub(crate) const BAR_H: f32 = 42.;
+const BAR_INSET: f32 = 18.;
+const TAB_GAP: f32 = 4.;
+const TAB_MIN_W: f32 = 120.;
+const TAB_MAX_W: f32 = 176.;
 
 #[derive(Clone)]
 pub(crate) struct ParkedTab {
@@ -223,27 +227,27 @@ impl Workspace {
 
     pub(crate) fn render_new_tab(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let recent = self.entries.iter().filter(|e| e.meta.folder.is_none()).take(12);
-        let list = div().w_full().max_w(px(560.)).mx_auto().pt(px(42.)).pb(px(28.))
-            .child(div().px(px(10.)).pb(px(10.)).text_size(px(16.)).font_weight(FontWeight::SEMIBOLD)
+        let list = div().w_full().max_w(px(720.)).mx_auto().pt(px(40.)).pb(px(28.))
+            .child(div().px(px(16.)).pb(px(14.)).text_size(px(22.)).line_height(px(30.)).font_weight(FontWeight::SEMIBOLD)
                 .child(tr("最近编辑", "Recently edited")))
-            .when(recent.clone().next().is_none(), |d| d.child(div().px(px(10.)).text_size(px(13.))
-                .text_color(Theme::text_caption()).child(crate::settings::text("暂无文档"))))
+            .when(recent.clone().next().is_none(), |d| d.child(div().pt(px(48.))
+                .child(crate::trash::empty_state("illus/empty-list.svg", crate::settings::text("暂无文档")))))
             .children(recent.map(|e| {
                 let id = e.id.clone();
                 let title = display_title(&e.title);
-                div().id(SharedString::from(format!("new-tab-document-{id}"))).min_h(px(36.)).px(px(10.)).flex().items_center()
-                    .gap(px(9.)).rounded(px(6.)).cursor_pointer().text_size(px(14.)).hover(|s| s.bg(Theme::fill_hover()))
+                div().id(SharedString::from(format!("new-tab-document-{id}"))).h(px(54.)).px(px(16.)).flex().items_center()
+                    .border_t_1().border_color(list_line()).cursor_pointer().hover(row_hover)
                     .tip(&title, None)
-                    .child(icon(if e.meta.markdown { "doc-md" } else { "doc" }, 16., Theme::icon()).flex_none())
-                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(title)))
-                    .when(e.meta.modified != 0, |d| d.child(div().flex_none().text_size(px(12.)).text_color(Theme::text_caption())
+                    .child(crate::search::doc_icon_named(if e.meta.markdown { "doc-md" } else { "doc" }))
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(16.)).line_height(px(24.)).child(ui_text(title)))
+                    .when(e.meta.modified != 0, |d| d.child(div().ml(px(16.)).flex_none().text_size(px(13.)).text_color(Theme::text_caption())
                         .child(crate::ui::format_visit(e.meta.modified))))
                     .on_click(cx.listener(move |w, ev: &ClickEvent, window, cx| w.open_from_click(&id, ev.modifiers(), window, cx)))
             }));
         div().size_full().flex().flex_col()
             .child(crate::trash::page_header(self, tr("新建标签页", "New Tab"), 18., cx))
             .children(self.render_document_tabs(window, cx))
-            .child(div().id("new-tab-page").flex_1().min_h_0().px(px(18.)).overflow_y_scroll().child(list))
+            .child(div().id("new-tab-page").flex_1().min_h_0().px(px(24.)).overflow_y_scroll().child(list))
             .into_any_element()
     }
 
@@ -257,43 +261,43 @@ impl Workspace {
         let width = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
         let selected = self.tabs.selected_index().unwrap_or(0);
         let visible = self.tab_page_visible();
-        let available = width - 36. - 30.;
-        let overflow = tabs.len() as f32 * 120. > available;
-        let available = available - if overflow { 30. } else { 0. };
-        let count = if overflow { (available / 120.) as usize } else { tabs.len() };
-        let count = count.max(1);
+        let button_space = crate::app::HEADER_ACTIONS_H + TAB_GAP;
+        let tab_space = TAB_MIN_W + TAB_GAP;
+        let available = width - 2. * BAR_INSET - button_space;
+        let overflow = tabs.len() as f32 * tab_space > available;
+        let available = available - if overflow { button_space } else { 0. };
+        let count = if overflow { (available / tab_space) as usize } else { tabs.len() }.max(1);
         let start = (selected + 1).saturating_sub(count);
-        let tab_width = (available / count as f32 - 4.).clamp(84., 156.);
+        let tab_width = (available / count as f32 - TAB_GAP).min(TAB_MAX_W);
         let bounds = self.tabs.overflow_bounds.clone();
         if !overflow { bounds.set(None); }
-        let row = div().id("document-tabs").flex_none().h(px(BAR_H)).px(px(18.)).flex().items_center().gap(px(4.))
-            .bg(Theme::fill_hover()).border_b_1().border_color(Theme::line_divider())
+        let row = div().id("document-tabs").flex_none().h(px(BAR_H)).px(px(BAR_INSET)).flex().items_center().gap(px(TAB_GAP))
+            .border_b_1().border_color(Theme::line_divider())
             .children(tabs.iter().enumerate().skip(start).take(count).map(|(i, tab)| {
                 let (title, glyph) = self.tab_label(tab, cx);
                 let key = tab.key;
                 let group = SharedString::from(format!("document-tab-{key}"));
                 let active = visible && i == selected;
-                div().id(group.clone()).group(group.clone()).no_drag().h(px(26.)).w(px(tab_width)).flex_none().flex().items_center().rounded(px(5.))
-                    .pl(px(8.)).pr(px(3.)).gap(px(6.)).cursor_pointer()
-                    .when(active, |d| d.bg(Theme::bg_body()).border_1().border_color(Theme::line_border())
-                        .font_weight(FontWeight::MEDIUM).text_color(Theme::text()))
-                    .when(!active, |d| d.hover(|s| s.bg(Theme::fill_hover_strong())).text_color(Theme::text_caption()))
+                div().id(group.clone()).group(group.clone()).no_drag().h(px(32.)).w(px(tab_width)).flex_none().flex().items_center().rounded(px(8.))
+                    .pl(px(10.)).pr(px(4.)).gap(px(7.)).cursor_pointer()
+                    .when(active, |d| d.bg(Theme::fill_hover_strong()).font_weight(FontWeight::SEMIBOLD).text_color(Theme::text()))
+                    .when(!active, |d| d.hover(|s| s.bg(Theme::fill_hover())).text_color(Theme::text_caption()))
                     .tip(&title, None)
-                    .child(icon(glyph, 14., if active { Theme::icon() } else { Theme::text_caption() }).flex_none())
-                    .child(div().flex_1().min_w_0().overflow_hidden().whitespace_nowrap().text_ellipsis().text_size(px(13.)).child(ui_text(title)))
-                    .child(div().id("close").no_drag().flex_none().size(px(20.)).rounded(px(4.)).flex().items_center().justify_center()
-                        .hover(|s| s.bg(Theme::fill_hover_strong()))
+                    .child(icon(glyph, 16., if active { Theme::icon() } else { Theme::text_caption() }).flex_none())
+                    .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).line_height(px(20.)).child(ui_text(title)))
+                    .child(div().id("close").no_drag().flex_none().size(px(24.)).rounded(px(6.)).flex().items_center().justify_center()
+                        .hover(|s| s.bg(Theme::fill_pressed()))
                         .when(!active, |d| d.opacity(0.).group_hover(group, |s| s.opacity(1.)))
                         .tip(tr("关闭标签页", "Close tab"), None)
-                        .child(icon("x", 12., Theme::icon()))
+                        .child(icon("x", 14., Theme::icon()))
                         .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation(); w.close_tab(key, window, cx); })))
                     .on_click(cx.listener(move |w, _, window, cx| w.activate_tab(key, window, cx)))
             }))
-            .when(overflow, |d| d.child(crate::ui::header_icon("document-tabs-more", "chevron-down").relative().size(px(26.))
+            .when(overflow, |d| d.child(crate::ui::header_icon("document-tabs-more", "chevron-down").relative()
                 .child(canvas(move |b, _, _| bounds.set(Some(b)), |_, _, _, _| {}).absolute().inset_0())
                 .tip(tr("所有标签页", "All tabs"), None)
                 .on_click(cx.listener(|w, _, _, cx| { w.tabs.overflow = !w.tabs.overflow; cx.notify(); }))))
-            .child(crate::ui::header_icon("document-tabs-add", "plus").size(px(26.))
+            .child(crate::ui::header_icon("document-tabs-add", "plus")
                 .tip(tr("新建标签页", "New tab"), Some(crate::shortcuts::hint("workspace::NewTab", "⌘ + T")))
                 .on_click(cx.listener(|w, _, window, cx| w.new_tab(window, cx))));
         Some(row.into_any_element())

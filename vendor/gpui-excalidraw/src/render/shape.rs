@@ -1,6 +1,7 @@
 use crate::{
     core::{
         arrowhead::Arrowhead,
+        bounds::Bounds,
         element::{Element, ElementType, FreeDrawElement},
         geometry::Point,
         types::{
@@ -967,133 +968,43 @@ pub fn render_element(element: &Element) -> Vec<Drawable> {
     }
 }
 
-/// Upstream punches a hole in an arrow's stroke where its bound text label sits
-/// (`BOUND_TEXT_PADDING` in `renderElement.ts`). Our arrows are polylines, so
-/// the same effect is achieved by skipping the covered parts of the path.
-const BOUND_TEXT_PADDING: f64 = 5.0;
-
-/// Renders `element` with the rest of the scene available, which lets arrow
-/// labels cut their arrow the way upstream clips it.
+/// Keep the complete stroke and its dash phase. The consumers clip only the
+/// shaft, in world coordinates where bound text stays horizontal.
 pub fn render_element_with_lookup(
     element: &Element,
     lookup: &std::collections::HashMap<&str, &Element>,
-) -> Vec<Drawable> {
-    if let Element::Arrow(arrow) = element
-        && let Some(hole) = arrow_label_hole(element, lookup)
-    {
-        let options = DrawOptions::from_element(element);
-        let mut drawables = Vec::new();
-        for piece in split_outside(&arrow.linear.points, &hole) {
-            drawables.push(rough_line(&piece, &options));
-        }
-        let points = &arrow.linear.points;
-        if points.len() >= 2 {
-            if let Some(head) = arrow.linear.end_arrowhead {
-                drawables.push(arrowhead_drawable(
-                    points[points.len() - 2],
-                    points[points.len() - 1],
-                    head,
-                    &options,
-                ));
-            }
-            if let Some(head) = arrow.linear.start_arrowhead {
-                drawables.push(arrowhead_drawable(points[1], points[0], head, &options));
-            }
-        }
-        return drawables;
-    }
-    render_element(element)
+) -> (Vec<Drawable>, Option<Bounds>) {
+    let hole = match element {
+        Element::Arrow(_) => label_hole(element, lookup),
+        Element::Line(line) if !line.polygon => label_hole(element, lookup),
+        _ => None,
+    };
+    (render_element(element), hole)
 }
 
-fn arrow_label_hole(
-    element: &Element,
-    lookup: &std::collections::HashMap<&str, &Element>,
-) -> Option<crate::core::bounds::Bounds> {
+fn label_hole(element: &Element, lookup: &std::collections::HashMap<&str, &Element>) -> Option<Bounds> {
+    const BOUND_TEXT_PADDING: f64 = 5.0;
     let bound = element.base().bound_elements.as_ref()?;
     bound.iter().find_map(|item| {
-        if item.kind != crate::core::element::BoundElementType::Text {
-            return None;
-        }
-        match lookup.get(item.id.as_str()).copied()? {
-            Element::Text(t) => Some(
-                crate::core::bounds::Bounds::new(
-                    t.base.x,
-                    t.base.y,
-                    t.base.x + t.base.width,
-                    t.base.y + t.base.height,
-                )
-                .expand(BOUND_TEXT_PADDING),
-            ),
-            _ => None,
-        }
+        if item.kind != crate::core::element::BoundElementType::Text { return None; }
+        let Element::Text(t) = lookup.get(item.id.as_str()).copied()? else { return None };
+        Some(Bounds::new(t.base.x, t.base.y, t.base.x + t.base.width, t.base.y + t.base.height)
+            .expand(BOUND_TEXT_PADDING))
     })
 }
 
-/// Splits a polyline into the pieces outside `hole`, joining sub-segments that
-/// meet so a straight run across the hole becomes two continuous strokes.
-fn split_outside(points: &[Point], hole: &crate::core::bounds::Bounds) -> Vec<Vec<Point>> {
-    let mut visible: Vec<(Point, Point)> = Vec::new();
-    for pair in points.windows(2) {
-        let (a, b) = (pair[0], pair[1]);
-        match segment_inside(a, b, hole) {
-            Some((t0, t1)) if t1 > t0 => {
-                if t0 > 0.0 {
-                    visible.push((a, a.lerp(b, t0)));
-                }
-                if t1 < 1.0 {
-                    visible.push((a.lerp(b, t1), b));
-                }
-            }
-            _ => visible.push((a, b)),
-        }
-    }
-
-    let mut pieces: Vec<Vec<Point>> = Vec::new();
-    for (a, b) in visible {
-        if let Some(last) = pieces.last_mut()
-            && last.last().is_some_and(|end| end.distance(a) < 1e-6)
-        {
-            last.push(b);
-            continue;
-        }
-        pieces.push(vec![a, b]);
-    }
-    pieces
-}
-
-/// Liang-Barsky clip of `a`-`b` against `rect`, returning the `[t0, t1]`
-/// interval lying inside it.
-fn segment_inside(a: Point, b: Point, rect: &crate::core::bounds::Bounds) -> Option<(f64, f64)> {
-    let dx = b.x - a.x;
-    let dy = b.y - a.y;
-    let mut t0 = 0.0f64;
-    let mut t1 = 1.0f64;
-    for (p, q) in [
-        (-dx, a.x - rect.min_x),
-        (dx, rect.max_x - a.x),
-        (-dy, a.y - rect.min_y),
-        (dy, rect.max_y - a.y),
-    ] {
-        if p.abs() < 1e-12 {
-            if q < 0.0 {
-                return None;
-            }
-            continue;
-        }
-        let r = q / p;
-        if p < 0.0 {
-            if r > t1 {
-                return None;
-            }
-            t0 = t0.max(r);
-        } else {
-            if r < t0 {
-                return None;
-            }
-            t1 = t1.min(r);
-        }
-    }
-    Some((t0, t1))
+/// Disjoint rectangles covering the visible area around a label.
+pub fn stroke_clip_regions(view: Bounds, hole: Bounds) -> impl Iterator<Item = Bounds> {
+    let left = hole.min_x.clamp(view.min_x, view.max_x);
+    let right = hole.max_x.clamp(view.min_x, view.max_x);
+    let top = hole.min_y.clamp(view.min_y, view.max_y);
+    let bottom = hole.max_y.clamp(view.min_y, view.max_y);
+    [
+        Bounds::new(view.min_x, view.min_y, view.max_x, top),
+        Bounds::new(view.min_x, bottom, view.max_x, view.max_y),
+        Bounds::new(view.min_x, top, left, bottom),
+        Bounds::new(right, top, view.max_x, bottom),
+    ].into_iter().filter(|b| b.width() > 0. && b.height() > 0.)
 }
 
 fn frame_label_drawable(x: f64, y: f64, name: &str, options: &DrawOptions) -> Drawable {

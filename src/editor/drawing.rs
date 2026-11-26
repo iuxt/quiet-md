@@ -22,9 +22,10 @@ use edit::{AlignSelection, selection_indices, selection_bounds, transform_select
 
 use super::{drawing_scene::{self, DrawingScene, MAX_COORD, MAX_ELEMENTS, MAX_POINTS, MAX_SOURCE}, render::Env, view::{Editor, EditorEvent}};
 use crate::{input::{TextField, TextFieldEvent}, model::{BlockId, BlockKind, Drawing}, settings::tr, store::{self, Store}, theme::{self, Theme}, ui};
+use fdl_core::git::Pointer;
 use gpui::{prelude::FluentBuilder, *};
 use quiet_excalidraw::core::{self as scene, arrowhead::Arrowhead, bounds::element_bounds, element::{Element, TextElement}, factory::{self, ElementOptions}, geometry::Point as World, scene::Scene, types::{FillStyle, FontFamily, Roundness, RoundnessType, StrokeStyle, TextAlign as DrawingAlign, VerticalAlign}};
-use quiet_excalidraw::render::shape::{Drawable, Op, Rgba as Ink, render_element, render_element_with_lookup};
+use quiet_excalidraw::render::shape::{Drawable, Op, Rgba as Ink, render_element, render_element_with_lookup, stroke_clip_regions};
 actions!(drawing, [SaveDrawing, UndoDrawing, RedoDrawing, CopyDrawing, CutDrawing, PasteDrawing, SelectDrawing, DuplicateDrawing,
     GroupDrawing, UngroupDrawing, EditDrawingPoints, LinkDrawing, LockDrawing, CopyDrawingStyle, PasteDrawingStyle, FindDrawing, OpenDrawing, ExportDrawing, CopyDrawingPng, PasteDrawingText, DrawingPalette]);
 
@@ -58,14 +59,14 @@ use std::{cell::{Cell, RefCell}, collections::{HashMap, VecDeque}, rc::Rc, sync:
 #[derive(Clone)]
 enum Target {
     Insert { generation: u64, selection: super::core::Selection },
-    Edit(BlockId, Drawing),
+    Edit(BlockId, Drawing, Pointer),
 }
 
 impl Target {
     fn valid(&self, ed: &Editor) -> bool {
         !ed.read_only && !ed.markdown && match self {
             Self::Insert { generation, selection } => *generation == ed.core.generation && *selection == ed.core.sel,
-            Self::Edit(id, was) => matches!(ed.core.block(*id).map(|b| &b.kind), Some(BlockKind::Drawing(now)) if now == was),
+            Self::Edit(id, was, _) => matches!(ed.core.block(*id).map(|b| &b.kind), Some(BlockKind::Drawing(now)) if now == was),
         }
     }
 }
@@ -80,14 +81,20 @@ impl Editor {
     fn edit_drawing(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         if self.read_only || self.markdown { return; }
         let Some(BlockKind::Drawing(d)) = self.core.block(id).map(|b| &b.kind) else { return };
-        let target = Target::Edit(id, d.clone());
+        let drawing = d.clone();
         let (root, source) = (Store::root_dir(), d.source.clone());
         cx.spawn_in(window, async move |this, cx| {
-            let loaded = cx.background_executor().spawn(async move { DrawingScene::read(&root, &source) }).await;
+            let loaded = cx.background_executor().spawn(async move {
+                let bytes = drawing_scene::source_bytes(&root, &source)?;
+                Ok::<_, anyhow::Error>((DrawingScene::load(&bytes)?, Pointer::of(&bytes)))
+            }).await;
             let _ = this.update_in(cx, |ed, window, cx| {
-                if ed.drawing.is_some() || !target.valid(ed) { return; }
+                if ed.drawing.is_some() { return; }
                 match loaded {
-                    Ok(doc) => ed.show_drawing(target, doc, window, cx),
+                    Ok((doc, revision)) => {
+                        let target = Target::Edit(id, drawing, revision);
+                        if target.valid(ed) { ed.show_drawing(target, doc, window, cx); }
+                    }
                     Err(e) => { log::warn!("load drawing: {e:#}"); ed.toast(drawing_error(&e, tr("无法打开画板", "Could not open drawing")), cx); }
                 }
             });
@@ -113,7 +120,17 @@ impl Editor {
             .child(div().relative().w_full().max_w_full().w(px(width)).h(px(height)).flex().justify_center().items_center().overflow_hidden().rounded(px(6.))
                 .child(preview))
             .when(editable, |d| d.cursor_pointer().on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |ed, _, window, cx| ed.edit_drawing(id, window, cx)))
+                .on_click(cx.listener(move |ed, ev: &ClickEvent, window, cx| match ev.click_count() {
+                    1 => {
+                        ed.core.select_block(id);
+                        ed.menu = None;
+                        ed.slash = None;
+                        window.focus(&ed.focus);
+                        cx.notify();
+                    }
+                    2 => ed.edit_drawing(id, window, cx),
+                    _ => {}
+                }))
                 .child(div().flex().items_center().gap(px(5.)).pt(px(4.)).text_size(px(12.)).text_color(Theme::text_caption())
                     .child(ui::icon("pen-line", 13., Theme::text_caption())).child(tr("编辑画板", "Edit drawing"))))
             .into_any_element()
@@ -266,7 +283,7 @@ pub(crate) struct DrawingEditor {
     redo: Vec<DrawingState>,
     saved: DrawingState,
     imported: bool,
-    artwork: Rc<Vec<Vec<Drawable>>>,
+    artwork: Rc<Vec<(Vec<Drawable>, Option<scene::Bounds>)>>,
     images: Rc<HashMap<String, Arc<RenderImage>>>,
     raster_artwork: RefCell<HashMap<String, (u64, Arc<RenderImage>)>>,
     busy: bool,
@@ -318,7 +335,7 @@ impl DrawingEditor {
         self.revision = self.revision.wrapping_add(1);
         let lookup = self.doc.scene.non_deleted().map(|e| (e.id(), e)).collect();
         self.artwork = Rc::new(self.doc.scene.elements.iter().map(|e| {
-            if e.is_deleted() { vec![] } else { render_element_with_lookup(e, &lookup) }
+            if e.is_deleted() { (vec![], None) } else { render_element_with_lookup(e, &lookup) }
         }).collect());
     }
 
@@ -426,21 +443,25 @@ impl DrawingEditor {
                 let result = encoded.and_then(|(source, (w, h))| {
                     d.parent.update(cx, |ed, _| -> anyhow::Result<_> {
                         anyhow::ensure!(d.target.valid(ed), "drawing target changed");
-                        Store::save_drawing(&root, &source, w, h)
+                        let drawing = match &d.target {
+                            Target::Insert { .. } => Store::save_drawing(&root, &source, w, h)?,
+                            Target::Edit(_, drawing, previous) => Store::update_drawing(&root, &drawing.source, previous, &source, w, h)?,
+                        };
+                        Ok((drawing, Pointer::of(&source)))
                     })?
                 });
                 match result {
-                    Ok(drawing) => {
+                    Ok((drawing, revision)) => {
                         let result = d.parent.update(cx, |ed, cx| {
                             let id = match d.target {
                                 Target::Insert { .. } => ed.core.insert_drawing(drawing.clone()),
-                                Target::Edit(id, _) => { ed.core.replace_drawing(id, drawing.clone()); id }
+                                Target::Edit(id, _, _) => { ed.core.replace_drawing(id, drawing.clone()); id }
                             };
                             ed.changed_preserving_viewport(window, cx);
                             id
                         });
                         if let Ok(id) = result {
-                            d.target = Target::Edit(id, drawing);
+                            d.target = Target::Edit(id, drawing, revision);
                             d.saved = saved; d.saved_grid = saved_grid;
                             d.imported = false;
                         }
@@ -614,11 +635,8 @@ impl DrawingEditor {
     fn start_label_drag(&mut self, line: usize, index: usize, start: World) -> bool {
         let e = &self.doc.scene.elements[line];
         let label = &self.doc.scene.elements[index];
-        let Some(points) = linear_points(e) else { return false };
         if e.base().locked || label.base().locked { return false; }
-        // Bound text is laid out on the connector's points, before stroke styling.
-        let pivot = element_center(e);
-        let path = points.iter().map(|p| p.rotate(e.base().angle, pivot)).collect();
+        let Some(path) = scene::binding::label_path(e) else { return false };
         self.gesture = Some(Gesture::Label { index, line, path, start, offset: element_center(label) - start });
         true
     }
@@ -2009,14 +2027,14 @@ impl Render for DrawingEditor {
             });
             let origin = bounds.origin + offset;
             if let Some((size, step)) = grid { paint_grid(bounds, origin, size, step, zoom, window); }
-            for (i, (drawables, (extent, pivot, angle))) in art.iter().zip(geometry).enumerate() {
+            for (i, (artwork, (extent, pivot, angle))) in art.iter().zip(geometry).enumerate() {
                 if hidden_frames[i] { continue; }
-                if drawables.is_empty() && !transformed.contains_key(&i) || erasing.contains(&i) || editing_text == Some(i) { continue; }
+                if artwork.0.is_empty() && !transformed.contains_key(&i) || erasing.contains(&i) || editing_text == Some(i) { continue; }
                 let screen = |p: World| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32));
                 let box_bounds = Bounds::from_corners(screen(World::new(extent.min_x, extent.min_y)), screen(World::new(extent.max_x, extent.max_y)));
                 if copy_preview && selection.contains(&i) {
                     let (pivot, angle) = originals[i];
-                    for d in drawables { paint(d, |p| screen(p.rotate(angle, pivot)), zoom, dark, &images, window, cx); }
+                    paint_artwork(artwork, origin, zoom, pivot, angle, dark, &images, window, cx);
                 }
                 if !bounds.intersects(&box_bounds.dilate(px(96.))) { continue; }
                 let mask = clips[i].map(|rect| ContentMask { bounds: Bounds::from_corners(screen(World::new(rect.min_x, rect.min_y)), screen(World::new(rect.max_x, rect.max_y))) });
@@ -2025,8 +2043,8 @@ impl Render for DrawingEditor {
                     let b = Bounds::from_corners(screen(World::new(rect.min_x, rect.min_y)), screen(World::new(rect.max_x, rect.max_y)));
                     let _ = window.paint_image(b, Corners::default(), image.clone(), 0, false);
                 } else {
-                    let drawables = transformed.get(&i).unwrap_or(drawables);
-                    for d in drawables { paint(d, |p| screen(p.rotate(angle, pivot)), zoom, dark, &images, window, cx); }
+                    let artwork = transformed.get(&i).unwrap_or(artwork);
+                    paint_artwork(artwork, origin, zoom, pivot, angle, dark, &images, window, cx);
                 }
                 });
             }
@@ -2074,7 +2092,7 @@ impl Render for DrawingEditor {
                 window.paint_quad(quad(b, px(0.), Theme::drawing_selection().opacity(0.25), Edges::all(px(1.)), Theme::drawing_accent(), BorderStyle::Solid));
             }
             if let Some(pending) = pending {
-                for d in &pending { paint(d, |p| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32)), zoom, dark, &images, window, cx); }
+                for d in &pending { paint(d, |p| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32)), zoom, dark, &images, None, window, cx); }
             }
         }).size_full();
         let mut card = div().id("drawing-dialog").size_full().occlude().bg(Theme::bg_body())
@@ -2178,7 +2196,29 @@ fn text_to_edit(t: &TextElement) -> &str {
     if t.original_text.is_empty() { &t.text } else { &t.original_text }
 }
 
-fn paint(d: &Drawable, map: impl Fn(World) -> Point<Pixels>, zoom: f64, dark: bool, images: &HashMap<String, Arc<RenderImage>>, window: &mut Window, cx: &mut App) {
+fn paint_artwork((drawables, hole): &(Vec<Drawable>, Option<scene::Bounds>), origin: Point<Pixels>, zoom: f64,
+    pivot: World, angle: f64, dark: bool, images: &HashMap<String, Arc<RenderImage>>, window: &mut Window, cx: &mut App) {
+    let screen = |p: World| origin + point(px((p.x * zoom) as f32), px((p.y * zoom) as f32));
+    let map = |p: World| screen(p.rotate(angle, pivot));
+    for (i, d) in drawables.iter().enumerate() {
+        if let Some(hole) = hole.filter(|_| i == 0) {
+            let mask = window.content_mask().bounds;
+            let world = |p: Point<Pixels>| World::new(f64::from(p.x - origin.x) / zoom, f64::from(p.y - origin.y) / zoom);
+            let view = scene::Bounds::from_points(&[world(mask.origin), world(mask.bottom_right())]);
+            if view.intersects(&hole) {
+                let masks: Vec<_> = stroke_clip_regions(view, hole).map(|b| ContentMask {
+                    bounds: Bounds::from_corners(screen(World::new(b.min_x, b.min_y)), screen(World::new(b.max_x, b.max_y))),
+                }).collect();
+                if !masks.is_empty() { paint(d, map, zoom, dark, images, Some(&masks), window, cx); }
+                continue;
+            }
+        }
+        paint(d, map, zoom, dark, images, None, window, cx);
+    }
+}
+
+fn paint(d: &Drawable, map: impl Fn(World) -> Point<Pixels>, zoom: f64, dark: bool, images: &HashMap<String, Arc<RenderImage>>,
+    masks: Option<&[ContentMask<Pixels>]>, window: &mut Window, cx: &mut App) {
     let p = |x, y| map(World::new(x, y));
     let alpha = d.options.opacity / 100.;
     let stroke = drawable_ink(d.options.stroke_color, alpha, dark);
@@ -2215,7 +2255,12 @@ fn paint(d: &Drawable, map: impl Fn(World) -> Point<Pixels>, zoom: f64, dark: bo
                 Op::Close => builder.close(),
             }
         }
-        if let Ok(path) = builder.build() { window.paint_path(path, color); }
+        if let Ok(path) = builder.build() {
+            if let Some((last, rest)) = masks.and_then(<[_]>::split_last) {
+                for mask in rest { window.with_content_mask(Some(mask.clone()), |w| w.paint_path(path.clone(), color)); }
+                window.with_content_mask(Some(last.clone()), |w| w.paint_path(path, color));
+            } else { window.paint_path(path, color); }
+        }
     };
     if let Some(ink) = &d.ink { path(&mut ink.iter(), PathBuilder::fill(), stroke); return; }
     if d.options.fill_style == scene::types::FillStyle::Solid && let (Some(ops), Some(color)) = (&d.fill_path, d.options.fill_color) {

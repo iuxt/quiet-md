@@ -4,7 +4,7 @@ use git2::{Index, IndexEntry, IndexTime, Oid, Repository, Signature};
 use serde::{Deserialize, Serialize};
 use std::{collections::{BTreeMap, BTreeSet}, path::{Component, Path, PathBuf}};
 use crate::manifest::{Manifest, NOTES};
-use crate::store::{INTERNAL, RESOURCE_DIRS, Store};
+use crate::store::{DRAWING, INTERNAL, RESOURCE_DIRS, Store};
 
 mod lfs;
 mod transport;
@@ -252,11 +252,11 @@ impl LibraryRepo {
             let tree = commit.tree()?;
             let Ok(entries) = self.tree_manifest(&tree) else { continue };
             if let Some(doc) = document {
-                let current = Self::document_key(&tree, &entries, doc)?;
+                let current = self.document_key(&tree, &entries, doc)?;
                 let previous = if let Ok(parent) = commit.parent(0) {
                     let tree = parent.tree()?;
                     match self.tree_manifest(&tree) {
-                        Ok(entries) => Self::document_key(&tree, &entries, doc)?,
+                        Ok(entries) => self.document_key(&tree, &entries, doc)?,
                         Err(_) => None,
                     }
                 } else { None };
@@ -268,17 +268,32 @@ impl LibraryRepo {
         Ok(out)
     }
 
-    fn document_key(tree: &git2::Tree<'_>, entries: &BTreeMap<String, Metadata>, document: &str) -> Result<Option<(Oid, String, Option<String>)>> {
+    fn document_key(&self, tree: &git2::Tree<'_>, entries: &BTreeMap<String, Metadata>, document: &str) -> Result<Option<DocumentKey>> {
         let Some((path, meta)) = entries.iter().find(|(_, meta)| meta.id == document) else { return Ok(None) };
-        let title = Some(serde_json::to_string(meta)?);
-        Ok(tree.get_path(Path::new(path)).ok().map(|entry| (entry.id(), path.clone(), title)))
+        let Ok(entry) = tree.get_path(Path::new(path)) else { return Ok(None) };
+        let mut drawings = BTreeMap::new();
+        if path.ends_with(".xml") {
+            let blob = self.repo.find_blob(entry.id())?;
+            if let Ok(xml) = std::str::from_utf8(blob.content()) && xml.contains("<drawing")
+                && let Ok(doc) = crate::docxml::parse(xml) {
+                doc.for_each_block(|block| {
+                    if let crate::model::BlockKind::Drawing(drawing) = &block.kind
+                        && drawing.source.split_once('/').is_some_and(|(dir, _)| dir == DRAWING) {
+                        let oid = tree.get_path(Path::new(&drawing.source)).ok().map(|asset| asset.id());
+                        drawings.insert(drawing.source.clone(), oid);
+                    }
+                });
+            }
+        }
+        Ok(Some(DocumentKey { body: entry.id(), path: path.clone(), metadata: serde_json::to_string(meta)?, drawings }))
     }
 
     pub fn revision(&self, commit: &str, document: &str) -> Result<String> {
         let commit = self.repo.find_commit(Oid::from_str(commit)?)?;
         let tree = commit.tree()?;
         let entries = self.tree_manifest(&tree)?;
-        let (oid, _, _) = Self::document_key(&tree, &entries, document)?.context("这个提交中没有此文章")?;
+        let (path, _) = entries.iter().find(|(_, meta)| meta.id == document).context("这个提交中没有此文章")?;
+        let oid = tree.get_path(Path::new(path))?.id();
         Ok(std::str::from_utf8(self.repo.find_blob(oid)?.content())?.to_string())
     }
 
@@ -421,7 +436,8 @@ impl LibraryRepo {
         let bytes = lfs::Lfs::new(self.repo.path()).read(&pointer)?;
         let ext = Path::new(&path).extension().and_then(|e| e.to_str()).unwrap_or("bin");
         let dir = if preview { ".quiet/git-preview" } else { path.split_once('/').context("历史资源目录缺失")?.0 };
-        let destination = format!("{dir}/{}.{}", pointer.oid, ext);
+        let name = if dir == DRAWING { uuid::Uuid::new_v4().to_string() } else { pointer.oid };
+        let destination = format!("{dir}/{name}.{ext}");
         let target = safe_path(&self.root, &destination)?;
         std::fs::create_dir_all(target.parent().unwrap())?;
         if !std::fs::read(&target).is_ok_and(|existing| existing == bytes) { crate::store::write_atomic(&target, &bytes)?; }
@@ -549,6 +565,9 @@ pub(crate) fn safe_path(root: &Path, path: &str) -> Result<PathBuf> {
 
 #[derive(Serialize)]
 struct Metadata { id: String, extra: BTreeMap<String, serde_json::Value> }
+
+#[derive(PartialEq, Eq)]
+struct DocumentKey { body: Oid, path: String, metadata: String, drawings: BTreeMap<String, Option<Oid>> }
 
 fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, Metadata>> {
     ensure!(bytes.len() <= 16 << 20, "文档库元数据过大");

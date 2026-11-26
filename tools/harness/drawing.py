@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-drawing-"))
 note = "33333333-3333-4333-8333-333333333333"
+start = "resize 1200 950\nwait 1200\nmove 1150 900\n"
 
 
 def element(kind, identity, x, y, width, height, **fields):
@@ -57,7 +58,7 @@ def source(name, elements, files=None, *, english=True):
 def run(name, steps, elements=None, files=None, *, english=True):
     lib = source(name, copy.deepcopy(shapes if elements is None else elements), files, english=english)
     script = work / (name + ".txt")
-    script.write_text("resize 1200 950\nwait 1200\nmove 1150 900\nclick 650 290\nwait 400\n"
+    script.write_text(start + "dclick 650 290\nwait 400\n"
                       + steps + "\nwait 150\nshot result\nkey cmd-s\nwait 900\nclick 108 24\nwait 350\n")
     folder = work / name
     subprocess.run([sys.executable, str(here / "run.py"), str(script), str(lib), str(folder)],
@@ -65,6 +66,8 @@ def run(name, steps, elements=None, files=None, *, english=True):
     body = ET.fromstring("<doc>" + (folder / "lib" / f"Notes/{note}.xml").read_text() + "</doc>")
     drawing = body.find("drawing")
     assert drawing is not None, name
+    assert drawing.attrib["path"] == "Drawings/test.excalidraw", name
+    assert len(list((folder / "lib/Drawings").glob("*.excalidraw"))) == 1, name
     scene = json.loads((folder / "lib" / drawing.attrib["path"]).read_text())
     ids = [e["id"] for e in scene["elements"]]
     assert len(ids) == len(set(ids)), (name, "duplicate ids")
@@ -74,6 +77,16 @@ def run(name, steps, elements=None, files=None, *, english=True):
 
 def live(scene, kind=None):
     return [e for e in scene["elements"] if not e["isDeleted"] and (kind is None or e["type"] == kind)]
+
+
+lib = source("select-preview", shapes)
+script = work / "select-preview.txt"
+script.write_text(start + "click 650 290\nwait 700\nclick 650 290\nwait 400\nkey backspace\nwait 1000\n")
+folder = work / "select-preview"
+subprocess.run([sys.executable, str(here / "run.py"), str(script), str(lib), str(folder)], check=True, timeout=90)
+body = ET.fromstring("<doc>" + (folder / "lib" / f"Notes/{note}.xml").read_text() + "</doc>")
+assert body.find("drawing") is None, "Single clicks should select the drawing for deletion in the note"
+assert [p.text for p in body.findall("p")] == ["Local drawing", "End"]
 
 
 arrow = [element("arrow", "arrow", 100, 100, 400, 200, points=[[0, 0], [400, 200]],

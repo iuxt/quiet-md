@@ -4,7 +4,7 @@ use resvg::{tiny_skia, usvg};
 
 use crate::{
     core::{
-        bounds::element_bounds,
+        bounds::{Bounds, element_bounds},
         element::Element,
         scene::{BinaryFileData, Scene},
         types::{FillStyle, FontFamily},
@@ -291,6 +291,7 @@ impl SvgExporter {
             );
         }
 
+        let view = Bounds::new(ox, oy, ox + width, oy + height);
         let lookup: HashMap<&str, &Element> = elements.iter().map(|e| (e.id(), *e)).collect();
         for (n, element) in elements.iter().enumerate() {
             let base = element.base();
@@ -305,8 +306,26 @@ impl SvgExporter {
             if let Element::Image(image) = element && (image.crop.is_some() || image.scale != [1.0, 1.0]) {
                 write_transformed_image(&mut svg, image, files);
             } else {
-                let drawables = render_element_with_lookup(element, &lookup);
-                for d in drawables { write_drawable(&mut svg, &d, files, dark_mode); }
+                let (drawables, hole) = render_element_with_lookup(element, &lookup);
+                for (i, d) in drawables.iter().enumerate() {
+                    if let Some(hole) = hole.filter(|hole| i == 0 && view.intersects(hole)) {
+                        let _ = write!(svg, "<defs><clipPath id=\"quiet-label-{n}\"");
+                        if base.angle != 0.0 {
+                            let _ = write!(svg, " transform=\"rotate({} {} {})\"", -base.angle.to_degrees(), base.x + base.width / 2.0, base.y + base.height / 2.0);
+                        }
+                        let cut = Bounds::new(hole.min_x.max(view.min_x), hole.min_y.max(view.min_y),
+                            hole.max_x.min(view.max_x), hole.max_y.min(view.max_y));
+                        let _ = write!(svg, "><path clip-rule=\"evenodd\" d=\"");
+                        for b in [view, cut] {
+                            let _ = write!(svg, "M{} {}H{}V{}H{}Z", b.min_x, b.min_y, b.max_x, b.max_y, b.min_x);
+                        }
+                        let _ = write!(svg, "\"/></clipPath></defs><g clip-path=\"url(#quiet-label-{n})\">");
+                        write_drawable(&mut svg, d, files, dark_mode);
+                        svg.push_str("</g>");
+                    } else {
+                        write_drawable(&mut svg, d, files, dark_mode);
+                    }
+                }
             }
             if base.angle != 0.0 { svg.push_str("</g>"); }
             if clip.is_some() { svg.push_str("</g>"); }

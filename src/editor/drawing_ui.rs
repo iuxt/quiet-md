@@ -142,13 +142,14 @@ impl DrawingEditor {
         let dark = self.dark_canvas;
         let area = Rc::new(Cell::new(Point::<Pixels>::default())); let paint_area = area.clone();
         let content = canvas(move |bounds, _, _| paint_area.set(bounds.center()), move |bounds, (), w, cx| {
-            let screen = |p: World| bounds.center() + point(px(((p.x-center.x)*scale) as f32), px(((p.y-center.y)*scale) as f32));
-            for (drawables, (hidden, pivot, angle, clip)) in art.iter().zip(geometry) {
+            let origin = bounds.center() - point(px((center.x * scale) as f32), px((center.y * scale) as f32));
+            let screen = |p: World| origin + point(px((p.x * scale) as f32), px((p.y * scale) as f32));
+            for (artwork, (hidden, pivot, angle, clip)) in art.iter().zip(geometry) {
                 if hidden { continue; }
                 let mask = clip.map(|r| ContentMask { bounds: Bounds::from_corners(
                     screen(World::new(r.min_x,r.min_y)), screen(World::new(r.max_x,r.max_y))) });
                 w.with_content_mask(mask, |w| {
-                    for d in drawables { paint(d, |p| screen(p.rotate(angle, pivot)), scale, dark, &images, w, cx); }
+                    paint_artwork(artwork, origin, scale, pivot, angle, dark, &images, w, cx);
                 });
             }
             w.paint_quad(outline(Bounds::from_corners(screen(a), screen(b)), Theme::drawing_selection(), BorderStyle::Solid));

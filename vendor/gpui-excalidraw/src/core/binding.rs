@@ -205,7 +205,7 @@ pub fn sync_container_text(scene: &mut Scene) {
     }
 
     for (id, cid, font_size, line_height, family, text) in jobs {
-        if let Some(points) = scene.get(&cid).and_then(linear_points) {
+        if let Some(points) = scene.get(&cid).and_then(label_path) {
             // Arrow labels sit at the path midpoint like upstream's bound text
             // and keep their intrinsic size instead of filling the container.
             let position = scene.get(&id).and_then(|e| if let Element::Text(t) = e { t.label_position } else { None }).unwrap_or(0.5);
@@ -254,19 +254,26 @@ pub fn sync_container_text(scene: &mut Scene) {
     }
 }
 
-fn linear_points(element: &Element) -> Option<Vec<Point>> {
+/// Sample the nominal connector before hand-drawn jitter and dashing, for
+/// both label placement and drag projection.
+pub fn label_path(element: &Element) -> Option<Vec<Point>> {
+    use crate::render::{rough::{self, RoughOptions}, shape::ops_to_polygon};
     let points = match element {
-        Element::Arrow(a) => Some(a.linear.points.clone()),
-        Element::Line(l) => Some(l.linear.points.clone()),
-        _ => None,
-    }?;
+        Element::Arrow(a) => &a.linear.points,
+        Element::Line(l) => &l.linear.points,
+        _ => return None,
+    };
     let b = element.base();
     let pivot = Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0);
+    let points = if b.roundness.is_some() && points.len() > 2 {
+        let pts: Vec<_> = points.iter().map(|p| (p.x, p.y)).collect();
+        ops_to_polygon(&rough::curve(&pts, &mut RoughOptions::new(0., 1, true, true, 0.95)))
+    } else {
+        points.clone()
+    };
     Some(points.into_iter().map(|p| p.rotate(b.angle, pivot)).collect())
 }
 
-/// Point half way along a polyline, matching upstream's
-/// `getPointAtPathParameter(element, 0.5)` used to place arrow labels.
 fn path_position(points: &[Point], position: f64) -> Option<Point> {
     if points.len() < 2 {
         return points.first().copied();

@@ -1996,7 +1996,12 @@ impl Editor {
             if let Some(s) = text.filter(|s| !s.is_empty()) {
                 self.core.paste_text(&s);
             }
-        } else if let Some(d) = internal {
+        } else if let Some(mut d) = internal {
+            if let Err(e) = crate::store::Store::copy_drawings(&crate::store::Store::root_dir(), &mut d.blocks) {
+                log::warn!("copy pasted drawing: {e:#}");
+                self.toast(crate::settings::tr("无法复制画板。", "Could not copy the drawing."), cx);
+                return;
+            }
             self.core.paste_blocks(d.blocks);
         } else if let Some(b) = html.filter(|b| !b.is_empty() && !restates(b) && !(image.is_some() && b.iter().all(|b| matches!(b.kind, BlockKind::Image { .. })))) {
             self.core.paste_blocks(b);
