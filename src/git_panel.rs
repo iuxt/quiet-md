@@ -197,7 +197,7 @@ impl Workspace {
         }
         if count == 0 {
             files = files.child(div().p(px(16.)).text_size(px(12.)).line_height(px(20.)).text_color(Theme::text_caption())
-                .child(if has_changes { tr("空行变更已隐藏，提交时会还原。", "Blank-line changes are hidden and will be restored on commit.") }
+                .child(if has_changes { tr("空行和等价的 XML 源码变更已隐藏，提交时会还原。", "Blank-line and equivalent XML source changes are hidden and will be restored on commit.") }
                     else if status.is_some() { tr("工作区干净，没有未提交的变更。", "Working tree clean. No uncommitted changes.") }
                     else { tr("刷新后查看文档库的变更。", "Refresh to see library changes.") }));
         }

@@ -74,7 +74,7 @@ impl LibraryRepo {
         let staged = match scope {
             CommitScope::All => false,
             CommitScope::Staged => true,
-            CommitScope::Auto => changes.iter().any(|c| c.staged && !c.blank_only),
+            CommitScope::Auto => changes.iter().any(|c| c.staged && !c.auto_restore),
         };
         let source = if staged { &indexed } else {
             ensure!(self.working_tree(true)? == working.id(), "提交期间文档库内容发生变化，请重试");
@@ -89,21 +89,18 @@ impl LibraryRepo {
         let mut restore = Vec::new();
         if let Some(before) = &before {
             for change in changes.iter().filter(|c| !is_internal_path(&c.path)) {
-                let xml = change.path.split_once('/').is_some_and(|(dir, file)| dir == NOTES && file.ends_with(".xml"));
-                if !change.blank_only && (!xml || (staged && !change.staged)) { continue; }
+                if !change.auto_restore && (!is_xml_note(&change.path) || (staged && !change.staged)) { continue; }
                 let path = Path::new(&change.path);
                 let (Ok(original), Some(mut entry)) = (before.get_path(path), snapshot.get_path(path, 0)) else { continue };
                 if original.filemode() != 0o100644 || entry.mode != 0o100644 { continue; }
                 let blob = self.repo.find_blob(original.id())?;
-                if !change.blank_only && (original.id() == entry.id
-                    || !crate::diff::same_xml_document(blob.content(), self.repo.find_blob(entry.id)?.content())) { continue; }
+                if !change.auto_restore && (original.id() == entry.id || !self.same_xml_blob(&blob, entry.id)?) { continue; }
                 let snapshot_id = entry.id;
                 entry.id = original.id(); entry.file_size = blob.size() as u32;
                 snapshot.add(&entry)?;
                 // A later edit may have changed the worktree since this snapshot was staged.
                 if let Ok(current) = working.get_path(path) && current.id() != original.id() && current.filemode() == 0o100644
-                    && (change.blank_only || current.id() == snapshot_id
-                        || crate::diff::same_xml_document(blob.content(), self.repo.find_blob(current.id())?.content())) {
+                    && (change.auto_restore || current.id() == snapshot_id || self.same_xml_blob(&blob, current.id())?) {
                     restore.push((&change.path, current.id(), blob));
                 }
             }
@@ -133,7 +130,7 @@ impl LibraryRepo {
         }
         let parents: Vec<_> = parent.iter().collect();
         let commit = if changed { Some(self.repo.commit(Some("HEAD"), &author, &author, message.trim(), &tree, &parents)?.to_string()) } else { None };
-        let update_index = staged || changed || changes.iter().filter(|c| c.staged).all(|c| c.blank_only);
+        let update_index = staged || changed || changes.iter().filter(|c| c.staged).all(|c| c.auto_restore);
         if update_index && tree.id() != indexed.id() {
             let mut index = self.repo.index()?; index.read_tree(&tree)?; index.write()?;
         }

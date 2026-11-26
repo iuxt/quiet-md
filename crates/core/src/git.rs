@@ -27,6 +27,10 @@ fn is_asset_path(path: &str) -> bool {
     path.split_once('/').is_some_and(|(dir, _)| RESOURCE_DIRS.contains(&dir))
 }
 
+fn is_xml_note(path: &str) -> bool {
+    path.split_once('/').is_some_and(|(dir, file)| dir == NOTES && file.ends_with(".xml"))
+}
+
 fn with_rules(name: &str, mut text: String) -> String {
     let additions = if name == ".gitattributes" { asset_attributes().collect::<Vec<_>>().join("\n") }
         else { ".DS_Store\n.quiet/\n/Images/remote/*.part\n*.tmp\nquiet.json.bak\n".into() };
@@ -91,11 +95,11 @@ pub struct Config {
     pub lfs_url: String, pub ssh_key: String, pub lfs_ca_info: String,
 }
 #[derive(Clone, Debug)]
-pub struct Change { pub path: String, pub kind: char, pub staged: bool, pub unstaged: bool, pub blank_only: bool }
+pub struct Change { pub path: String, pub kind: char, pub staged: bool, pub unstaged: bool, pub auto_restore: bool }
 #[derive(Clone, Debug, Default)]
 pub struct Status { pub branch: String, pub remote: String, pub head: Option<String>, pub changes: Vec<Change> }
 impl Status {
-    pub fn visible_changes(&self) -> impl Iterator<Item = &Change> { self.changes.iter().filter(|c| !c.blank_only) }
+    pub fn visible_changes(&self) -> impl Iterator<Item = &Change> { self.changes.iter().filter(|c| !c.auto_restore) }
 }
 #[derive(Clone, Debug)]
 pub struct Commit { pub id: String, pub message: String, pub author: String, pub time: i64 }
@@ -200,13 +204,28 @@ impl LibraryRepo {
             for delta in self.repo.diff_tree_to_tree(from, Some(to), None)?.deltas() {
                 let path = delta.new_file().path().or_else(|| delta.old_file().path()).context("Git 变更缺少路径")?.to_string_lossy().into_owned();
                 let blank_only = !is_asset_path(&path) && self.blank_line_delta(&delta)?;
-                let change = changes.entry(path.clone()).or_insert(Change { path, kind: 'M', staged: false, unstaged: false, blank_only: true });
-                change.blank_only &= blank_only;
+                let change = changes.entry(path.clone()).or_insert(Change { path, kind: 'M', staged: false, unstaged: false, auto_restore: true });
+                change.auto_restore &= blank_only;
                 change.kind = match delta.status() { git2::Delta::Added => 'A', git2::Delta::Deleted => 'D', _ => 'M' };
                 if staged { change.staged = true; } else { change.unstaged = true; }
             }
         }
+        if let Some(before) = before {
+            for change in changes.values_mut().filter(|c| !c.auto_restore && is_xml_note(&c.path)) {
+                let path = Path::new(&change.path);
+                let (Ok(original), Ok(staged), Ok(current)) = (before.get_path(path), index.get_path(path), after.get_path(path)) else { continue };
+                if [&original, &staged, &current].iter().any(|entry| entry.filemode() != 0o100644) { continue; }
+                let original = self.repo.find_blob(original.id())?;
+                // Keep a partially staged file visible if either version differs from HEAD.
+                change.auto_restore = self.same_xml_blob(&original, staged.id())?
+                    && (staged.id() == current.id() || self.same_xml_blob(&original, current.id())?);
+            }
+        }
         Ok(changes.into_values().collect())
+    }
+
+    fn same_xml_blob(&self, original: &git2::Blob<'_>, id: Oid) -> Result<bool> {
+        Ok(original.id() == id || crate::diff::same_xml_document(original.content(), self.repo.find_blob(id)?.content()))
     }
 
     fn blank_line_delta(&self, delta: &git2::DiffDelta<'_>) -> Result<bool> {

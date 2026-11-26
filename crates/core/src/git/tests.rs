@@ -124,7 +124,7 @@ fn blank_line_changes_are_hidden_and_restored_without_creating_a_commit() {
     store.git_stage(&path, true).unwrap();
     std::fs::write(&file, format!("\n{with_blank_lines}")).unwrap();
     let status = repo.status().unwrap();
-    assert!(status.changes[0].staged && status.changes[0].unstaged && status.changes[0].blank_only);
+    assert!(status.changes[0].staged && status.changes[0].unstaged && status.changes[0].auto_restore);
     assert_eq!(store.git_commit("blank only").unwrap(), None);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
     let status = repo.status().unwrap();
@@ -133,7 +133,7 @@ fn blank_line_changes_are_hidden_and_restored_without_creating_a_commit() {
 }
 
 #[test]
-fn xml_source_only_changes_remain_visible_until_commit_restores_them() {
+fn xml_source_only_changes_are_hidden_and_restored_on_commit() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let mut note = doc("First"); note.blocks = vec![crate::model::Block::text("Before")];
     let id = store.create_from(&note).unwrap(); let path = format!("Notes/{id}.xml");
@@ -151,7 +151,9 @@ fn xml_source_only_changes_remain_visible_until_commit_restores_them() {
             store.git_stage(&path, true).unwrap();
             std::fs::write(&file, format!("{original}<p/>\n")).unwrap();
         }
-        assert_eq!(repo.status().unwrap().visible_changes().count(), 1);
+        let status = repo.status().unwrap();
+        assert_eq!(status.changes.len(), 1);
+        assert!(status.visible_changes().next().is_none());
         let mut restored = BTreeSet::new();
         assert_eq!(store.git_commit_restoring("source only", &mut restored).unwrap(), None);
         assert_eq!(restored, BTreeSet::from([path.clone()]));
@@ -165,6 +167,7 @@ fn xml_source_only_changes_remain_visible_until_commit_restores_them() {
     std::fs::write(&file, &with_paragraph).unwrap(); store.git_stage(&path, true).unwrap();
     let styled = with_paragraph.replace("Before", "<b>Before</b>");
     std::fs::write(&file, &styled).unwrap();
+    assert_eq!(repo.status().unwrap().visible_changes().count(), 1);
     assert_eq!(store.git_commit("source only staged").unwrap(), None);
     assert_eq!(std::fs::read_to_string(&file).unwrap(), styled);
     let status = repo.status().unwrap();
@@ -174,15 +177,25 @@ fn xml_source_only_changes_remain_visible_until_commit_restores_them() {
 
     let other = store.create_from(&doc("Other")).unwrap();
     store.git_commit("second note").unwrap().unwrap();
-    let other_file = lib.0.join(format!("Notes/{other}.xml"));
+    let other_path = format!("Notes/{other}.xml"); let other_file = lib.0.join(&other_path);
     let other_original = std::fs::read_to_string(&other_file).unwrap();
     std::fs::write(&other_file, format!("{other_original}<p></p>\n")).unwrap();
+    store.git_stage(&other_path, true).unwrap();
     let with_icon = styled.replace("<title>", "<title icon=\"📌\">");
     assert_ne!(with_icon, styled);
     std::fs::write(&file, &with_icon).unwrap();
+    let status = repo.status().unwrap();
+    assert_eq!(status.visible_changes().map(|change| change.path.as_str()).collect::<Vec<_>>(), [path.as_str()]);
     let commit = store.git_commit("icon and source only").unwrap().unwrap();
     assert_eq!(repo.revision(&commit, &id).unwrap(), with_icon);
     assert_eq!(repo.revision(&commit, &other).unwrap(), other_original);
+    assert_eq!(std::fs::read_to_string(&other_file).unwrap(), other_original);
+    assert!(repo.status().unwrap().changes.is_empty());
+
+    std::fs::write(&other_file, format!("{other_original}<p></p>\n")).unwrap();
+    std::fs::write(&file, &styled).unwrap(); store.git_stage(&path, true).unwrap();
+    let commit = store.git_commit("staged icon and unstaged source only").unwrap().unwrap();
+    assert_eq!(repo.revision(&commit, &id).unwrap(), styled);
     assert_eq!(std::fs::read_to_string(&other_file).unwrap(), other_original);
     assert!(repo.status().unwrap().changes.is_empty());
 }
