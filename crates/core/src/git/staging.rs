@@ -88,15 +88,24 @@ impl LibraryRepo {
         for path in local { snapshot.remove_path(&path)?; }
         let mut restore = Vec::new();
         if let Some(before) = &before {
-            for change in changes.iter().filter(|c| c.blank_only && !is_internal_path(&c.path)) {
+            for change in changes.iter().filter(|c| !is_internal_path(&c.path)) {
+                let xml = change.path.split_once('/').is_some_and(|(dir, file)| dir == NOTES && file.ends_with(".xml"));
+                if !change.blank_only && (!xml || (staged && !change.staged)) { continue; }
                 let path = Path::new(&change.path);
-                let original = before.get_path(path)?;
-                let current = working.get_path(path)?;
-                let mut entry = snapshot.get_path(path, 0).context("Git 快照缺少原有文件")?;
+                let (Ok(original), Some(mut entry)) = (before.get_path(path), snapshot.get_path(path, 0)) else { continue };
+                if original.filemode() != 0o100644 || entry.mode != 0o100644 { continue; }
                 let blob = self.repo.find_blob(original.id())?;
+                if !change.blank_only && (original.id() == entry.id
+                    || !crate::diff::same_xml_document(blob.content(), self.repo.find_blob(entry.id)?.content())) { continue; }
+                let snapshot_id = entry.id;
                 entry.id = original.id(); entry.file_size = blob.size() as u32;
                 snapshot.add(&entry)?;
-                if current.id() != original.id() { restore.push((&change.path, current.id(), blob)); }
+                // A later edit may have changed the worktree since this snapshot was staged.
+                if let Ok(current) = working.get_path(path) && current.id() != original.id() && current.filemode() == 0o100644
+                    && (change.blank_only || current.id() == snapshot_id
+                        || crate::diff::same_xml_document(blob.content(), self.repo.find_blob(current.id())?.content())) {
+                    restore.push((&change.path, current.id(), blob));
+                }
             }
         }
         let tree = self.repo.find_tree(snapshot.write_tree_to(&self.repo)?)?;
@@ -114,10 +123,13 @@ impl LibraryRepo {
         }
         for (path, expected, original) in restore {
             let target = safe_path(&self.root, path)?;
-            let current = crate::store::read_bounded(&target, crate::store::EXPORT_FILE_LIMIT)?;
-            ensure!(current == self.repo.find_blob(expected)?.content(), "提交期间文档库内容发生变化，请重试");
-            restored.insert(path.clone());
-            crate::store::write_atomic(&target, original.content())?;
+            let expected = self.repo.find_blob(expected)?;
+            crate::store::write_atomic_after(&target, original.content(), || {
+                let current = crate::store::read_bounded(&safe_path(&self.root, path)?, crate::store::EXPORT_FILE_LIMIT)?;
+                ensure!(current == expected.content(), "提交期间文档库内容发生变化，请重试");
+                restored.insert(path.clone());
+                Ok(())
+            })?;
         }
         let parents: Vec<_> = parent.iter().collect();
         let commit = if changed { Some(self.repo.commit(Some("HEAD"), &author, &author, message.trim(), &tree, &parents)?.to_string()) } else { None };

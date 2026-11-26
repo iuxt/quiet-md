@@ -99,6 +99,40 @@ fn git_changes(old: &[u8], new: &[u8], mut visit: impl FnMut(Kind, usize, &[u8])
 
 pub(crate) fn is_blank_line(line: &str) -> bool { line.trim_ascii().is_empty() }
 
+fn is_blank_paragraph(block: &crate::model::Block) -> bool {
+    matches!(block.kind, crate::model::BlockKind::Text) && block.children.is_empty()
+        && block.bg.is_none() && is_blank_line(&block.text.text)
+}
+
+fn number_lists(blocks: &mut [crate::model::Block]) {
+    use crate::model::BlockKind;
+    let mut number = 0u32;
+    for block in blocks {
+        if let BlockKind::Ordered { seq } = &mut block.kind {
+            number = seq.unwrap_or(number.saturating_add(1)); *seq = Some(number);
+        } else { number = 0; }
+        number_lists(&mut block.children);
+        if let BlockKind::Table(table) = &mut block.kind {
+            for row in &mut table.rows { for cell in row { number_lists(&mut cell.blocks); } }
+        }
+    }
+}
+
+/// Compare the complete document so source-only changes cannot hide cover,
+/// icon, or other document properties omitted from the body preview.
+pub(crate) fn same_xml_document(old: &[u8], new: &[u8]) -> bool {
+    let canonical = |bytes: &[u8]| {
+        let xml = std::str::from_utf8(bytes).ok()?;
+        if xml.contains('\0') { return None }
+        let mut doc = crate::docxml::parse(xml).ok()?;
+        number_lists(&mut doc.blocks);
+        doc.blocks.retain(|block| !is_blank_paragraph(block) || block.align != crate::model::Align::Left
+            || block.folded || !block.text.runs.is_empty());
+        Some(crate::docxml::serialize(&doc))
+    };
+    canonical(old).is_some_and(|old| canonical(new).as_ref() == Some(&old))
+}
+
 /// Cumulative offsets from runs of skipped lines or blocks. Each run is
 /// keyed by the next position in the filtered sequence.
 #[derive(Default)]
@@ -180,18 +214,6 @@ pub(crate) fn formatted(old: &str, new: &str) -> Result<Option<FormattedDiff>> {
     let document = |xml: &str| -> Option<Document> {
         if xml.is_empty() { return Some(Document { blocks: vec![], ..Document::default() }) }
         let mut doc = docxml::parse(xml).ok()?;
-        fn number_lists(blocks: &mut [Block]) {
-            let mut number = 0;
-            for block in blocks {
-                if let BlockKind::Ordered { seq } = &mut block.kind {
-                    number = seq.unwrap_or(number + 1); *seq = Some(number);
-                } else { number = 0; }
-                number_lists(&mut block.children);
-                if let BlockKind::Table(table) = &mut block.kind {
-                    for row in &mut table.rows { for cell in row { number_lists(&mut cell.blocks); } }
-                }
-            }
-        }
         number_lists(&mut doc.blocks);
         if !doc.title.is_empty() {
             let title = std::mem::take(&mut doc.title);
@@ -206,8 +228,7 @@ pub(crate) fn formatted(old: &str, new: &str) -> Result<Option<FormattedDiff>> {
             let mut buf = String::new();
             let mut skipped = SkippedPositions::default();
             for (index, block) in doc.blocks.iter().enumerate() {
-                if matches!(block.kind, BlockKind::Text) && block.children.is_empty() && block.bg.is_none()
-                    && is_blank_line(&block.text.text) {
+                if is_blank_paragraph(block) {
                     skipped.skip(index + 1);
                     continue;
                 }
@@ -282,6 +303,13 @@ mod tests {
         let new = "<p>After</p><p></p><p>Keep</p><p> </p><p></p><p>New tail</p>";
         let rows = formatted(old, new).unwrap().unwrap().into_rows();
         assert_eq!(rows.map(|r| (r.kind, r.number)).collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn xml_source_comparison_keeps_ordered_list_restarts() {
+        let continuous = b"<ol><li>First</li><li>Second</li></ol>";
+        let restarted = b"<ol><li>First</li></ol><p></p><ol><li>Second</li></ol>";
+        assert!(!same_xml_document(continuous, restarted));
     }
 
     #[test]
