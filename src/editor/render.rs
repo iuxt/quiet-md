@@ -1151,7 +1151,7 @@ impl Editor {
         }
         rows(&self.core.doc.blocks, orders, &mut vec![], 0., seed, &mut items, &mut keys);
         items.push(Item::Below);
-        keys.push(links);
+        keys.push(links ^ seed);
         for (id, nonce) in nonces {
             if let Some(ix) = super::grid::item_containing(&items, &self.core.doc.blocks, id) {
                 keys[ix] ^= nonce;
@@ -1323,6 +1323,7 @@ impl Editor {
             Item::Below => div()
                 .id("below")
                 .w_full()
+                .children(self.child_documents(cx))
                 .children(self.refs_list(window, cx))
                 .child(div().h(px(200.)).w_full())
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_click_below))

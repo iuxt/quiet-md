@@ -158,7 +158,7 @@ impl Workspace {
     }
 
     pub(crate) fn open_from_click(&mut self, id: &str, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
-        if modifiers.secondary() && !self.quick_note && self.entries.iter().any(|entry| entry.id == id && entry.meta.folder.is_none()) {
+        if modifiers.secondary() && !self.quick_note && self.entries.iter().any(|entry| entry.id == id) {
             self.open_in_tab(id, window, cx);
         } else {
             self.open(id, window, cx);
@@ -222,11 +222,11 @@ impl Workspace {
 
     pub(crate) fn prune_tabs(&mut self) {
         self.tabs.prune(|id| self.current.as_deref() == Some(id)
-            || self.entries.iter().any(|e| e.id == id && e.meta.folder.is_none()));
+            || self.entries.iter().any(|e| e.id == id));
     }
 
     pub(crate) fn render_new_tab(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
-        let recent = self.entries.iter().filter(|e| e.meta.folder.is_none()).take(12);
+        let recent = self.entries.iter().take(12);
         let list = div().w_full().max_w(px(720.)).mx_auto().pt(px(40.)).pb(px(28.))
             .child(div().px(px(16.)).pb(px(14.)).text_size(px(22.)).line_height(px(30.)).font_weight(FontWeight::SEMIBOLD)
                 .child(tr("最近编辑", "Recently edited")))
@@ -252,7 +252,7 @@ impl Workspace {
     }
 
     pub(crate) fn shows_document_tabs(&self) -> bool {
-        !self.quick_note && (self.tab_page_visible() || matches!(self.view, View::Home | View::Folder))
+        !self.quick_note && (self.tab_page_visible() || self.view == View::Home)
     }
 
     pub(crate) fn render_document_tabs(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {

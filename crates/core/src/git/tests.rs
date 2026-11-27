@@ -379,7 +379,7 @@ fn commits_use_lfs_pointers_and_history_tracks_ids_across_moves() {
     let pointer = Pointer::parse(blob.content()).unwrap().unwrap();
     assert_eq!(pointer.size, 13);
     assert_eq!(std::fs::read(lib.0.join("Images/picture.png")).unwrap(), b"picture bytes");
-    let folder = store.create_folder("Moved", None).unwrap(); store.set_parent(&id, Some(&folder)).unwrap();
+    let folder = store.create_from_in(&doc("Moved"), None).unwrap(); store.set_parent(&id, Some(&folder)).unwrap();
     store.rename(&id, "Renamed").unwrap();
     repo.commit("moved").unwrap();
     assert_eq!(repo.history(Some(&id), 80).unwrap().len(), 2);
@@ -625,7 +625,7 @@ fn virtual_library_adopts_notes_but_keeps_hierarchy_in_manifest() {
     let imported = entries.iter().find(|e| e.title == "imported").unwrap();
     assert_eq!(store.file_path(&imported.id).unwrap().file_stem().unwrap().to_str().unwrap(), imported.id);
     assert!(!lib.0.join("Notes/imported.md").exists());
-    assert!(!entries.iter().any(|e| e.meta.folder.is_some()));
+    assert!(entries.iter().all(|e| e.meta.parent.is_none()));
     assert!(store.load(&id).is_err());
     std::fs::rename(lib.0.join("external").join(old.file_name().unwrap()), old).unwrap();
     assert!(lib.git().status().is_ok());
@@ -649,12 +649,12 @@ fn clone_uses_the_remote_default_branch() {
 fn virtual_empty_folders_survive_clone_and_are_not_treated_as_pristine() {
     let server = Library::new(); Repository::init_bare(&server.0).unwrap();
     let first = Library::new(); let mut a = first.store();
-    let folder = a.create_folder("Empty", None).unwrap(); a.enable_git().unwrap();
+    let folder = a.create_from_in(&doc("Empty"), None).unwrap(); a.enable_git().unwrap();
     configure(&first.git(), &server.0); first.git().commit("empty virtual folder").unwrap(); first.git().push(&Auth::default()).unwrap();
     let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
     let entries = second.store().list(); assert_eq!(entries.len(), 1); assert_eq!(entries[0].id, folder); assert_eq!(entries[0].title, "Empty");
     assert!(!second.0.join("Empty").exists());
-    let local = Library::new(); let mut draft = local.store(); let own = draft.create_folder("Unsaved folder", None).unwrap();
+    let local = Library::new(); let mut draft = local.store(); let own = draft.create_from_in(&doc("Unsaved folder"), None).unwrap();
     draft.enable_git().unwrap(); configure(&local.git(), &server.0);
     assert!(draft.git_pull(&Auth::default()).is_err()); assert!(draft.list().iter().any(|e| e.id == own));
 }
@@ -894,7 +894,7 @@ fn ssh_push_clone_pull_with_self_signed_lfs() {
 fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     let server = Library::new(); Repository::init_bare(&server.0).unwrap();
     let first = Library::new(); let mut a = first.store(); a.enable_git().unwrap();
-    let folder = a.create_folder("Folder", None).unwrap(); let nested = a.create_folder("Nested", Some(&folder)).unwrap();
+    let folder = a.create_from_in(&doc("Folder"), None).unwrap(); let nested = a.create_from_in(&doc("Nested"), Some(&folder)).unwrap();
     let xml = a.create_from_in(&doc("XML"), Some(&nested)).unwrap();
     let md = a.create_markdown_in(&doc("Markdown"), "# Markdown\n\n![image](../Images/test.png)\n", Some(&nested)).unwrap();
     std::fs::create_dir_all(first.0.join("Images")).unwrap(); std::fs::write(first.0.join("Images/test.png"), b"keep image").unwrap();
@@ -902,7 +902,7 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     configure(&first.git(), &server.0); first.git().commit("initial").unwrap(); first.git().push(&Auth::default()).unwrap();
     let second = Library::new(); LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &Auth::default()).unwrap();
     let mut b = second.store();
-    a.delete(&folder, None).unwrap();
+    a.delete(&folder).unwrap();
     let repo = first.git();
     let changes = repo.status().unwrap().changes; assert_eq!(changes.len(), 1); assert_eq!(changes[0].path, "quiet.json");
     let commit = repo.commit("move to trash").unwrap().unwrap(); repo.push(&Auth::default()).unwrap();
@@ -929,6 +929,48 @@ fn trash_is_committed_synced_and_restored_with_original_bytes_and_folders() {
     for (id, _, bytes) in bodies { assert_eq!(std::fs::read(a.file_path(&id).unwrap()).unwrap(), bytes); }
 }
 
+
+#[test]
+fn cloning_v2_preserves_history_and_a_clean_upgrade_can_fast_forward() {
+    let server = Library::new(); let bare = Repository::init_bare(&server.0).unwrap();
+    bare.set_head("refs/heads/main").unwrap();
+    let source = Library::new(); let mut store = source.store(); store.enable_git().unwrap();
+    let id = store.create_from(&doc("Original")).unwrap();
+    let parent = uuid::Uuid::new_v4().to_string();
+    let repo = source.git(); configure(&repo, &server.0);
+    let auth = Auth::default();
+    repo.commit("initial").unwrap(); repo.push(&auth).unwrap();
+    let current = bare.head().unwrap().peel_to_commit().unwrap();
+    let v2 = serde_json::json!({
+        "version": 2, "folders": [{"id": parent, "name": "Parent"}],
+        "notes": [{"id": id, "title": "Original", "filename": format!("{id}.xml"), "folderId": parent}]
+    });
+    let old = {
+        let current_tree = current.tree().unwrap();
+        let mut builder = bare.treebuilder(Some(&current_tree)).unwrap();
+        builder.insert(MANIFEST, bare.blob(&serde_json::to_vec(&v2).unwrap()).unwrap(), 0o100644).unwrap();
+        let tree = bare.find_tree(builder.write().unwrap()).unwrap();
+        let author = Signature::now("Test", "test@example.invalid").unwrap();
+        bare.commit(Some("refs/heads/main"), &author, &author, "version 2", &tree, &[&current]).unwrap()
+    };
+    let first = Library::new();
+    let cloned = LibraryRepo::clone_into(server.0.to_str().unwrap(), &first.0, &auth).unwrap();
+    assert!(cloned.revision(&old.to_string(), &id).unwrap().contains("Original"));
+    assert_eq!(first.store().load(&parent).unwrap().title.text, "Parent");
+    let second = Library::new();
+    let peer = LibraryRepo::clone_into(server.0.to_str().unwrap(), &second.0, &auth).unwrap();
+    let mut other = second.store();
+    let path = other.file_path(&parent).unwrap();
+    let generated = std::fs::read(&path).unwrap();
+    configure(&cloned, &server.0);
+    cloned.commit("upgrade").unwrap(); cloned.push(&auth).unwrap();
+    std::fs::write(&path, "<title>Parent</title>\n<p>Local edit</p>\n").unwrap();
+    assert!(peer.pull(&auth).is_err());
+    std::fs::write(&path, &generated).unwrap();
+    assert!(other.git_pull(&auth).unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), generated);
+    assert_eq!(other.list().into_iter().find(|e| e.id == id).unwrap().meta.parent, Some(parent));
+}
 
 #[test]
 fn clone_and_pull_refuse_unsupported_manifests_and_history_skips_them() {

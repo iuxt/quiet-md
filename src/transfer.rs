@@ -79,20 +79,18 @@ pub(crate) fn import_markdown(store: &mut crate::store::Store, path: &Path, root
     store.create_markdown_in(&doc, crate::markdown::front_matter(text).0, parent)
 }
 
-/// One scanned folder as a library folder under `parent`; its id. Needs no
+/// One scanned directory as a document under `parent`; its id. Needs no
 /// window, so 欢迎页 can import on a background thread before the main window.
 pub(crate) fn import_tree(store: &mut crate::store::Store, t: &Scanned, parent: Option<&str>, failed: &mut usize) -> Option<String> {
     tree(store, t, &t.dir, parent, failed)
 }
 
 fn tree(store: &mut crate::store::Store, t: &Scanned, root: &Path, parent: Option<&str>, failed: &mut usize) -> Option<String> {
-    let id = match store.create_folder(&t.name, parent) {
+    let doc = Document { title: RichText::plain(&t.name), ..Default::default() };
+    let id = match store.create_from_in(&doc, parent) {
         Ok(id) => id,
         Err(_) => { *failed += t.files; return None; }
     };
-    // In the folder's order, as its documents are: made together, unplaced
-    // folders would fall back to random ids.
-    if parent.is_some() { let _ = store.set_parent(&id, parent); }
     for sub in &t.dirs { tree(store, sub, root, Some(&id), failed); }
     for p in &t.docs {
         let made = if crate::local_files::is_markdown_path(p) { import_markdown(store, p, Some(root), Some(&id)) } else { store.import_into(p, Some(&id)) };
@@ -397,7 +395,7 @@ impl Workspace {
         .detach();
     }
 
-    /// Import files into `parent` (a folder; None: the top of 我的文档); with
+    /// Import files under `parent` (None: the top of 我的文档); with
     /// `open`, the last one opens (a drop on a list stays on the list).
     pub(crate) fn import_paths(&mut self, paths: &[PathBuf], parent: Option<String>, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.import_paths_then(paths, parent, open, None, window, cx);
@@ -462,8 +460,7 @@ impl Workspace {
         }).detach();
     }
 
-    /// The header's 导入 menu (主页, a folder's page): what it imports goes
-    /// into the folder shown, or the top of 我的文档.
+    /// The 导入 menu imports under a document or at the top of 我的文档.
     pub(crate) fn open_import_kind(&mut self, kind: ImportKind, parent: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.close_menus();
         self.import_menu = None;
@@ -510,12 +507,11 @@ impl Workspace {
         )).with_priority(3).into_any_element())
     }
 
-    /// The header's … menu: open this folder (None: the library) in the
+    /// The header's … menu: open the library in the
     /// system's file manager.
     pub(crate) fn render_place_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (folder, pos) = self.place_menu.clone()?;
-        let label = if folder.is_some() { crate::settings::tr("打开正文目录", "Open Notes Directory") }
-            else if cfg!(target_os = "macos") { crate::settings::tr("在访达中打开", "Open in Finder") }
+        let pos = self.place_menu?;
+        let label = if cfg!(target_os = "macos") { crate::settings::tr("在访达中打开", "Open in Finder") }
             else if cfg!(target_os = "windows") { crate::settings::tr("在文件资源管理器中打开", "Open in File Explorer") }
             else { crate::settings::tr("在文件管理器中打开", "Open in File Manager") };
         Some(deferred(anchored().anchor(Corner::TopRight).position(pos).snap_to_window_with_margin(px(8.)).child(
@@ -524,21 +520,21 @@ impl Workspace {
                 .child(crate::ui::menu_row("place-open", SharedString::from("place-open")).child(crate::ui::icon("folder", 16., Theme::icon())).child(label)
                     .on_click(cx.listener(move |w, _, _, cx| {
                         w.place_menu = None;
-                        if let Some(dir) = w.store.folder_dir(folder.as_deref()) { cx.open_with_system(&dir); }
+                        cx.open_with_system(&w.store.library_root());
                         cx.notify();
                     }))),
         )).with_priority(3).into_any_element())
     }
 
     /// The header's … icon, left of 导入; its menu hangs below it, right-aligned.
-    pub(crate) fn place_button(&self, id: &'static str, folder: Option<String>, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn place_button(&self, id: &'static str, cx: &mut Context<Self>) -> Stateful<Div> {
         let open = self.place_menu.is_some();
         crate::ui::header_icon(id, "ellipsis")
             .when(open, |d| d.bg(Theme::fill_hover()))
             .when(!open, |d| d.tip(crate::settings::tr("更多", "More"), None))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| {
-                w.place_menu = if w.place_menu.is_some() { None } else { Some((folder.clone(), ev.position() + point(px(18.), px(20.)))) };
+                w.place_menu = if w.place_menu.is_some() { None } else { Some(ev.position() + point(px(18.), px(20.))) };
                 cx.notify();
             }))
     }
@@ -556,18 +552,18 @@ impl Workspace {
             }))
     }
 
-    /// 导入文件夹: pick a folder; it lands at the top of 我的文档 as a folder,
-    /// its sub-folders as folders, its Markdown and DocxXML files as documents.
+    /// 导入文件夹: pick a folder; each directory becomes an editable document,
+    /// with imported files and subdirectories beneath it.
     pub fn open_import_folder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.open_import_kind(ImportKind::Folder, None, window, cx);
     }
 
-    /// Import `dir` as a folder inside `parent` (None: the top of 我的文档).
+    /// Import `dir` as a document under `parent` (None: the top of 我的文档).
     pub(crate) fn import_folder(&mut self, dir: &Path, parent: Option<String>, open: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.import_folder_then(dir, parent, open, None, window, cx);
     }
 
-    /// `import_folder`, then `then` with the new folder once it is in.
+    /// `import_folder`, then `then` with the new document once it is in.
     pub(crate) fn import_folder_then(&mut self, dir: &Path, parent: Option<String>, open: bool, then: Option<AfterImport>, window: &mut Window, cx: &mut Context<Self>) {
         if self.store.file_task_busy() || self.file_history.busy || self.tree_writes_pending() { return; }
         let held = std::rc::Rc::new(std::cell::Cell::new(then));

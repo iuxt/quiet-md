@@ -295,7 +295,7 @@ impl Workspace {
         let results = self.search_results(cx);
         let Some(entry) = results.get(row) else { return };
         let id = entry.id.clone();
-        let new_tab = modified && !self.quick_note && entry.meta.folder.is_none();
+        let new_tab = modified && !self.quick_note;
         self.close_search(window, cx);
         if new_tab { self.open_in_tab(&id, window, cx); }
         else { self.open(&id, window, cx); }

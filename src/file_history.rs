@@ -26,7 +26,7 @@ impl Workspace {
             let entry = self.entries.iter().find(|e| e.id == c.id).cloned();
             let make = |state: &FileState| {
                 let mut e = entry.clone().unwrap_or_else(|| Entry { id: c.id.clone(), meta: Default::default(), title: String::new(), icon: None, body: Default::default(), reminders: vec![], links: vec![] });
-                e.title = state.title.clone(); e.meta.folder = state.folder.then(|| state.title.clone());
+                e.title = state.title.clone();
                 e.meta.parent = state.parent.clone(); e.meta.order = state.order; e.meta.root_order = state.root_order;
                 e
             };
@@ -127,7 +127,7 @@ impl Workspace {
                 if let Some(entry) = self.entries.iter_mut().find(|e| e.id == id) {
                     let delta = record.changes.iter().find(|c| c.id == id).unwrap();
                     let fields_changed = delta.before.as_ref().zip(delta.after.as_ref());
-                    if fields_changed.is_some_and(|(a,b)| a.title != b.title) { entry.title = target.title.clone(); entry.meta.folder = target.meta.folder.clone(); }
+                    if fields_changed.is_some_and(|(a,b)| a.title != b.title) { entry.title = target.title.clone(); }
                     if fields_changed.is_some_and(|(a,b)| (a.parent.clone(),a.order,a.root_order) != (b.parent.clone(),b.order,b.root_order)) {
                         entry.meta.parent = target.meta.parent.clone(); entry.meta.order = target.meta.order; entry.meta.root_order = target.meta.root_order;
                     }
@@ -162,7 +162,6 @@ impl Workspace {
                             }
                         }
                         w.prune_tabs();
-                        if w.folder_current.as_ref().is_some_and(|id| !w.entries.iter().any(|e| &e.id == id)) { w.folder_current = None; w.view = View::Home; }
                         w.trash = w.store.list_trash();
                         w.batch = None; w.row_menu = None;
                         w.sync_sub_pages(cx);

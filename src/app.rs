@@ -210,7 +210,6 @@ pub enum View {
     Doc,
     NewTab,
     Home,
-    Folder,
     Trash,
     Settings,
     Git,
@@ -229,8 +228,6 @@ pub enum Confirm {
     /// The open document could not be written before it was to be replaced
     /// (another document, 新建, 退出): 重试 / 放弃修改, then carry on.
     SaveFailed,
-    /// The library should move to real folders, and the user is asked first
-    /// (it is synced, or used from another computer): 改用文件夹 / 稍后.
     /// 设置 › 文档库 › 更改…: open this folder as the library (#94), after a restart.
     SwitchLibrary(std::path::PathBuf),
     /// Dropped on the sidebar from outside: import it into the library there?
@@ -284,7 +281,6 @@ pub struct Workspace {
     pub current: Option<String>,
     pub(crate) tabs: crate::tabs::Tabs,
     pub(crate) trash_document: bool,
-    pub(crate) trash_folder: Option<String>,
     pub editor: Option<Entity<Editor>>,
     pub search: Entity<TextField>,
     /// Keyboard highlight inside search results.
@@ -296,12 +292,11 @@ pub struct Workspace {
     pub sidebar_drag: bool,
     /// The window's minimum width as last given to it (`DOC_MIN_W` plus the sidebar).
     min_w: f32,
-    pub folder_current: Option<String>,
     pub create_menu: Option<(Option<String>, Point<Pixels>)>,
-    /// The header's 导入 menu: the folder it imports into, and where it hangs.
+    /// The 导入 menu: its parent document and anchor.
     pub import_menu: Option<(Option<String>, Point<Pixels>)>,
-    /// The header's … menu on Home (None) or a folder page: where it hangs.
-    pub place_menu: Option<(Option<String>, Point<Pixels>)>,
+    /// The Home header's … menu anchor.
+    pub place_menu: Option<Point<Pixels>>,
     pub folder_drag: crate::sidebar_drag::SidebarDrag,
     /// The search dialog (command-center style) is open.
     pub search_open: bool,
@@ -396,6 +391,7 @@ impl Workspace {
             let (entries, trash) = (entries.to_vec(), trash.map(<[_]>::to_vec));
             let _ = handle.update(cx, |ws, _, cx| {
                 ws.entries = entries; if let Some(trash) = trash { ws.trash = trash; } ws.prune_tabs(); ws.sort();
+                ws.sync_sub_pages(cx);
                 cx.notify();
             });
         }
@@ -436,7 +432,10 @@ impl Workspace {
             cx.observe_window_activation(window, |this, window, cx| {
                 if window.is_window_active() {
                     if !this.trash_document && let Some(id) = &this.current { crate::quick_note::used(id, cx); }
-                    if !this.store.file_task_busy() { this.entries = this.store.list(); this.prune_tabs(); this.sort(); }
+                    if !this.store.file_task_busy() {
+                        this.entries = this.store.list(); this.prune_tabs(); this.sort();
+                        this.sync_sub_pages(cx);
+                    }
                     cx.notify();
                 }
                 else if !this.store.file_task_busy() { this.end_folder_drag(true, cx); this.cancel_shortcut_recording(cx); this.flush(cx); }
@@ -494,8 +493,9 @@ impl Workspace {
                     if w.rename.is_some() || w.move_dlg.is_some() || w.store.file_task_busy() { return false }
                     w.entries = w.store.list();
                     w.prune_tabs();
-                    if w.view == View::Trash { w.trash = w.store.list_trash_in(w.trash_folder.as_deref()); }
+                    if w.view == View::Trash { w.trash = w.store.list_trash(); }
                     w.sort();
+                    w.sync_sub_pages(cx);
                     cx.notify();
                     true
                 });
@@ -540,7 +540,6 @@ impl Workspace {
             current: None,
             tabs: Default::default(),
             trash_document: false,
-            trash_folder: None,
             editor: None,
             search,
             search_sel: None,
@@ -548,7 +547,6 @@ impl Workspace {
             sidebar_width,
             min_w: 0.,
             sidebar_drag: false,
-            folder_current: None,
             create_menu: None,
             import_menu: None,
             place_menu: None,
@@ -604,7 +602,7 @@ impl Workspace {
         window.focus(&ws.focus);
         // A main window starts on the latest document or a blank tab.
         let document = document.or_else(|| {
-            if quick { None } else { ws.entries.iter().find(|e| e.meta.folder.is_none()).map(|e| e.id.clone()) }
+            if quick { None } else { ws.entries.first().map(|e| e.id.clone()) }
         });
         match document {
             Some(id) => ws.open(&id, window, cx),
@@ -646,9 +644,7 @@ impl Workspace {
         // A snapshot is on screen: back to the live document before anything
         // else touches the editor.
         if self.history.is_some() { self.close_history(cx); }
-        if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.open_folder(id, window, cx); }
         let trash_meta = self.store.trash_meta(id);
-        if trash_meta.as_ref().is_some_and(|m| m.folder.is_some()) { return self.open_trash_folder(Some(id), cx); }
         let trashed = trash_meta.is_some();
         if self.current.as_deref() == Some(id) && self.trash_document == trashed {
             self.view = View::Doc;
@@ -840,21 +836,8 @@ impl Workspace {
         // A page goes with its child pages: each topmost page is
         // trashed as one item that carries its subtree.
         let tree = crate::tree::Tree::new(&self.entries);
-        let mut all: Vec<(String, Option<String>)> = vec![];
-        for id in ids {
-            let covered = self.ancestors(id).iter().any(|a| ids.contains(&a.id));
-            if covered {
-                continue;
-            }
-            for d in tree.subtree(id) {
-                if !all.iter().any(|(x, _)| *x == d) {
-                    let root = (d != *id).then(|| id.clone());
-                    all.push((d, root));
-                }
-            }
-        }
-        let groups = all;
-        let all: Vec<String> = groups.iter().map(|(d, _)| d.clone()).collect();
+        let roots: Vec<String> = ids.iter().filter(|id| !self.ancestors(id).iter().any(|a| ids.contains(&a.id))).cloned().collect();
+        let all: std::collections::HashSet<_> = roots.iter().flat_map(|id| tree.subtree(id)).collect();
         for handle in cx.windows().into_iter().filter(|w| w.window_id() != window.window_handle().window_id()) {
             if let Some(handle) = handle.downcast::<Workspace>()
                 && handle.update(cx, |ws, _, _| ws.current.as_ref().is_some_and(|id| all.contains(id))).unwrap_or(false)
@@ -876,10 +859,9 @@ impl Workspace {
             let mut deleted = vec![];
             let mut errors = vec![];
             let batch = writer.begin_batch().is_ok();
-            for (id, root) in &groups {
-                if root.as_ref().is_some_and(|r| !deleted.contains(r)) { continue; }
-                match writer.delete(id, root.as_deref()) {
-                    Ok(()) => deleted.push(id.clone()),
+            for id in roots {
+                match writer.delete(&id) {
+                    Ok(ids) => deleted.extend(ids),
                     Err(e) => errors.push(crate::localized_format!("删除失败：{}", "Could not delete document: {}", crate::settings::diagnostic(&e.to_string()))),
                 }
             }
@@ -906,18 +888,14 @@ impl Workspace {
                 w.sync_peers(cx, &listed.entries, Some(&listed.trash));
                 w.entries = listed.entries; w.trash = listed.trash;
                 w.prune_tabs();
-                if w.folder_current.as_ref().is_some_and(|id| done.deleted.contains(id)) {
-                    w.folder_current = None;
-                    if w.view == View::Folder { w.view = View::Home; }
-                }
                 w.row_menu = None;
-                if w.current.is_none() && !matches!(w.view, View::Folder | View::NewTab) {
+                if w.current.is_none() && w.view != View::NewTab {
                     let view = w.view;
                     if w.tabs.selected_is_blank() {
                         if view == View::Doc { w.show_new_tab_page(window, cx); }
                     } else {
                         let next = w.tabs.selected_document().map(str::to_string)
-                            .or_else(|| w.entries.iter().find(|e| e.meta.folder.is_none()).map(|e| e.id.clone()));
+                            .or_else(|| w.entries.first().map(|e| e.id.clone()));
                         if next.is_some_and(|id| w.try_open(&id, window, cx)) {
                             w.view = view;
                         } else if view == View::Doc {
@@ -977,7 +955,6 @@ impl Workspace {
         // 阅读位置: leaving the document with ⌘H or 回收站 also counts.
         if view != View::Doc { self.remember_scroll(cx) }
         if view == View::Trash {
-            self.trash_folder = None;
             self.trash = self.store.list_trash();
         }
         self.view = view;
@@ -1317,7 +1294,7 @@ impl Workspace {
         let docs = self
             .entries
             .iter()
-            .map(|e| crate::editor::links::DocRef { id: e.id.clone(), title: e.title.clone(), icon: e.icon.clone(), folder: e.meta.folder.is_some(), modified: e.meta.modified, opened: e.meta.opened })
+            .map(|e| crate::editor::links::DocRef { id: e.id.clone(), title: e.title.clone(), icon: e.icon.clone(), modified: e.meta.modified, opened: e.meta.opened })
             .collect();
         let backlinks = self
             .entries
@@ -1424,7 +1401,7 @@ impl Workspace {
             .unwrap_or_default();
         let mut crumbs: Vec<AnyElement> = vec![];
         let sep = || div().mx(px(3.)).flex_none().child(icon("chevron-right", 12., Theme::icon())).into_any_element();
-        // Every path starts at the library, as a folder page's does.
+        // Every path starts at the library.
         if self.current.is_some() {
             crumbs.push(div().id("crumb-library").no_drag().flex_none().px(px(4.)).rounded(px(4.)).cursor_pointer()
                 .whitespace_nowrap().text_color(Theme::text_caption()).hover(|s| s.text_color(Theme::primary_500()))
@@ -1651,7 +1628,7 @@ impl Render for Workspace {
         let pref_menu = self.render_pref_menu(cx);
         let toast = self.render_toast(window);
         let mode_menu = self.render_mode_menu(cx);
-        self.home.folder_bounds.borrow_mut().clear();
+        self.home.doc_bounds.borrow_mut().clear();
         let main = match self.view {
             View::Doc => div()
                 .flex_1()
@@ -1681,7 +1658,6 @@ impl Render for Workspace {
                 .into_any_element(),
             View::NewTab => self.render_new_tab(window, cx),
             View::Home => self.render_home(window, cx),
-            View::Folder => self.render_folder(window, cx),
             View::Trash => self.render_trash(cx),
             View::Settings => self.render_settings(cx),
             View::Git => self.render_git(cx),
@@ -1693,10 +1669,10 @@ impl Render for Workspace {
         // surface beside it; the change of value is the only line between
         // them (no gutter, radius, border or shadow).
         // A document sits on its theme's page colour.
-        let page = if matches!(self.view, View::Doc | View::Folder) { crate::editor_theme::Theme::bg_body() } else { Theme::bg_body() };
+        let page = if self.view == View::Doc { crate::editor_theme::Theme::bg_body() } else { Theme::bg_body() };
         let note = div().id("note").relative().flex_1().min_w_0().h_full().flex().bg(page).child(main)
-            // Files from the Finder dropped on 主页 or a folder's page are imported there.
-            .when(matches!(self.view, View::Home | View::Folder), |d| d
+            // Files from the Finder dropped on 主页 are imported into the library.
+            .when(self.view == View::Home, |d| d
                 .on_drag_move(cx.listener(|w, ev: &DragMoveEvent<ExternalPaths>, _, cx| w.file_drag_move(ev, cx)))
                 .on_drop(cx.listener(|w, paths: &ExternalPaths, window, cx| w.file_dropped(paths, window, cx))))
             .children(file_drop)
@@ -1795,7 +1771,7 @@ impl Render for Workspace {
                 if ev.keystroke.key == "escape" && w.history.is_some() {
                     w.close_history(cx); cx.stop_propagation(); return;
                 }
-                if ev.keystroke.key == "escape" && matches!(w.view, View::Home | View::Folder) && cx.stop_active_drag(window) {
+                if ev.keystroke.key == "escape" && w.view == View::Home && cx.stop_active_drag(window) {
                     cx.stop_propagation(); return;
                 }
                 if ev.keystroke.key == "escape" && w.folder_drag.active.is_some() {

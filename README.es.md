@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="La pantalla de inicio de Quiet.md, con el árbol de documentos a la izquierda y la lista de carpetas y notas a la derecha.">
+  <img src="docs/images/home.png" width="100%" alt="La pantalla de inicio de Quiet.md, con el árbol de documentos a la izquierda y la lista de documentos a la derecha.">
 </p>
 
 > [!NOTE]
@@ -45,7 +45,7 @@
 
 **⚡ Rápida, con la rapidez de lo nativo.** Toda la interfaz se dibuja en la GPU con Rust y [GPUI](https://www.gpui.rs/). Sin WebView ni Electron. En un documento de un millón de caracteres, escribir, borrar y desplazarse se mantienen por debajo de 6 ms por fotograma en el P95.
 
-**🔒 Local primero. Tus archivos son tuyos.** Sin cuenta, sin nube y, por defecto, nada sale a la red. Tu biblioteca es una carpeta normal en tu ordenador: `quiet.json` gestiona las carpetas virtuales y los títulos, mientras que el contenido se guarda en rutas fijas `Notes/<UUID>.xml` (o `.md`). Mover o renombrar una entrada solo cambia los metadatos. Gestiónala con Git, iCloud o la herramienta de sincronización que prefieras; si algún día dejas de usar Quiet.md, tus archivos siguen ahí.
+**🔒 Local primero. Tus archivos son tuyos.** Sin cuenta, sin nube y, por defecto, nada sale a la red. Tu biblioteca es una carpeta normal en tu ordenador: `quiet.json` gestiona la jerarquía de los documentos y sus títulos, mientras que el contenido se guarda en rutas fijas `Notes/<UUID>.xml` (o `.md`). Mover o renombrar una entrada solo cambia los metadatos. Gestiónala con Git, iCloud o la herramienta de sincronización que prefieras; si algún día dejas de usar Quiet.md, tus archivos siguen ahí.
 
 **📝 Un editor de texto enriquecido completo que habla DocxXML de Feishu (Lark).** Las notas se guardan en el formato DocxXML de los documentos de Feishu (Lark), así que copiar y pegar, importar y exportar conservan la estructura. Títulos, tareas, tablas, columnas, destacados, código, ecuaciones, imágenes y adjuntos: están todos los bloques que buscas al escribir documentos.
 
@@ -99,8 +99,8 @@ Una pantalla de 120 Hz da 8.3 ms a cada fotograma. Incluso en el P95 de un docum
 ## Funciones
 
 - **Edición**: títulos, listas numeradas y con viñetas, tareas, citas, bloques de código con resaltado de sintaxis, ecuaciones LaTeX, tablas (con celdas combinadas), destacados, columnas, imágenes, adjuntos y portadas. Atajos de Markdown como `#`, `-`, `[]` y `>`, y un menú `/`.
-- **Organización**: árbol de documentos, fijados, favoritos, búsqueda en todo el texto y papelera.
-- **Importar y exportar**: importa carpetas de Markdown (con las imágenes incrustadas y los callouts de Obsidian) y DocxXML de Feishu (Lark); exporta a Markdown y PDF, o imprime directamente. Arrastra archivos desde el Finder a Inicio o directamente a una carpeta de la barra lateral. Al pegar desde Feishu o una página web se conserva la estructura.
+- **Organización**: árbol de documentos, fijados, favoritos, búsqueda en todo el texto y papelera. Cada documento puede contener otros documentos. Al eliminar un documento, todos sus descendientes pasan a la papelera.
+- **Importar y exportar**: importa carpetas de Markdown (con las imágenes incrustadas y los callouts de Obsidian) y DocxXML de Feishu (Lark); exporta a Markdown y PDF, o imprime directamente. Arrastra archivos desde el Finder a Inicio o sobre un documento de la barra lateral. Al pegar desde Feishu o una página web se conserva la estructura.
 - **Atajos**: pulsa `⌘ /` (`Ctrl+/` en Windows) para verlos todos. Todos se pueden reasignar. En Windows, Ctrl sustituye a ⌘ y Alt a ⌥. La app muestra las teclas de tu sistema.
 - **Temas**: cuatro estilos integrados (Craft, Feishu, Notion y Obsidian), cada uno con su variante oscura, o escribe el tuyo en CSS; consulta [docs/THEMES.md](docs/THEMES.md).
 

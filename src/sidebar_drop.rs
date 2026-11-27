@@ -1,5 +1,5 @@
 //! Dropping onto the sidebar's 我的文档: files from the Finder are imported
-//! into the folder under the pointer (a document row: its folder; elsewhere:
+//! under the document at the pointer (between rows: the indicated slot; elsewhere:
 //! the top), and a 本机文件 row carried up into the tree is imported there.
 use crate::app::Workspace;
 use crate::settings::tr;
@@ -24,7 +24,7 @@ impl Render for LocalRowDrag {
 
 /// Where a drop on the sidebar lands: in `parent` (None: the top of 我的文档),
 /// before `before` when it opens a slot between rows (index, depth), or last
-/// in a folder row it is over.
+/// under a document row.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct SidebarDropAt { pub parent: Option<String>, pub slot: Option<(usize, usize)>, pub before: Option<String> }
 
@@ -116,7 +116,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Put what a drop brought in into the slot it showed (a folder row: as imported).
+    /// Put what a drop brought in into the slot it showed (drop on a document row: keep the imported order).
     fn place_dropped(&mut self, ids: &[String], target: &SidebarDropAt) {
         let journal = self.store.track_file_changes();
         if target.slot.is_some() {
@@ -128,7 +128,7 @@ impl Workspace {
         self.amend_file_record(ids, journal.take());
     }
 
-    /// The folder that took a drop opens and bounces.
+    /// The receiving document expands and bounces.
     fn landed_in(&mut self, folder: Option<&str>) {
         if let Some(f) = folder { self.expanded.insert(f.to_string()); self.folder_drag.kick(f, 4.5); }
         self.folded[1] = false;

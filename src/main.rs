@@ -50,7 +50,7 @@ mod local_files;
 mod sidebar_drag;
 mod sidebar_drop;
 mod file_drop;
-mod folders;
+mod create_doc;
 mod file_history;
 mod settings;
 mod l10n;

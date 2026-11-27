@@ -50,7 +50,7 @@ fn divider() -> Div {
 }
 
 impl Workspace {
-    fn close_doc_menu(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn close_doc_menu(&mut self, cx: &mut Context<Self>) {
         self.doc_menu = false;
         self.doc_sub = None;
         cx.notify();
@@ -94,39 +94,46 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Write "<标题> 副本" of `id` to the library; the caller refreshes the list.
+    /// Copy a document and its descendants alongside the original.
     pub(crate) fn copy_doc(&mut self, id: &str, cx: &mut Context<Self>) -> Option<String> {
-        if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) { return self.copy_folder(id, cx); }
-        let mut doc = self.doc_of(id, cx)?;
-        let title = crate::localized_format!("{} 副本", "{} copy", display_title(&doc.title.text));
-        doc.title = crate::model::RichText::plain(title);
-        let width = self.entries.iter().find(|e| e.id == id).map(|e| e.meta.width).unwrap_or_default();
-        match self.write_note_copy(id, doc) {
-            Ok(new) => {
-                let _ = self.store.set_width(&new, width);
-                let parent = self.entries.iter().find(|e| e.id == id).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
-                if let Some(parent) = parent { let _ = self.store.set_parent(&new, Some(&parent)); }
-                Some(new)
+        let ids = crate::tree::Tree::new(&self.entries).subtree(id);
+        let mut copies = std::collections::HashMap::<String, String>::new();
+        for key in ids {
+            let entry = self.entries.iter().find(|e| e.id == key)?.clone();
+            let parent = entry.meta.parent.as_ref().map(|p| copies.get(p).unwrap_or(p));
+            let Some(mut doc) = self.doc_of(&key, cx) else {
+                self.show_toast_kind(crate::ui::ToastKind::Error, crate::settings::tr("无法读取待复制的文档", "Could not read the document to duplicate"), cx);
+                return None;
+            };
+            if key == id {
+                doc.title = crate::model::RichText::plain(crate::localized_format!("{} 副本", "{} copy", display_title(&doc.title.text)));
             }
-            Err(e) => {
-                self.status = crate::app::SaveStatus::Failed(crate::localized_format!("创建副本失败：{}", "Could not duplicate document: {}", crate::settings::diagnostic(&e.to_string())));
-                None
+            match self.write_note_copy(&key, doc, parent.map(String::as_str)) {
+                Ok(new) => {
+                    if entry.meta.width != PageWidth::Standard { let _ = self.store.set_width(&new, entry.meta.width); }
+                    copies.insert(key, new);
+                }
+                Err(e) => {
+                    self.status = crate::app::SaveStatus::Failed(crate::localized_format!("创建副本失败：{}", "Could not duplicate document: {}", crate::settings::diagnostic(&e.to_string())));
+                    return None;
+                }
             }
         }
+        copies.remove(id)
     }
 
-    pub(crate) fn write_note_copy(&mut self, id: &str, mut doc: crate::model::Document) -> anyhow::Result<String> {
-        let root = crate::store::Store::root_dir();
+    pub(crate) fn write_note_copy(&mut self, id: &str, mut doc: crate::model::Document, parent: Option<&str>) -> anyhow::Result<String> {
+        let root = self.store.library_root();
         if self.store.is_markdown(id) {
             if let Some(path) = self.store.local_path(id) {
                 if let Some(dir) = path.parent() { crate::markdown::wiki_images(&mut doc.blocks, dir, None); }
                 crate::editor::image::copy_local_markdown_images(&root, &mut doc.blocks).map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             let front = self.store.front_matter_of(id);
-            self.store.create_markdown(&doc, &front)
+            self.store.create_markdown_in(&doc, &front, parent)
         } else {
             crate::store::Store::copy_drawings(&root, &mut doc.blocks)?;
-            self.store.create_from(&doc)
+            self.store.create_from_in(&doc, parent)
         }
     }
 
@@ -144,6 +151,8 @@ impl Workspace {
         }
         let Some(id) = self.current.clone() else { return vec![] };
         let entry = self.entries.iter().find(|e| e.id == id);
+        let managed = entry.is_some_and(|e| !e.meta.local());
+        let (child_id, import_id) = (id.clone(), id.clone());
         let pinned = entry.is_some_and(|e| e.meta.pinned);
         let starred = entry.is_some_and(|e| e.meta.starred > 0);
         let width = entry.map(|e| e.meta.width).unwrap_or_default();
@@ -191,6 +200,11 @@ impl Workspace {
                         w.open_move(vec![mv_id.clone()], window, cx);
                     })),
             )
+            .when(managed, |d| d.child(menu_item("dm-new-child", "plus", crate::settings::tr("新建子文档", "New child document"), false, false)
+                .on_hover(hover_sub(None))
+                .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| {
+                    w.show_child_create_menu(child_id.clone(), ev.position() - point(px(180.), px(0.)), cx);
+                }))))
             .child(
                 menu_item(
                     "dm-pin",
@@ -279,7 +293,7 @@ impl Workspace {
             Some(DocSub::Width) => Some((item_top(0, 0) - 1. - PAD, self.width_panel(width, cx).child(recorder()).into_any_element())),
             // Level the submenu's first item with 下载为.
             Some(DocSub::Download) => Some((
-                item_top(6, 3) - 1. - PAD,
+                item_top(6 + usize::from(managed), 3) - 1. - PAD,
                 {
                     let pdf = id.clone();
                     popover()
@@ -295,7 +309,7 @@ impl Workspace {
                 },
             )),
             Some(DocSub::More) => Some((
-                if crate::printing::SUPPORTED { item_top(10, 6) } else { item_top(9, 5) } - 1. - PAD,
+                if crate::printing::SUPPORTED { item_top(10 + usize::from(managed), 6) } else { item_top(9 + usize::from(managed), 5) } - 1. - PAD,
                 popover()
                     .id("dm-more-menu")
                     .occlude()
@@ -303,6 +317,12 @@ impl Workspace {
                     .px(px(5.))
                     .py(px(PAD))
                     .child(recorder())
+                    .when(managed, |d| d.child(sub_item("dm-import-child", crate::settings::tr("导入为子文档", "Import as child documents"))
+                        .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| {
+                            w.close_doc_menu(cx);
+                            w.import_menu = Some((Some(import_id.clone()), ev.position()));
+                            cx.notify();
+                        }))))
                     .child(sub_item("dm-copy-md", crate::settings::text("复制为 Markdown")).on_click(cx.listener(|w, _, _, cx| {
                         w.close_doc_menu(cx);
                         if let Some(ed) = w.editor.clone() {

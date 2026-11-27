@@ -35,7 +35,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/home.png" width="100%" alt="The Quiet.md home screen: a document tree on the left and a list of folders and notes on the right.">
+  <img src="docs/images/home.png" width="100%" alt="The Quiet.md home screen: a document tree on the left and a list of documents on the right.">
 </p>
 
 > [!NOTE]
@@ -45,7 +45,7 @@
 
 **⚡ Fast, the native kind of fast.** The whole interface is drawn on the GPU by Rust and [GPUI](https://www.gpui.rs/). No WebView, no Electron. In a one-million-character document, typing, deleting and scrolling all stay under 6 ms per frame at P95.
 
-**🔒 Local-first. Your files are yours.** No account, no cloud, and nothing goes over the network by default. Your library is an ordinary folder on your computer: `quiet.json` manages virtual folders and display titles, while document bodies stay at fixed `Notes/<UUID>.xml` (or `.md`) paths. Images, attachments and drawing sources are stored in `Images/`, `Files/` and `Drawings/` at the library root. Moving, renaming or trashing an entry only changes metadata. Manage it with Git, iCloud or any sync tool you like; if you ever stop using Quiet.md, your files are still there.
+**🔒 Local-first. Your files are yours.** No account, no cloud, and nothing goes over the network by default. Your library is an ordinary folder on your computer: `quiet.json` stores document hierarchy and display titles, while document bodies stay at fixed `Notes/<UUID>.xml` (or `.md`) paths. Images, attachments and drawing sources are stored in `Images/`, `Files/` and `Drawings/` at the library root. Moving, renaming or trashing an entry only changes metadata. Manage it with Git, iCloud or any sync tool you like; if you ever stop using Quiet.md, your files are still there.
 
 **📝 A full rich-text editor that speaks Feishu (Lark) DocxXML.** Notes are saved in the DocxXML format used by Feishu (Lark) Docs, so copy-paste, import and export keep their structure. Headings, to-dos, tables, columns, callouts, code, math, images and attachments — the blocks you reach for when writing documents are all there.
 
@@ -102,8 +102,8 @@ A 120 Hz display gives each frame 8.3 ms. Even at P95 on a million-character doc
 - Insert a **Drawing** from the slash menu in a DocxXML note. Draw shapes, arrows, freehand strokes and text, or import an `.excalidraw` file. Save inserts a preview. Click it to select the drawing or double-click it to edit. Export from the drawing editor to get the editable `.excalidraw` file.
 - **Version history**: each note keeps snapshots of its previous contents as it saves (20 by default, 1–30 under Settings › Documents). A drawer lists them by day; clicking one shows that version in place, read-only, with the blocks it added or rewrote tinted and a one-click restore. Important versions can be named.
 - **Git backup**: Quiet.md initializes a local Git repository when opening a library that needs one. Set your commit identity and any remote under Settings › Git backup and sync. Commit locally, sync over HTTPS or SSH, and browse commits from version history. Images, attachments and drawings use built-in Git LFS. See [the Git guide](docs/GIT.md).
-- **Organizing**: a document tree, pinning, favorites, full-text search and a trash. Browse deleted folders, open documents read-only and view their version history; restore a document to edit it again. Deleted files stay in Trash until restored; Trash is included in Git backup, with no automatic expiry or permanent-delete action.
-- **Import and export**: import Markdown folders (Obsidian picture embeds and callouts included) and Feishu (Lark) DocxXML; export Markdown and PDF, or print directly. Drag files from Finder onto Home or straight into a sidebar folder. Pasting from Feishu or a web page keeps the structure.
+- **Organizing**: a document tree, pinning, favorites, full-text search and a trash. Organize related documents under any editable document. Deleting a parent sends all its descendants to Trash. Open deleted documents read-only, browse their children and version history, or restore the branch to edit it again. Deleted files stay in Trash until restored; Trash is included in Git backup, with no automatic expiry or permanent-delete action.
+- **Import and export**: import Markdown folders (Obsidian picture embeds and callouts included) and Feishu (Lark) DocxXML; export Markdown and PDF, or print directly. Drag files from Finder onto Home or onto a document in the sidebar to import under it. Pasting from Feishu or a web page keeps the structure.
 - **Shortcuts**: press `⌘ /` (`Ctrl+/` on Windows) to see them all. Every one can be rebound. On Windows, Ctrl stands in for ⌘ and Alt for ⌥. The app shows the keys for your system.
 - **Themes**: four built-in styles — Craft, Feishu, Notion and Obsidian — each with a dark variant, or write your own in CSS; see [docs/THEMES.md](docs/THEMES.md).
 

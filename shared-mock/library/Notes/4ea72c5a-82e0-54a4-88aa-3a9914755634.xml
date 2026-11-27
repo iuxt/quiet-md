@@ -20,7 +20,7 @@
 <h1>Three ways to write</h1>
 <grid><column width-ratio="0.3333"><h3>Slash commands</h3><p>Type <code>/</code> on an empty line to insert a block. Keep typing to filter: try <code>/table</code> or <code>/code</code>.</p></column><column width-ratio="0.3333"><h3>Markdown</h3><p>Type <code># </code> for a heading or <code>- </code> for a list. Wrapping words in <code>**bold**</code> applies <b>bold</b> as you finish typing.</p></column><column width-ratio="0.3334"><h3>Keyboard shortcuts</h3><p>Use <code>⌘ B</code> for bold and <code>⌘ ⌥ 1</code> for a heading. Press <code>⌘ /</code> to see the available shortcuts.</p></column></grid>
 <h1>Explore the guides</h1>
-<p>Read them in order, or jump straight to what you need. In the sidebar, the writing guides are kept together in the Writing and formatting folder.</p>
+<p>Read them in order, or jump straight to what you need. In the sidebar, the writing guides are listed under <cite type="doc" href="411cf767-cce4-5f7b-8006-6dcb8e3adeaa.xml" file-type="docx">Writing and formatting</cite>.</p>
 <table><colgroup><col width="300"/><col width="390"/></colgroup><thead><tr><th><p>Guide</p></th><th><p>What you will learn</p></th></tr></thead><tbody>
 <tr><td><p><cite type="doc" href="3e98a021-e013-5d8f-b41f-5c3fbf3dbfc3.xml" file-type="docx">Writing: text, headings and paragraphs</cite></p></td><td><p>Headings, text styles, colors, links, alignment, indentation and Markdown shortcuts</p></td></tr>
 <tr><td><p><cite type="doc" href="fef343a5-4478-5c2a-9c3b-efa884d71ddb.xml" file-type="docx">Blocks: lists, quotes and callouts</cite></p></td><td><p>Lists, tasks, quotes, callouts, dividers, reminders, countdowns and buttons</p></td></tr>
@@ -42,7 +42,7 @@
 <tr><td><p><code>⌘ ]</code> / <code>⌘ /</code></p></td><td><p>Toggle the sidebar / View shortcuts</p></td></tr>
 </tbody></table>
 <h1>Your notes belong to you</h1>
-<p>Your documents are stored in <code>~/Documents/Quiet.md</code>. Document files live in <code>notes</code>. Images, attachments and drawings go in <code>Image</code>, <code>Files</code> and <code>Drawing</code>. Back up the whole folder with Time Machine or copy it to another Mac.</p>
+<p>Your documents are stored in <code>~/Documents/Quiet.md</code>. Document files live in <code>Notes</code>. Images, attachments and drawings go in <code>Images</code>, <code>Files</code> and <code>Drawings</code>. Back up the whole folder with Time Machine or copy it to another Mac.</p>
 <blockquote><p>Writing and reading local notes do not require a network connection. Remote images can access the network when loaded; you can control automatic downloading in Settings.</p></blockquote>
 <p>For backup and migration details, see <cite type="doc" href="f3a86f08-fa7b-5d70-bf15-82f7629bd818.xml" file-type="docx">Import, export and back up</cite>.</p>
 <hr/><p align="center">Ready to start? Open <cite type="doc" href="3e98a021-e013-5d8f-b41f-5c3fbf3dbfc3.xml" file-type="docx">Writing: text, headings and paragraphs</cite>.</p>

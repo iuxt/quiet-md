@@ -68,24 +68,21 @@ impl HomeSort {
 pub struct Home {
     pub tab: HomeTab,
     list_scroll: ScrollHandle,
-    pub(crate) folder_scroll: ScrollHandle,
     list_scrollbar: Rc<scrollbar::Scrollbar>,
-    pub(crate) folder_scrollbar: Rc<scrollbar::Scrollbar>,
     /// The 搜索 dialog's results (`search.rs`).
     pub(crate) search_scrollbar: Rc<scrollbar::Scrollbar>,
     sort: HomeSort,
-    folders_first: bool,
     pub sort_menu: bool,
     rows: Option<HomeRows>,
     /// Last-frame bounds of the controls the popovers hang from.
     anchors: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
     pub(crate) file_drop: Option<crate::file_drop::FileDrop>,
-    /// Visible folder rows, used for file drops on the page.
-    pub(crate) folder_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+    /// Visible library document rows, used for file drops on the page.
+    pub(crate) doc_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
 }
 
 struct HomeRows {
-    key: (HomeTab, HomeSort, bool, u64),
+    key: (HomeTab, HomeSort, u64),
     indices: Rc<Vec<usize>>,
 }
 
@@ -94,18 +91,15 @@ impl Default for Home {
         Home {
             tab: HomeTab::Recent,
             list_scroll: Default::default(),
-            folder_scroll: Default::default(),
             list_scrollbar: Default::default(),
-            folder_scrollbar: Default::default(),
             search_scrollbar: Default::default(),
             // Manual: the sidebar's order (`Meta::place`), so both lists read the same.
             sort: HomeSort::Manual,
-            folders_first: false,
             sort_menu: false,
             rows: None,
             anchors: Default::default(),
             file_drop: None,
-            folder_bounds: Default::default(),
+            doc_bounds: Default::default(),
         }
     }
 }
@@ -157,7 +151,6 @@ fn cell_text(e: &Entry, c: Col) -> String {
 
 /// A document's icon: its emoji, or the monochrome page glyph.
 pub(crate) fn entry_icon(e: &Entry) -> AnyElement {
-    if e.meta.folder.is_some() { return icon("folder", 22., Theme::icon()).mr(px(13.)).into_any_element(); }
     match &e.icon {
         _ if e.meta.markdown => crate::search::doc_icon_named("doc-md").mr(px(12.)).into_any_element(),
         Some(em) => div().size(px(24.)).mr(px(12.)).flex_none().flex().items_center().justify_center().text_size(px(18.)).child(em.clone()).into_any_element(),
@@ -198,11 +191,11 @@ impl Workspace {
     fn home_rows(&mut self) -> Rc<Vec<usize>> {
         let eligible = |e: &Entry| match self.home.tab {
             HomeTab::Recent => e.meta.parent.is_none(),
-            HomeTab::Starred => e.meta.folder.is_none() && e.meta.starred > 0,
+            HomeTab::Starred => e.meta.starred > 0,
         };
         let mut stamp = rustc_hash::FxHasher::default();
         for (i, e) in self.entries.iter().enumerate().filter(|(_, e)| eligible(e)) {
-            (i, &e.id, e.meta.folder.is_some()).hash(&mut stamp);
+            (i, &e.id).hash(&mut stamp);
             match self.home.sort {
                 HomeSort::Manual => e.meta.place().hash(&mut stamp),
                 HomeSort::Visited => visited(e).hash(&mut stamp),
@@ -211,20 +204,13 @@ impl Workspace {
                 HomeSort::Title => e.title.hash(&mut stamp),
             }
         }
-        let key = (self.home.tab, self.home.sort, self.home.folders_first, stamp.finish());
+        let key = (self.home.tab, self.home.sort, stamp.finish());
         if let Some(rows) = &self.home.rows && rows.key == key { return rows.indices.clone(); }
         let mut indices: Vec<_> = self.entries.iter().enumerate().filter_map(|(i, e)| eligible(e).then_some(i)).collect();
         indices.sort_by(|&a, &b| self.compare_home_entries(&self.entries[a], &self.entries[b]));
         let indices = Rc::new(indices);
         self.home.rows = Some(HomeRows { key, indices: indices.clone() });
         indices
-    }
-
-    /// One level of the tree as 主页 shows it (a folder's page uses it too).
-    pub(crate) fn level_entries(&self, parent: Option<&str>) -> Vec<Entry> {
-        let mut entries: Vec<_> = self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent).cloned().collect();
-        entries.sort_by(|a, b| self.compare_home_entries(a, b));
-        entries
     }
 
     pub(crate) fn prepare_manual_order(&mut self, cx: &mut Context<Self>) -> bool {
@@ -236,9 +222,6 @@ impl Workspace {
         true
     }
 
-    pub(crate) fn manual_home_sort(&self) -> bool { self.home.sort == HomeSort::Manual && self.home.tab == HomeTab::Recent }
-
-    /// Mix folders and documents unless the user explicitly groups folders first.
     fn compare_home_entries(&self, a: &Entry, b: &Entry) -> std::cmp::Ordering {
         let order = match self.home.sort {
             // The sidebar's order: new pages at the top in both.
@@ -248,7 +231,7 @@ impl Workspace {
             HomeSort::Created => b.meta.created.cmp(&a.meta.created),
             HomeSort::Title => a.title.cmp(&b.title),
         };
-        (if self.home.folders_first && self.home.sort != HomeSort::Manual { b.meta.folder.is_some().cmp(&a.meta.folder.is_some()) } else { std::cmp::Ordering::Equal }).then(order).then_with(|| a.id.cmp(&b.id))
+        order.then_with(|| a.id.cmp(&b.id))
     }
 
     fn open_row_menu(&mut self, id: &str, key: &str, cx: &mut Context<Self>) {
@@ -293,54 +276,41 @@ impl Workspace {
                 w.row_menu = Some(RowMenu { id: menu_id.clone(), pos: ev.position, corner: Corner::TopLeft, sub: false, batch: false });
                 cx.notify();
             })));
-        if e.meta.folder.is_some() {
-            let bounds = self.home.folder_bounds.clone();
-            let (id, target) = (e.id.clone(), e.id.clone());
-            row.child(canvas(move |b, window, _| {
-                let mask = window.content_mask().bounds;
-                if b.intersects(&mask) { bounds.borrow_mut().insert(id.clone(), b.intersect(&mask)); }
-            }, |_, _, _, _| {}).absolute().inset_0())
-                .when(self.batch.is_none(), |d| d.drag_over::<HomeRowDrag>(|s, _, _, _| s.bg(Theme::fill_hover_strong()))
-                    .on_drop(cx.listener(move |w, drag: &HomeRowDrag, _, cx| {
-                        if w.entries.iter().any(|e| e.id == drag.id && e.meta.folder.is_none()) {
-                            w.move_into_folder(&drag.id, &target, cx);
-                        }
-                    })))
-        } else {
-            row.when(self.batch.is_none(), |d| d.on_drag(HomeRowDrag { id: e.id.clone(), title: display_title(&e.title), markdown: e.meta.markdown },
-                |drag, _, _, cx| cx.new(|_| drag.clone())))
-        }
+        if e.meta.local() { return row; }
+        let bounds = self.home.doc_bounds.clone();
+        let (id, target) = (e.id.clone(), e.id.clone());
+        row.child(canvas(move |b, window, _| {
+            let mask = window.content_mask().bounds;
+            if b.intersects(&mask) { bounds.borrow_mut().insert(id.clone(), b.intersect(&mask)); }
+        }, |_, _, _, _| {}).absolute().inset_0())
+            .when(self.batch.is_none(), |d| d
+                .on_drag(HomeRowDrag { id: e.id.clone(), title: display_title(&e.title), markdown: e.meta.markdown }, |drag, _, _, cx| cx.new(|_| drag.clone()))
+                .drag_over::<HomeRowDrag>(|s, _, _, _| s.bg(Theme::fill_hover_strong()))
+                .on_drop(cx.listener(move |w, drag: &HomeRowDrag, _, cx| w.move_into_document(&drag.id, &target, cx))))
     }
 
     pub(crate) fn home_row_actions(&self, e: &Entry, cx: &mut Context<Self>) -> Div {
         div().flex_none().flex().items_center()
             .when(self.batch.is_none(), |d| d
-                .when(e.meta.folder.is_some(), |d| {
-                    let folder = e.id.clone();
+                .when(!e.meta.local(), |d| {
+                    let parent = e.id.clone();
                     d.child(div().id(SharedString::from(format!("row-new-{}", e.id))).size(px(24.)).rounded(px(6.)).flex().items_center().justify_center().cursor_pointer()
-                        .hover(|s| s.bg(Theme::fill_hover_strong())).tip(crate::settings::tr("新建文档", "New document"), None)
+                        .hover(|s| s.bg(Theme::fill_hover_strong())).tip(crate::settings::tr("新建子文档", "New child document"), None)
                         .child(icon("plus", 15., Theme::icon()))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation(); w.new_child(&folder, window, cx); })))
+                        .on_click(cx.listener(move |w, _, window, cx| { cx.stop_propagation(); w.new_child(&parent, window, cx); })))
                 })
                 .child(self.home_more(e, format!("home-more-{}", e.id), cx)))
-    }
-
-    /// A newly opened folder page starts at its top.
-    pub(crate) fn reset_folder_scroll(&self) {
-        self.home.folder_scroll.set_offset(point(px(0.), px(0.)));
     }
 
     /// 主页's sort order is remembered (`settings.json`).
     pub(crate) fn load_home(&mut self) {
         let s = self.store.settings();
-        self.home.folders_first = s.home_folders_first;
         self.home.sort = s.home_sort.as_deref().map(HomeSort::of).unwrap_or(HomeSort::Manual);
     }
 
     fn save_home(&mut self) {
         let mut s = self.store.settings();
-        s.home_folders_first = self.home.folders_first;
         s.home_sort = Some(self.home.sort.key().to_string());
         if let Err(e) = self.store.save_settings(&s) { eprintln!("无法保存主页排序：{e}"); }
     }
@@ -354,7 +324,7 @@ impl Workspace {
             .when(narrow, |d| d.child(crate::ui::header_icon("home-search", "search").mr(px(4.))
                 .tip(crate::settings::tr("搜索文档", "Search documents"), Some(crate::shortcuts::hint("workspace::FocusSearch", "⌘ + J")))
                 .on_click(cx.listener(|w, _, window, cx| w.open_search(window, cx)))))
-            .child(self.place_button("home-more", None, cx))
+            .child(self.place_button("home-more", cx))
             .child(self.import_button("home-import", None, cx))
             .child(
             crate::ui::header_icon("home-new", "plus")
@@ -590,11 +560,6 @@ impl Workspace {
                             cx.notify();
                         })));
                 }
-                let g = SharedString::from("home-folders-first");
-                menu = menu.child(menu_row(g.clone(), g.clone()).when(self.home.sort == HomeSort::Manual, |d| d.opacity(0.4))
-                    .child(menu_label(crate::settings::tr("文件夹优先", "Folders first"), g.clone(), gpui::white()).flex_1())
-                    .when(self.home.folders_first && self.home.sort != HomeSort::Manual, |d| d.child(menu_glyph("check", 14., g)))
-                    .on_click(cx.listener(|w, _, _, cx| { if w.home.sort == HomeSort::Manual { return; } w.home.folders_first = !w.home.folders_first; w.save_home(); w.home.sort_menu = false; cx.notify(); })));
                 out.push(place(point(b.right(), b.bottom() + px(4.)), Corner::TopRight, menu));
             }
         out

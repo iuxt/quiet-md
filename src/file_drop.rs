@@ -1,4 +1,4 @@
-//! File drops on the library home and folder pages.
+//! File drops on the library home.
 use crate::app::{View, Workspace};
 use crate::settings::display_title;
 use crate::sidebar_drag::{Fade, Spring};
@@ -160,11 +160,11 @@ fn glass(o: Point<Pixels>, p: &Pose, window: &mut Window) {
     if let Ok(path) = lit.build() { window.paint_path(path, theme::rgbaf(255, 255, 255, if theme::dark() { 0.18 } else { 0.85 + 0.15 * p.open.clamp(0., 1.) })); }
 }
 
-/// A drag of files from outside (the Finder) over 主页 or a folder's page:
+/// A drag of files from outside (the Finder) over 主页:
 /// the list dims behind a receiving tray, a glass folder whose papers (one
 /// per file, up to three) rise out of it, follow the pointer and part as it
 /// comes near; let go, they slide in, the folder dips, and the documents are
-/// imported where it says. The tray steps back when the pointer is over a folder row.
+/// imported where it says. The tray steps back when the pointer is over a document row.
 pub(crate) struct FileDrop {
     paths: Vec<std::path::PathBuf>,
     md: usize,
@@ -172,7 +172,7 @@ pub(crate) struct FileDrop {
     dirs: usize,
     other: usize,
     at: Point<Pixels>,
-    /// The folder row under the pointer.
+    /// The document row under the pointer.
     over: Option<String>,
     /// The pane's bounds last frame: anywhere in it takes the drop.
     zone: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
@@ -240,7 +240,7 @@ impl FileDrop {
 }
 
 impl Workspace {
-    /// Files dragged over 主页 or a folder's page (the pointer, the folder
+    /// Files dragged over 主页 (the pointer, the folder
     /// row under it, whether it is over the tray).
     pub(crate) fn file_drag_move(&mut self, ev: &DragMoveEvent<ExternalPaths>, cx: &mut Context<Self>) {
         // Every listener hears every move: off the page (over the sidebar) it steps back.
@@ -254,10 +254,10 @@ impl Workspace {
 
     /// `file_drag_move` from a position and the dragged paths (scripted runs too).
     pub(crate) fn file_drag_at(&mut self, at: Point<Pixels>, paths: Vec<std::path::PathBuf>, cx: &mut Context<Self>) {
-        if !matches!(self.view, View::Home | View::Folder) { return; }
+        if self.view != View::Home { return; }
         let fresh = self.home.file_drop.as_ref().is_none_or(|d| d.landed.is_some());
         if fresh { self.home.file_drop = Some(FileDrop::new(paths)); }
-        let over = self.home.folder_bounds.borrow().iter().find(|(_, b)| b.contains(&at)).map(|(id, _)| id.clone());
+        let over = self.home.doc_bounds.borrow().iter().find(|(_, b)| b.contains(&at)).map(|(id, _)| id.clone());
         let Some(d) = self.home.file_drop.as_mut() else { return };
         d.leaving = false;
         d.over = over;
@@ -266,8 +266,7 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Let go over the list: import into the folder under the pointer, the
-    /// folder page shown, or the top of 我的文档; nothing to import, a shake.
+    /// Import under the document row at the pointer, or at the top of 我的文档.
     pub(crate) fn file_dropped(&mut self, paths: &ExternalPaths, window: &mut Window, cx: &mut Context<Self>) {
         let paths = paths.paths().to_vec();
         self.file_drag_at(window.mouse_position(), paths.clone(), cx);
@@ -275,9 +274,8 @@ impl Workspace {
     }
 
     pub(crate) fn file_drop_paths(&mut self, paths: Vec<std::path::PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
-        if !matches!(self.view, View::Home | View::Folder) { return; }
+        if self.view != View::Home { return; }
         if self.home.file_drop.is_none() { self.home.file_drop = Some(FileDrop::new(paths)); }
-        let page = if self.view == View::Folder { self.folder_current.clone() } else { None };
         let Some(d) = self.home.file_drop.as_mut() else { return };
         if d.importable() == 0 {
             d.shake.v += 34.;
@@ -285,7 +283,7 @@ impl Workspace {
             cx.notify();
             return;
         }
-        let target = d.over.clone().or(page);
+        let target = d.over.clone();
         d.landed = Some(target.clone());
         d.drop_at = d.at;
         d.land.to = 1.;
@@ -303,13 +301,12 @@ impl Workspace {
 
     /// The veil and the tray, over the page while files are dragged in.
     pub(crate) fn render_file_drop(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if !matches!(self.view, View::Home | View::Folder) { self.home.file_drop = None; return None; }
+        if self.view != View::Home { self.home.file_drop = None; return None; }
         let dragging = cx.has_active_drag() || crate::devtools::file_drag();
         let target_title = |w: &Self, id: Option<&String>| id.and_then(|id| w.entries.iter().find(|e| &e.id == id)).map(|e| display_title(&e.title))
             .unwrap_or_else(|| crate::settings::tr("我的文档", "My documents").to_string());
-        let page = if self.view == View::Folder { self.folder_current.clone() } else { None };
         let d = self.home.file_drop.as_ref()?;
-        let place = target_title(self, d.landed.clone().flatten().as_ref().or(d.over.as_ref()).or(page.as_ref()));
+        let place = target_title(self, d.landed.clone().flatten().as_ref().or(d.over.as_ref()));
         let d = self.home.file_drop.as_mut()?;
         // The drag went away without a drop here (left the window, or let go elsewhere).
         if !dragging && d.landed.is_none() { d.leaving = true; }

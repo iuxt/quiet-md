@@ -147,7 +147,8 @@ impl LibraryRepo {
             let connection = origin.connect_auth(git2::Direction::Fetch, Some(callbacks(auth, config)), None)?;
             if let Ok(branch) = connection.default_branch() && let Ok(branch) = branch.as_str() { repo.repo.set_head(branch)?; }
         }
-        repo.pull(auth)?;
+        repo.pull_from_remote(auth, true)?;
+        Store::prepare_layout(root)?;
         Ok(repo)
     }
 
@@ -345,7 +346,9 @@ impl LibraryRepo {
     }
 
     /// Fast-forward only. Fetch/LFS failures never change current files or HEAD.
-    pub fn pull(&self, auth: &Auth) -> Result<bool> {
+    pub fn pull(&self, auth: &Auth) -> Result<bool> { self.pull_from_remote(auth, false) }
+
+    fn pull_from_remote(&self, auth: &Auth, cloning: bool) -> Result<bool> {
         ensure!(self.ready_to_pull()?, "请先提交本地变更，再拉取远端版本");
         let config = self.config()?; validate_remote(&config.remote)?;
         let mut remote = self.remote(&config)?;
@@ -360,7 +363,7 @@ impl LibraryRepo {
         }
         let tree = target.tree()?;
         let files = tree_files(&self.repo, &tree)?;
-        validate_tree(&self.repo, &files)?;
+        validate_library_tree(&self.repo, &files, cloning)?;
         let pointers = self.pointers(Some(target.id()), &tree)?;
         let lfs = lfs::Lfs::new(self.repo.path());
         lfs.transfer(&config, &self.repo.config()?, &pointers, false, auth)?;
@@ -380,21 +383,35 @@ impl LibraryRepo {
         let status = self.status()?;
         if status.changes.is_empty() { return Ok(true) }
         if let Some(head) = status.head {
-            // Internal files are excluded from the snapshot. Allow a pull when
-            // the only other difference is the app's update to its ignore rule.
-            let mut changes = status.changes.iter().filter(|c| !is_internal_path(&c.path));
-            let Some(change) = changes.next() else { return Ok(true) };
-            if change.path != ".gitignore" || change.staged || changes.next().is_some() { return Ok(false) }
+            let changes: Vec<_> = status.changes.iter().filter(|c| !is_internal_path(&c.path)).collect();
+            if changes.is_empty() { return Ok(true); }
+            if changes.iter().any(|c| c.staged) { return Ok(false); }
             let tree = self.repo.find_commit(Oid::from_str(&head)?)?.tree()?;
-            let Some(entry) = tree.get_name(".gitignore") else { return Ok(false) };
-            let content = self.repo.find_blob(entry.id())?;
-            let Some(updated) = updated_internal_ignore(std::str::from_utf8(content.content())?) else { return Ok(false) };
-            let rules = std::fs::read(safe_path(&self.root, ".gitignore")?)?;
-            return Ok(rules == updated.as_bytes());
+            // Accept deterministic layout and ignore-rule upgrades only while
+            // their bytes match the changes the app would make from HEAD.
+            let mut generated = BTreeMap::new();
+            if changes.iter().any(|c| c.path == MANIFEST) && let Some(entry) = tree.get_name(MANIFEST)
+                && let Some(upgrade) = Manifest::upgrade(self.repo.find_blob(entry.id())?.content()).ok().flatten() {
+                generated.insert(MANIFEST.to_string(), serde_json::to_vec_pretty(&upgrade.manifest)?);
+                generated.extend(upgrade.bodies.into_iter().map(|(path, xml)| (path, xml.into_bytes())));
+            }
+            if changes.iter().any(|c| c.path == ".gitignore") && let Some(entry) = tree.get_name(".gitignore") {
+                let content = self.repo.find_blob(entry.id())?;
+                if let Some(rules) = updated_internal_ignore(std::str::from_utf8(content.content())?) {
+                    generated.insert(".gitignore".to_string(), rules.into_bytes());
+                }
+            }
+            for change in changes {
+                let Some(expected) = generated.get(&change.path) else { return Ok(false); };
+                let path = safe_path(&self.root, &change.path)?;
+                if !std::fs::metadata(&path).is_ok_and(|meta| meta.len() == expected.len() as u64)
+                    || !std::fs::read(&path).is_ok_and(|bytes| bytes == *expected) { return Ok(false); }
+            }
+            return Ok(true);
         }
         // A fresh empty clone has only bootstrap metadata, not an initial commit.
         let shared = Manifest::parse(&std::fs::read(self.root.join(MANIFEST))?)?;
-        let empty = shared.folders.is_empty() && shared.notes.is_empty() && shared.trash.is_empty();
+        let empty = shared.notes.is_empty() && shared.trash.is_empty();
         Ok(empty
             && self.files()?.iter().all(|p| matches!(p.as_str(), MANIFEST | ".gitattributes" | ".gitignore")))
     }
@@ -411,7 +428,7 @@ impl LibraryRepo {
 
     fn tree_manifest(&self, tree: &git2::Tree<'_>) -> Result<BTreeMap<String, Metadata>> {
         let entry = tree.get_name(MANIFEST).context("提交中缺少 quiet.json")?;
-        manifest(self.repo.find_blob(entry.id())?.content())
+        Ok(manifest_entries(Manifest::parse_historical(self.repo.find_blob(entry.id())?.content())?))
     }
 
     fn revision_asset_pointer(&self, commit: &str, source: &str) -> Result<Option<(String, Pointer)>> {
@@ -583,11 +600,14 @@ struct Metadata { id: String, extra: BTreeMap<String, serde_json::Value> }
 struct DocumentKey { body: Oid, path: String, metadata: String, drawings: BTreeMap<String, Option<Oid>> }
 
 fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, Metadata>> {
-    let shared = Manifest::parse(bytes)?;
+    Ok(manifest_entries(Manifest::parse(bytes)?))
+}
+
+fn manifest_entries(shared: Manifest) -> BTreeMap<String, Metadata> {
     let mut entries = BTreeMap::new();
     for note in shared.notes {
         let mut extra = note.extra; extra.insert("title".into(), note.title.into());
-        extra.insert("folderId".into(), note.folder.into());
+        extra.insert("folderId".into(), note.parent.into());
         entries.insert(format!("{NOTES}/{}", note.filename), Metadata { id: note.id, extra });
     }
     for deleted in shared.trash {
@@ -596,7 +616,7 @@ fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, Metadata>> {
             entries.insert(format!("{NOTES}/{filename}"), Metadata { id: deleted.id, extra });
         }
     }
-    Ok(entries)
+    entries
 }
 
 fn collect(root: &Path, dir: &str, out: &mut BTreeSet<String>) -> Result<()> {
@@ -630,8 +650,14 @@ fn tree_files(repo: &Repository, tree: &git2::Tree<'_>) -> Result<BTreeMap<Strin
 }
 
 fn validate_tree(repo: &Repository, files: &BTreeMap<String, Oid>) -> Result<()> {
+    validate_library_tree(repo, files, false)
+}
+
+fn validate_library_tree(repo: &Repository, files: &BTreeMap<String, Oid>, cloning: bool) -> Result<()> {
     let bytes = repo.find_blob(*files.get(MANIFEST).context("远端缺少 quiet.json")?)?;
-    let entries = manifest(bytes.content()).context("远端文档库格式不兼容")?;
+    let shared = if cloning { Manifest::parse_historical(bytes.content()) } else { Manifest::parse(bytes.content()) }
+        .context("远端文档库格式不兼容")?;
+    let entries = manifest_entries(shared);
     for path in files.keys() {
         let allowed = matches!(path.as_str(), MANIFEST | ".gitattributes" | ".gitignore")
             || entries.contains_key(path) || is_asset_path(path);

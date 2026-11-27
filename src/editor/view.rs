@@ -52,6 +52,7 @@ pub struct SubPage {
     pub id: String,
     pub title: String,
     pub icon: Option<String>,
+    pub markdown: bool,
 }
 
 /// Open slash menu: `trigger` is the byte offset of `/` (or `、`), `start`
@@ -601,9 +602,7 @@ impl Editor {
         cx.notify();
     }
 
-    /// 重命名 from the sidebar: swap the title text as one undoable edit,
-    /// leaving the caret (clamped) and the scroll position alone.
-    /// The open document's child pages, for 子页面列表 blocks.
+    /// The open document's children, used below the body and in 子页面列表 blocks.
     pub fn set_sub_pages(&mut self, pages: Vec<SubPage>, cx: &mut Context<Self>) {
         if self.sub_pages != pages {
             self.sub_pages = pages;
@@ -611,6 +610,7 @@ impl Editor {
         }
     }
 
+    /// Apply a sidebar title change while preserving the caret and viewport.
     pub(crate) fn receive_file_title(&mut self, title: &str, cx: &mut Context<Self>) {
         self.core.receive_file_title(title);
         self.keep_read_only_title();

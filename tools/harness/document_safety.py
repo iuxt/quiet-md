@@ -14,7 +14,7 @@ here = Path(__file__).resolve().parent
 work = Path(tempfile.mkdtemp(prefix="quiet-document-safety-"))
 source = work / "source"
 (source / ".quiet").mkdir(parents=True)
-(source / "quiet.json").write_text('{"version":2,"folders":[],"notes":[],"trash":[]}')
+(source / "quiet.json").write_text('{"version":3,"notes":[],"trash":[]}')
 (source / ".quiet/preferences.json").write_text(json.dumps({
     "appearance": "light", "english": True, "quick_hotkey": False, "onboarding_done": True,
 }))
@@ -67,10 +67,11 @@ assert "panicked" not in log, log
 for phase in ["preview", "imported", "delete", "deleted"]:
     assert f"document-safety: {phase} checked" in log, log
 manifest = json.loads((run / "lib/quiet.json").read_text())
-assert {f["name"] for f in manifest["folders"]} == {"FolderA", "FolderB", "FolderC", "FolderD"}, manifest
 notes = manifest["notes"]
-assert {n["title"] for n in notes} == {"Preview safety", "Loose", "SidebarLoose", "Note"}, notes
-assert len(notes) == 7, notes
+parents = {n["id"] for n in notes if n["title"] in {"FolderA", "FolderB", "FolderC", "FolderD"}}
+assert len(notes) == 11 and len(parents) == 4, notes
+assert {n["parentId"] for n in notes if n["title"] == "Note"} == parents, notes
+assert {"Preview safety", "Loose", "SidebarLoose"} <= {n["title"] for n in notes}, notes
 assert any(t["title"] == "Imported safety" for t in manifest["trash"]), manifest
 preview = next(n for n in notes if n["title"] == "Preview safety")
 assert "Original from B from A" in (run / "lib/Notes" / preview["filename"]).read_text()

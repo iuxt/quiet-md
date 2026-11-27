@@ -20,7 +20,7 @@ body = "<title>Git regression</title>\n<p>Keep this body.</p>\n"
 (source / "Notes").mkdir()
 (source / f"Notes/{doc_id}.xml").write_text(body)
 (source / "quiet.json").write_text(json.dumps({
-    "version": 2, "folders": [], "trash": [],
+    "version": 3, "trash": [],
     "notes": [{"id": doc_id, "title": "Git regression", "filename": f"{doc_id}.xml", "createdAt": 1, "updatedAt": 1}],
 }))
 (source / ".quiet/preferences.json").write_text(json.dumps({

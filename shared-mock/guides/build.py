@@ -20,20 +20,20 @@ from pathlib import Path
 here = Path(__file__).resolve().parent
 out = Path(sys.argv[1]).resolve()
 NS = uuid.UUID("6f7c1e9a-9d0b-4a51-8c7e-2a1d3b4c5e6f")
-# Virtual folders in the guide library: key -> title.
-FOLDERS = {"writing-guides": "Writing and formatting", "examples": "Examples"}
 # The top level, in order; every entry gets its place, so the sidebar and
 # Home's manual order (the default) read the same.
 TOP = ["welcome", "writing-guides", "examples", "organize", "data", "personalize", "practice"]
-# file stem -> (key, parent key, pinned); a parent is a key of FOLDERS
+# file stem -> (key, parent key, pinned); a parent is another document key
 KEYS = {
     "01-welcome": ("welcome", None, False),
+    "01a-writing-guides": ("writing-guides", None, False),
     "02-writing": ("writing", "writing-guides", False),
     "03-blocks": ("blocks", "writing-guides", False),
     "04-tables": ("tables", "writing-guides", False),
     "05-code": ("code", "writing-guides", False),
     "06-media": ("media", "writing-guides", False),
     "07-organize": ("organize", None, False),
+    "07-examples": ("examples", None, False),
     "07a-reading-list": ("reading-list", "examples", False),
     "07b-weekly": ("weekly", "examples", False),
     "08-data": ("data", None, False),
@@ -41,9 +41,8 @@ KEYS = {
     "10-practice": ("practice", None, False),
 }
 ids = {k: str(uuid.uuid5(NS, k)) for k, _, _ in KEYS.values()}
-ids.update({k: str(uuid.uuid5(NS, k)) for k in FOLDERS})
 srcs = {KEYS[p.stem][0]: p.read_text() for p in sorted((here / "src").glob("*.xml"))}
-missing = set(ids) - set(srcs) - set(FOLDERS)
+missing = set(ids) - set(srcs)
 assert not missing, f"no source for {missing}"
 
 def esc(s): return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -55,13 +54,6 @@ local = lambda s: dt.datetime.strptime(s, "%Y-%m-%d %H:%M").astimezone()
 ms = lambda d: int(d.timestamp() * 1000)
 now = int(time.time())
 
-ILLEGAL = dict(zip('/\\:*?"<>|', '／＼：＊？＂＜＞｜'))
-def file_name(title):
-    # Same rules as store::file_name_for (asserted for these titles by guides.rs).
-    s = " ".join("".join(ILLEGAL.get(c, " " if ord(c) < 32 else c) for c in title).split())
-    s = s.lstrip(". ").rstrip(". ") or "未命名文档"
-    assert len(s.encode()) <= 120 and s.split(".")[0].upper() not in ("CON", "PRN", "AUX", "NUL"), title
-    return s
 def rel_path(frm, to):
     a, b = [p for p in frm.split("/") if p], [p for p in to.split("/") if p]
     n = 0
@@ -114,39 +106,32 @@ out.mkdir(parents=True, exist_ok=True)
 index = {}
 order = list(KEYS.values())
 inside = {}
-for k, title in FOLDERS.items():
-    index[file_name(title) + "/"] = {"id": ids[k], "created": now - 3600, "modified": now}
 for i, (k, parent, pinned) in enumerate(order):
     here_dir = paths[k].rpartition("/")[0]
     (out / paths[k]).write_text(fill(srcs[k]))
-    # Reading order is written out: TOP places the top level, and a folder's
-    # pages are numbered in file order.
+    # Reading order is written out: TOP places the top level, and each parent's
+    # children are numbered in source order.
     t = now - 60 * i
     meta = {"id": ids[k], "created": now - 3600 + i, "modified": t}
     if pinned: meta["pinned"] = True
     if parent:
-        assert parent in FOLDERS, f"{k}: pages live in folders, not under {parent}"
+        assert parent in ids, f"{k}: unknown parent {parent}"
         inside[parent] = inside.get(parent, 0) + 1
         meta["order"] = inside[parent]
     else:
         assert k in TOP, f"{k} is missing from TOP"
     index[paths[k]] = meta
-assert set(TOP) == {k for k, p, _ in KEYS.values() if not p} | set(FOLDERS), "TOP must list every top-level entry"
-key_of = {**{k: paths[k] for k in paths}, **{k: file_name(t) + "/" for k, t in FOLDERS.items()}}
+assert set(TOP) == {k for k, p, _ in KEYS.values() if not p}, "TOP must list every top-level document"
 for i, k in enumerate(TOP):
-    index[key_of[k]]["root_order"] = i + 1
+    index[paths[k]]["root_order"] = i + 1
 stamp = lambda t: dt.datetime.fromtimestamp(t, dt.timezone.utc).isoformat().replace("+00:00", "Z")
-folders, notes = [], []
-for k, title in FOLDERS.items():
-    meta = index[key_of[k]]
-    folders.append({"id": ids[k], "name": title, "parentId": None, "createdAt": stamp(meta["created"]),
-                    "updatedAt": stamp(meta["modified"]), "options": {"root_order": meta["root_order"]}})
+notes = []
 for k, parent, _ in order:
     meta = index[paths[k]]
     options = {key: value for key, value in meta.items() if key not in ("id", "created", "modified")}
-    notes.append({"id": ids[k], "title": titles[k], "filename": f"{ids[k]}.xml", "folderId": ids[parent] if parent else None,
+    notes.append({"id": ids[k], "title": titles[k], "filename": f"{ids[k]}.xml", "parentId": ids[parent] if parent else None,
                   "createdAt": stamp(meta["created"]), "updatedAt": stamp(meta["modified"]), "options": options})
-manifest = {"version": 2, "folders": sorted(folders, key=lambda f: f["id"]), "notes": sorted(notes, key=lambda n: n["id"]), "trash": []}
+manifest = {"version": 3, "notes": sorted(notes, key=lambda n: n["id"]), "trash": []}
 (out / "quiet.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
 for asset in sorted((here / "assets").rglob("*")):
     if not asset.is_file() or asset.name.startswith("."):

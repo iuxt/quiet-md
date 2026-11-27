@@ -148,7 +148,7 @@ impl Workspace {
                 let path = change.path.clone();
                 let note = self.entries.iter().map(|e| (&e.id, &e.meta, &e.title))
                     .chain(self.trash.iter().map(|e| (&e.id, &e.meta, &e.title)))
-                    .find(|(_, meta, _)| !meta.local() && meta.folder.is_none() && meta.rel == path);
+                    .find(|(_, meta, _)| !meta.local() && meta.rel == path);
                 let title = note.map(|(_, _, title)| crate::settings::display_title(title).to_string())
                     .unwrap_or_else(|| path.rsplit('/').next().unwrap_or(&path).to_string());
                 let open_id = note.map(|(id, _, _)| id.clone());

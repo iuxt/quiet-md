@@ -1,4 +1,4 @@
-//! Virtual folders, one shared manifest, fixed Notes/<UUID> files.
+//! The shared document tree and trash, with fixed Notes/<UUID> files.
 use super::*;
 use crate::manifest::Deleted;
 
@@ -13,6 +13,41 @@ impl Store {
         let path = crate::git::safe_path(root, FILE)?;
         std::fs::read(&path).map_err(anyhow::Error::from).and_then(|b| Manifest::parse(&b))
             .with_context(|| format!("无法载入文档库清单 {}", path.display()))
+    }
+
+    /// Publish converted metadata only after the backup and every new body are durable.
+    pub(super) fn upgrade_manifest(root: &Path, path: &Path) -> Result<()> {
+        let bytes = read_bounded(path, crate::manifest::MAX_BYTES as u64)?;
+        let Some(upgrade) = Manifest::upgrade(&bytes)? else { return Ok(()) };
+        let upgraded = serde_json::to_vec_pretty(&upgrade.manifest)?;
+        Manifest::check_size(upgraded.len())?;
+        let backup = crate::git::safe_path(root, ".quiet/manifest-v2.json")?;
+        let retry = match std::fs::read(&backup) {
+            Ok(previous) => {
+                anyhow::ensure!(previous == bytes, "旧清单备份已存在且内容不同");
+                true
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        let mut pending = vec![];
+        for (relative, xml) in upgrade.bodies {
+            let body = crate::git::safe_path(root, &relative)?;
+            match body.symlink_metadata() {
+                Ok(meta) => anyhow::ensure!(retry && meta.is_file() && meta.len() == xml.len() as u64
+                    && std::fs::read(&body)? == xml.as_bytes(), "已存在相同 UUID 的文件，未覆盖：{relative}"),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => pending.push((body, xml)),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        if !retry { write_atomic(&backup, &bytes)?; }
+        if !pending.is_empty() {
+            std::fs::create_dir_all(crate::git::safe_path(root, NOTES)?)?;
+            for (body, xml) in pending { write_atomic(&body, xml.as_bytes())?; }
+            #[cfg(unix)]
+            std::fs::File::open(root)?.sync_all()?;
+        }
+        write_atomic(path, &upgraded)
     }
 
     pub(super) fn reload_virtual(&mut self) -> Result<()> {
@@ -45,11 +80,11 @@ impl Store {
 
     pub(super) fn virtual_manifest_for(&self, index: &HashMap<String, Meta>, trash: &HashMap<String, Trashed>) -> Manifest {
         let original = &self.manifest;
-        let extras: HashMap<_, _> = original.notes.iter().map(|n| (&n.id, &n.extra)).chain(original.folders.iter().map(|f| (&f.id, &f.extra)))
+        let extras: HashMap<_, _> = original.notes.iter().map(|n| (&n.id, &n.extra))
             .chain(original.trash.iter().map(|t| (&t.id, &t.extra))).collect();
         let deleted = trash.iter().map(|(id, t)| Deleted {
-            id: id.clone(), title: t.meta.folder.clone().or_else(|| t.meta.name.clone()).unwrap_or_default(),
-            filename: t.meta.folder.is_none().then(|| format!("{id}.{}", ext_of(&t.meta))), parent: t.meta.parent.clone(),
+            id: id.clone(), title: t.meta.name.clone().unwrap_or_default(),
+            filename: Some(format!("{id}.{}", ext_of(&t.meta))), parent: t.meta.parent.clone(),
             created: t.meta.created, modified: t.meta.modified, deleted: t.deleted, root: t.root.clone(),
             options: crate::manifest::Options::of(&t.meta),
             extra: extras.get(id).map(|e| (*e).clone()).unwrap_or_default(),
@@ -78,10 +113,6 @@ impl Store {
         let mut ids: Vec<_> = self.index.keys().cloned().collect(); ids.sort();
         for id in ids {
             let meta = self.index[&id].clone();
-            if let Some(title) = &meta.folder {
-                out.push(Entry { id, meta: meta.clone(), title: title.clone(), icon: None, body: Default::default(), reminders: vec![], links: vec![] });
-                continue;
-            }
             let path = self.path(&id);
             let stamp = std::fs::metadata(&path).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
             let parsed = self.parsed.get(&id).filter(|c| stamp == Some((c.0, c.1))).map(|c| c.2.clone())
@@ -101,7 +132,7 @@ impl Store {
     }
 
     fn adopt_virtual_notes(&mut self) -> Result<()> {
-        let known: HashSet<_> = self.index.values().filter(|m| !m.local() && m.folder.is_none()).map(|m| m.rel.clone())
+        let known: HashSet<_> = self.index.values().filter(|m| !m.local()).map(|m| m.rel.clone())
             .chain(self.manifest.trash.iter().filter_map(|t| t.body_rel())).collect();
         let mut dirty = false;
         for entry in std::fs::read_dir(self.root.join(NOTES))? {
@@ -129,44 +160,41 @@ impl Store {
         Ok(())
     }
 
-    pub(super) fn trash_virtual(&mut self, items: &[(String, Option<String>)], record: bool) -> Result<()> {
+    pub(super) fn check_body(&self, meta: &Meta) -> Result<()> {
+        anyhow::ensure!(crate::git::safe_path(&self.root, &meta.rel)?.is_file(), "正文文件不存在：{}", meta.rel);
+        Ok(())
+    }
+
+    pub(super) fn trash_virtual(&mut self, items: &[(String, Option<String>)]) -> Result<()> {
         let mut index = self.index.clone(); let mut trash = self.trash.clone(); let mut before = vec![];
+        let deleted = now();
         for (id, root) in items {
-            let meta = index.remove(id).context("文档或文件夹不存在")?;
-            if record { before.push((id.clone(), self.file_state(id))); }
-            if meta.folder.is_none() { anyhow::ensure!(crate::git::safe_path(&self.root, &meta.rel)?.is_file(), "正文文件不存在：{}", meta.rel); }
+            let meta = index.remove(id).context("文档不存在")?;
+            self.check_body(&meta)?;
+            before.push((id.clone(), self.file_state(id)));
             anyhow::ensure!(!trash.contains_key(id), "回收站 UUID 冲突，未覆盖");
-            trash.insert(id.clone(), Trashed { meta, deleted: now(), root: root.clone() });
+            trash.insert(id.clone(), Trashed { meta, deleted, root: root.clone() });
         }
         self.commit_virtual_metadata(index, trash)?;
-        for (id, _) in items { self.forget_loaded(id); crate::versions::move_to_trash(&self.history_base(), id); }
-        for (id, state) in before { self.record_file_change(&id, state); }
+        for (id, state) in before {
+            self.forget_loaded(&id);
+            crate::versions::move_to_trash(&self.history_base(), &id);
+            self.record_file_change(&id, state);
+        }
         Ok(())
     }
 
-    pub(super) fn untrash_virtual(&mut self, id: &str, parent: Option<String>, place: Option<(u64, Option<u64>)>) -> Result<()> {
-        self.validate_folder(Some(id), parent.as_deref())?;
-        let mut index = self.index.clone(); let mut trash = self.trash.clone();
-        let mut saved = trash.remove(id).context("恢复内容已不在回收站")?;
-        saved.meta.parent = parent;
-        if let Some((order, root)) = place { saved.meta.order = order; saved.meta.root_order = root; }
-        if saved.meta.folder.is_none() { anyhow::ensure!(crate::git::safe_path(&self.root, &saved.meta.rel)?.is_file(), "正文文件不存在：{}", saved.meta.rel); }
-        index.insert(id.to_string(), saved.meta);
-        self.commit_virtual_metadata(index, trash)?;
-        crate::versions::restore_from_trash(&self.history_base(), id);
-        self.record_file_change(id, None);
-        Ok(())
-    }
-
-    fn commit_virtual_metadata(&mut self, index: HashMap<String, Meta>, trash: HashMap<String, Trashed>) -> Result<()> {
-        if self.batch.index.get() { self.save_virtual()?; self.batch.index.set(false); }
+    pub(super) fn commit_virtual_metadata(&mut self, index: HashMap<String, Meta>, trash: HashMap<String, Trashed>) -> Result<()> {
+        self.sync_batch_dirs()?;
         let after = Arc::new(self.virtual_manifest_for(&index, &trash)); after.validate()?;
         if let Err(error) = self.write_virtual_manifest(&crate::git::safe_path(&self.root, FILE)?, after.clone()) {
             let committed = std::fs::read(self.root.join(FILE)).is_ok_and(|b| Manifest::parse(&b).is_ok_and(|m| m == *after));
             if !committed { return Err(error) }
         }
         self.index = index; self.trash = trash; self.manifest = after;
-        self.save_local(&self.local_state())
+        self.batch.index.set(false);
+        if let Err(error) = self.save_local(&self.local_state()) { self.warnings.push(format!("无法保存本机状态：{error}")); }
+        Ok(())
     }
 }
 
@@ -179,12 +207,12 @@ mod tests {
             let root = std::env::temp_dir().join(format!("quiet-trash-metadata-{}", uuid::Uuid::new_v4()));
             let mut store = Store::open_at(root.clone()).unwrap(); let id = store.create_from(&Document::default()).unwrap();
             let path = store.path(&id); let body = std::fs::read(&path).unwrap(); let stamp = std::fs::metadata(&path).unwrap().modified().unwrap();
-            if restoring { store.delete(&id, None).unwrap(); }
+            if restoring { store.delete(&id).unwrap(); }
             let file = root.join(FILE); let saved = root.join("saved-manifest.json");
             let bytes = std::fs::read(&file).unwrap();
             // Block the replacement after the store has read the current manifest.
             std::fs::rename(&file, &saved).unwrap(); std::fs::create_dir(&file).unwrap();
-            let result = if restoring { store.untrash_virtual(&id, None, None) } else { store.trash_virtual(&[(id.clone(), None)], false) };
+            let result = if restoring { store.restore_under_lock(&id).map(|_| ()) } else { store.trash_virtual(&[(id.clone(), None)]) };
             assert!(result.is_err()); assert_eq!(store.trash.contains_key(&id), restoring); assert_eq!(store.index.contains_key(&id), !restoring);
             assert_eq!(std::fs::read(&saved).unwrap(), bytes); assert!(file.is_dir());
             assert_eq!(std::fs::read(&path).unwrap(), body); assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), stamp);

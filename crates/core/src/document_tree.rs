@@ -1,5 +1,19 @@
 use super::*;
 
+pub(super) fn subtree<'a>(root: &str, parents: impl Iterator<Item = (&'a String, Option<&'a String>)>) -> Vec<String> {
+    let mut children: HashMap<&str, Vec<&String>> = HashMap::new();
+    for (id, parent) in parents {
+        if let Some(parent) = parent { children.entry(parent).or_default().push(id); }
+    }
+    let mut ids = vec![root.to_string()];
+    let mut i = 0;
+    while i < ids.len() {
+        if let Some(children) = children.get(ids[i].as_str()) { ids.extend(children.iter().map(|id| (*id).clone())); }
+        i += 1;
+    }
+    ids
+}
+
 impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
     pub fn tree_writer(&self) -> Self {
@@ -23,26 +37,15 @@ impl Store {
 
     pub fn take_warnings(&mut self) -> Vec<String> { std::mem::take(&mut self.warnings) }
 
-    pub(super) fn validate_folder(&self, id: Option<&str>, parent: Option<&str>) -> Result<()> {
+    pub(super) fn validate_parent(&self, id: Option<&str>, parent: Option<&str>) -> Result<()> {
         let mut seen = std::collections::HashSet::new();
         let mut p = parent;
         while let Some(key) = p {
-            anyhow::ensure!(Some(key) != id && seen.insert(key), "不能移动到自身或后代文件夹中");
-            let m = self.index.get(key).filter(|m| m.folder.is_some()).ok_or_else(|| anyhow::anyhow!("目标文件夹不存在"))?;
+            anyhow::ensure!(Some(key) != id && seen.insert(key), "不能移动到自身或子文档中");
+            let m = self.index.get(key).filter(|m| !m.local()).ok_or_else(|| anyhow::anyhow!("目标文档不存在"))?;
             p = m.parent.as_deref();
         }
         Ok(())
-    }
-
-    pub fn create_folder(&mut self, title: &str, parent: Option<&str>) -> Result<String> {
-        let _lock = self.begin_write()?;
-        self.validate_folder(None, parent)?;
-        let id = uuid::Uuid::new_v4().to_string();
-        let t = now();
-        self.index.insert(id.clone(), Meta { folder: Some(title.to_string()), parent: parent.map(str::to_string), created: t, modified: t, ..Default::default() });
-        if let Err(e) = self.save_index() { self.index.remove(&id); return Err(e); }
-        self.record_file_change(&id, None);
-        Ok(id)
     }
 
     pub fn initialize_manual_order(&mut self) -> Result<()> {
@@ -51,7 +54,7 @@ impl Store {
         let initialized = settings.home_manual_initialized;
         let previous = self.index.clone();
         let mut groups: HashMap<Option<String>, Vec<String>> = HashMap::new();
-        for (id, m) in &self.index { groups.entry(m.parent.clone()).or_default().push(id.clone()); }
+        for (id, m) in self.index.iter().filter(|(_, m)| !m.local()) { groups.entry(m.parent.clone()).or_default().push(id.clone()); }
         let mut changed = false;
         // Freeze the order the sidebar shows (`Meta::place`): pages not yet placed
         // keep their spot at the top instead of dropping to the end.
@@ -75,13 +78,13 @@ impl Store {
     /// Persist one drop atomically; neither document content nor timestamps change.
     pub fn move_in_tree(&mut self, id: &str, parent: Option<&str>, before: Option<&str>) -> Result<()> {
         let _lock = self.begin_write()?;
-        anyhow::ensure!(self.index_has(id), "文档或文件夹不存在");
-        self.validate_folder(Some(id), parent)?;
+        anyhow::ensure!(self.index.get(id).is_some_and(|m| !m.local()) && self.index_has(id), "文档不存在");
+        self.validate_parent(Some(id), parent)?;
         if let Some(anchor) = before {
-            anyhow::ensure!(self.index.get(anchor).is_some_and(|m| m.parent.as_deref() == parent) && self.index_has(anchor), "目标位置已改变，请重试");
+            anyhow::ensure!(self.index.get(anchor).is_some_and(|m| m.parent.as_deref() == parent) && self.index.get(anchor).is_some_and(|m| !m.local()) && self.index_has(anchor), "目标位置已改变，请重试");
             if anchor == id { return Ok(()); }
         }
-        let mut siblings: Vec<String> = self.index.iter().filter(|(k, m)| m.parent.as_deref() == parent && self.index_has(k)).map(|(k, _)| k.clone()).collect();
+        let mut siblings: Vec<String> = self.index.iter().filter(|(k, m)| m.parent.as_deref() == parent && !m.local() && self.index_has(k)).map(|(k, _)| k.clone()).collect();
         // The sidebar's order (`Meta::place`, ties by id), so the numbers written
         // here match the order the drop was made in.
         siblings.sort_by(|ka, kb| (self.index[ka].place(), ka).cmp(&(self.index[kb].place(), kb)));

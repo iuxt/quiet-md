@@ -1506,7 +1506,12 @@ fn diagnostic_for(message: &str, english: bool) -> String {
         ("不支持的文档库清单版本", "Unsupported library manifest version."),
         ("远端文档库格式不兼容", "The remote library uses an unsupported format."),
         ("无法载入文档库清单 {}", "Could not load the library manifest {}"),
-        ("恢复文档 {} 失败，已恢复的文档保留在文档库", "Could not restore document {}. Documents already restored remain in Documents."),
+        ("父文档不存在", "The parent document does not exist."),
+        ("文档层级不能包含循环", "The document hierarchy contains a cycle."),
+        ("不能移动到自身或子文档中", "A document cannot move under itself or one of its descendants."),
+        ("目标文档不存在", "The destination document does not exist."),
+        ("正文文件不存在：{}", "Could not find the document body at {}"),
+        ("文档有后来新增的子文档，不能撤销创建", "The document has newer child documents. Move them before undoing creation."),
     ];
     for (source, target) in TEMPLATES {
         let parts: Vec<_> = source.split("{}").collect();

@@ -3,7 +3,7 @@
 //! radius 5). The list itself comes from the library (`Editor::sub_pages`).
 
 use super::render::R;
-use super::view::{Editor, EditorEvent, Menu};
+use super::view::{Editor, EditorEvent, Menu, SubPage};
 use crate::settings::display_title;
 use crate::model::Block;
 use crate::editor_theme::Theme;
@@ -16,10 +16,10 @@ const RADIUS: f32 = 5.;
 const ROW: f32 = 4.;
 
 /// 16px page glyph, or the page's emoji icon.
-fn page_icon(emoji: &Option<String>) -> AnyElement {
+fn page_icon(emoji: &Option<String>, markdown: bool) -> AnyElement {
     match emoji {
         Some(e) => div().text_size(px(16.)).line_height(px(18.)).child(e.clone()).into_any_element(),
-        None => icon("doc", 16., Theme::icon()).into_any_element(),
+        None => icon(if markdown { "doc-md" } else { "doc" }, 16., Theme::icon()).into_any_element(),
     }
 }
 
@@ -40,7 +40,7 @@ impl R<'_> {
                 .items_center()
                 .rounded(px(ROW))
                 .hover(|s| s.bg(Theme::fill_hover()))
-                .child(div().size(px(20.)).p(px(2.)).flex_none().flex().items_center().justify_center().child(page_icon(&ed.core.doc.icon)))
+                .child(div().size(px(20.)).p(px(2.)).flex_none().flex().items_center().justify_center().child(page_icon(&ed.core.doc.icon, ed.markdown)))
                 .child(
                     div()
                         .min_w_0()
@@ -71,34 +71,44 @@ impl R<'_> {
             });
         if ed.sub_pages.is_empty() {
             content = content.child(
-                div().h(px(240.)).flex().items_center().justify_center().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(crate::settings::tr("此文件夹中没有其他文档", "No other documents in this folder")),
+                div().h(px(240.)).flex().items_center().justify_center().text_size(px(13.)).line_height(px(20.)).text_color(Theme::text_caption()).child(crate::settings::tr("暂无子文档", "No child documents")),
             );
         }
-        for p in &ed.sub_pages {
-            let doc = p.id.clone();
-            content = content.child(
-                div()
-                    .id(SharedString::from(format!("subpage-{}-{}", id.0, p.id)))
-                    .min_h(px(36.))
-                    .px(px(6.))
-                    .py(px(7.))
-                    .flex()
-                    .items_start()
-                    .rounded(px(ROW))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(Theme::fill_hover()))
-                    .child(div().w(px(20.)).h(px(22.)).mr(px(6.)).p(px(2.)).flex_none().flex().items_center().justify_center().child(page_icon(&p.icon)))
-                    // A page block's title: body size.
-                    .child(div().flex_1().min_w_0().text_size(px(15.)).line_height(px(22.)).text_color(Theme::text()).line_clamp(2).child(display_title(&p.title)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |_, _, _, cx| {
-                            cx.stop_propagation();
-                            cx.emit(EditorEvent::OpenDoc(doc.clone()));
-                        }),
-                    ),
-            );
-        }
+        content = content.children(ed.sub_pages.iter().map(|p| sub_page_row(&format!("subpage-{}", id.0), p, cx)));
         div().max_w(px(720.)).child(header).child(content).into_any_element()
+    }
+}
+
+fn sub_page_row(key: &str, p: &SubPage, cx: &mut Context<Editor>) -> Stateful<Div> {
+    let doc = p.id.clone();
+    div()
+        .id(SharedString::from(format!("{key}-{}", p.id)))
+        .min_h(px(36.))
+        .px(px(6.))
+        .py(px(7.))
+        .flex()
+        .items_start()
+        .rounded(px(ROW))
+        .cursor_pointer()
+        .hover(|s| s.bg(Theme::fill_hover()))
+        .child(div().w(px(20.)).h(px(22.)).mr(px(6.)).p(px(2.)).flex_none().flex().items_center().justify_center().child(page_icon(&p.icon, p.markdown)))
+        // A page block's title: body size.
+        .child(div().flex_1().min_w_0().text_size(px(15.)).line_height(px(22.)).text_color(Theme::text()).line_clamp(2).child(display_title(&p.title)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.emit(EditorEvent::OpenDoc(doc.clone()));
+            }),
+        )
+}
+
+impl Editor {
+    pub(super) fn child_documents(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if self.sub_pages.is_empty() { return None; }
+        Some(div().mt(px(24.)).pt(px(12.)).border_t_1().border_color(Theme::button_border())
+            .child(div().px(px(6.)).mb(px(4.)).text_size(px(13.)).text_color(Theme::text_caption())
+                .child(crate::settings::tr("子文档", "Child documents")))
+            .children(self.sub_pages.iter().map(|p| sub_page_row("child-document", p, cx))))
     }
 }

@@ -117,7 +117,7 @@ pub fn start(window: &mut Window, cx: &mut App) {
             if cmd == "churn-windows" {
                 let n = rest.trim().parse().unwrap_or(10);
                 cx.update(|cx| {
-                    let id = cx.global::<crate::shared_store::SharedStore>().clone().list().into_iter().find(|e| e.meta.folder.is_none()).map(|e| e.id).expect("churn-windows needs a note");
+                    let id = cx.global::<crate::shared_store::SharedStore>().clone().list().into_iter().next().map(|e| e.id).expect("churn-windows needs a note");
                     for _ in 0..n {
                         let handle = cx.open_window(WindowOptions {
                             focus: false, show: false,

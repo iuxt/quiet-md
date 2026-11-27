@@ -14,9 +14,9 @@ use gpui::{prelude::FluentBuilder, *};
 const ROW_MENU_W: f32 = 180.;
 const ROW_ITEM: f32 = crate::ui::MENU_ROW_H;
 const ROW_DIVIDER: f32 = 11.;
-const ROW_ITEMS: usize = 9;
+const ROW_ITEMS: usize = 10;
 const ROW_DIVIDERS: usize = 2;
-const DOWNLOAD_INDEX: usize = 5;
+const DOWNLOAD_INDEX: usize = 6;
 const DIVIDERS_BEFORE_DOWNLOAD: usize = 1;
 
 const fn row_menu_height(items: usize, dividers: usize) -> f32 {
@@ -27,8 +27,8 @@ const fn row_sub_top(menu_top: f32) -> f32 {
     menu_top + DOWNLOAD_INDEX as f32 * ROW_ITEM + DIVIDERS_BEFORE_DOWNLOAD as f32 * ROW_DIVIDER
 }
 
-const _: () = assert!(row_menu_height(ROW_ITEMS, ROW_DIVIDERS) == 324.);
-const _: () = assert!(row_sub_top(0.) == 171.);
+const _: () = assert!(row_menu_height(ROW_ITEMS, ROW_DIVIDERS) == 356.);
+const _: () = assert!(row_sub_top(0.) == 203.);
 
 /// Sidebar geometry (measured from the window edge), shared by the
 /// document sidebar and 设置's: selection pills start 14pt in, every row is
@@ -203,7 +203,7 @@ impl Workspace {
             list = list.child(self.section(0, crate::settings::text("置顶"), cx));
             if !self.folded[0] {
                 for e in pinned {
-                    list = list.child(self.doc_row(e, "pinned", 0, false, cx));
+                    list = list.child(self.doc_row(e, "pinned", 0, cx));
                 }
             }
             list = list.child(div().h(px(GROUP_GAP - SECTION_TOP)));
@@ -219,7 +219,7 @@ impl Workspace {
             list = list.child(div().h(px(GROUP_GAP - SECTION_TOP))).child(self.section(2, crate::settings::tr("本机文件", "Files on this computer"), cx));
             if !self.folded[2] {
                 for e in local {
-                    list = list.child(self.doc_row(e, "local", 0, false, cx));
+                    list = list.child(self.doc_row(e, "local", 0, cx));
                 }
             }
         }
@@ -480,6 +480,7 @@ impl Workspace {
             return;
         }
         for id in &ids {
+            if self.ancestors(id).iter().any(|a| ids.contains(&a.id)) { continue; }
             self.copy_doc(id, cx);
         }
         self.entries = self.store.list();
@@ -588,31 +589,31 @@ impl Workspace {
             )
     }
 
-    /// Direct creation actions inside a folder.
-    fn add_button(&self, e: &Entry, key: &str, folder: bool, cx: &mut Context<Self>) -> Stateful<Div> {
+    /// Create a child document from its parent row.
+    fn add_button(&self, e: &Entry, key: &str, cx: &mut Context<Self>) -> Stateful<Div> {
         let id = e.id.clone();
         div()
-            .id(SharedString::from(format!("add-{key}-{folder}-{}", e.id)))
+            .id(SharedString::from(format!("add-{key}-{}", e.id)))
             .size(px(22.))
             .p(px(3.))
             .flex_none()
             .rounded(px(6.))
             .opacity(self.folder_drag.reveal(&e.id))
             .hover(|s| s.bg(Theme::sidebar_selected()))
-            .child(icon(if folder { "folder-plus" } else { "plus" }, 16., Theme::icon()))
-            .tip(crate::settings::tr(if folder { "新建文件夹" } else { "新建文档" }, if folder { "New folder" } else { "New document" }), None)
+            .child(icon("plus", 16., Theme::icon()))
+            .tip(crate::settings::tr("新建子文档", "New child document"), None)
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |w, _, window, cx| {
                 cx.stop_propagation();
                 w.row_menu = None;
-                if folder { w.new_folder(Some(id.clone()), window, cx); } else { w.new_child(&id, window, cx); }
+                w.new_child(&id, window, cx);
                 cx.notify();
             }))
     }
 
-    pub(crate) fn doc_row(&self, e: &Entry, key: &str, depth: usize, _kids: bool, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(crate) fn doc_row(&self, e: &Entry, key: &str, depth: usize, cx: &mut Context<Self>) -> impl IntoElement {
         let drop_target = self.folder_drop_target(&e.id);
-        let selected = (self.view == View::Doc && self.current.as_deref() == Some(e.id.as_str())) || (self.view == View::Folder && self.folder_current.as_deref() == Some(e.id.as_str()));
+        let selected = self.view == View::Doc && self.current.as_deref() == Some(e.id.as_str());
         let renaming = self.rename.as_ref().filter(|r| r.id == e.id).map(|r| r.field.clone());
         let title = match renaming {
             // The field opens with the text exactly where the name was (2 + 1 + 6 = the
@@ -661,7 +662,6 @@ impl Workspace {
                 .into_any_element(),
         };
         let renaming = self.rename.as_ref().is_some_and(|r| r.id == e.id);
-        let folder = e.meta.folder.is_some();
         // 批量操作: 我的文档 rows get a checkbox and lose "…"; checked rows are tinted.
         let batch = self.batch.as_ref().filter(|_| key == "doc");
         let checked = batch.is_some_and(|b| b.contains(&e.id));
@@ -689,44 +689,33 @@ impl Workspace {
                         .child(checkbox(if checked { Check::On } else { Check::Off }, blocked, "doc-row")),
                 )
             })
-            .child({
-                // A folder with something in it folds from its icon, the way Notion's
-                // pages do: hovering the row turns the icon into a chevron (pointing
-                // down when open), and a press on it folds instead of opening the page.
-                let toggle = folder && key == "doc" && !drop_target && self.folder_drag.has_children(&e.id);
-                let chevron = if toggle { self.folder_drag.reveal(&e.id) } else { 0. };
+            .when(key == "doc", |d| {
                 let open = self.expanded.contains(&e.id);
-                div().size(px(20.)).flex_none().flex().items_center().justify_center().relative()
-                    .when(toggle, |d| d.rounded(px(5.)).hover(|s| s.bg(Theme::sidebar_hover()))
+                d.child(div().size(px(16.)).flex_none().flex().items_center().justify_center()
+                    .when(batch.is_none() && !drop_target && self.folder_drag.has_children(&e.id), |d| d.rounded(px(4.)).hover(|s| s.bg(Theme::sidebar_hover()))
+                        .child(icon("disclosure", 14., Theme::icon())
+                            .with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))
                         .on_mouse_down(MouseButton::Left, cx.listener(|w, ev: &MouseDownEvent, _, _| {
                             w.folder_drag.icon_press = true;
                             w.folder_drag.icon_alt = ev.modifiers.alt;
-                        })))
+                        }))))
+            })
+            .child({
+                let scale = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
+                div().size(px(20.)).flex_none().flex().items_center().justify_center()
                     .map(|d| match &e.icon {
-                    _ if folder => {
-                        let s = if key == "doc" { self.folder_drag.pop(&e.id) } else { 1. };
-                        d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(1. - chevron)
-                            .child(icon(if drop_target { "folder-input" } else if open { "folder-open" } else { "folder" }, ROW_ICON, Theme::icon())
-                                .with_transformation(Transformation::scale(size(s, s)))))
-                        .when(chevron > 0.005, |d| d.child(div().absolute().inset_0().flex().items_center().justify_center().opacity(chevron)
-                            .child(icon("disclosure", ROW_ICON, Theme::icon())
-                                .with_transformation(Transformation::rotate(radians(if open { std::f32::consts::FRAC_PI_2 } else { 0. }))))))
-                    }
-                    _ if e.meta.markdown => d.child(icon("doc-md", ROW_ICON, Theme::icon())),
-                    Some(em) => d.text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(em.clone()),
-                    None => d.child(icon("doc", ROW_ICON, Theme::icon())),
-                })
+                        Some(em) if !e.meta.markdown => d.text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).child(em.clone()),
+                        _ => d.child(icon(if e.meta.markdown { "doc-md" } else { "doc" }, ROW_ICON, Theme::icon())
+                            .with_transformation(Transformation::scale(size(scale, scale)))),
+                    })
             })
             .child(title)
-            // A folder's "…", "new folder" and "+" sit in the same columns as the header's
-            // 批量操作, 新建文件夹 and 新建文档.
-            .when(!renaming && folder && batch.is_none() && key == "doc", |d| d.child(self.more_button(e, key, cx).mr(px(0.))).child(self.add_button(e, key, true, cx).ml(px(2.))).child(self.add_button(e, key, false, cx).ml(px(2.)).mr(px(4.))))
-            .when(!renaming && !(folder && key == "doc") && batch.is_none(), |d| d.child(self.more_button(e, key, cx).when(key == "doc", |d| d.ml(px(2.)))))
+            .when(!renaming && batch.is_none(), |d| d.child(self.more_button(e, key, cx).when(key == "doc", |d| d.ml(px(2.)))))
+            .when(!renaming && batch.is_none() && key == "doc", |d| d.child(self.add_button(e, key, cx).ml(px(2.)).mr(px(4.))))
     }
 
     pub(crate) fn render_row_menu(&self, window: &Window, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(m) = self.row_menu.clone() else { return vec![] };
-        if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.folder.is_some()) { return self.folder_row_menu(m, cx); }
         if !m.batch && self.entries.iter().any(|e| e.id == m.id && e.meta.local()) { return self.local_row_menu(m, cx); }
         let Some((pinned, starred)) = self.entries.iter().find(|e| e.id == m.id).map(|e| (e.meta.pinned, e.meta.starred > 0)) else { return vec![] };
         // The context menu: rows on the quiet hover fill.
@@ -776,6 +765,7 @@ impl Workspace {
         let pdf = m.id.clone();
         let new_window = m.id.clone();
         let new_tab = m.id.clone();
+        let child = m.id.clone();
         let sub_bounds = self.row_sub_bounds.clone();
         let menu = popover()
             .id("row-menu")
@@ -807,6 +797,11 @@ impl Workspace {
                         cx.defer(move |cx| crate::quick_note::open_document(Some(id), cx));
                         cx.notify();
                     })),
+            )
+            .child(
+                item("rm-new-child", "plus", crate::settings::tr("新建子文档", "New child document"))
+                    .on_hover(set_sub(false))
+                    .on_click(cx.listener(move |w, ev: &ClickEvent, _, cx| w.show_child_create_menu(child.clone(), ev.position(), cx))),
             )
             .child(
                 item("rm-copy", "copy", crate::settings::text("创建副本"))

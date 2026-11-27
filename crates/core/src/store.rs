@@ -1,4 +1,4 @@
-//! Library storage: virtual folders in quiet.json, fixed Notes/<UUID> bodies.
+//! Library storage: a document tree in quiet.json, fixed Notes/<UUID> bodies.
 
 use crate::docxml;
 use crate::model::Document;
@@ -21,9 +21,6 @@ use crate::manifest::{FILE, Manifest, NOTES};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Meta {
-    /// A folder, by its display name.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub folder: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_order: Option<u64>,
     pub created: u64,
@@ -39,7 +36,7 @@ pub struct Meta {
     /// Catalogue visibility is remembered independently of document headings.
     #[serde(default = "catalogue_closed_default")]
     pub catalogue_closed: bool,
-    /// The folder it is in (its id); follows from where the file is.
+    /// The parent document ID within the library.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<String>,
     /// Position among its siblings (milliseconds of the last move); 0 falls
@@ -84,7 +81,7 @@ fn catalogue_closed_default() -> bool { true }
 impl Default for Meta {
     fn default() -> Self {
         Self {
-            folder: None, root_order: None, created: 0, modified: 0, pinned: false, opened: 0,
+            root_order: None, created: 0, modified: 0, pinned: false, opened: 0,
             width: PageWidth::default(), catalogue_closed: true,
             parent: None, order: 0, starred: 0, reading: false,
             info: InfoRow::default(), refs_hidden: false,
@@ -120,7 +117,7 @@ fn is_zero(n: &u64) -> bool {
 }
 
 impl Meta {
-    /// Where a page or folder sits among its siblings: the sidebar's order, the
+    /// Where a document sits among its siblings: the sidebar's order, the
     /// numbers a drop writes and Home's manual order all use it. Those never
     /// placed by hand come first, most recently changed first; then the placed
     /// ones in their order. Callers break remaining ties by id.
@@ -170,8 +167,6 @@ pub struct Settings {
     /// 主页's sort order ("visited" …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_sort: Option<String>,
-    #[serde(default)]
-    pub home_folders_first: bool,
     #[serde(default)]
     pub home_manual_initialized: bool,
     /// Main window size, remembered like the quick note window's.
@@ -243,7 +238,7 @@ pub struct Store {
     parsed: HashMap<String, (std::time::SystemTime, u64, Parsed)>,
     parsed_disk: ParsedDisk,
     root: PathBuf,
-    /// Every document and virtual folder by its stable UUID; quiet.json
+    /// Every document by its stable UUID; quiet.json
     /// stores the tree while document links remain relative file paths.
     index: HashMap<String, Meta>,
     trash: HashMap<String, Trashed>,
@@ -318,8 +313,9 @@ pub const FILES: &str = "Files";
 pub const DRAWING: &str = "Drawings";
 pub(crate) const RESOURCE_DIRS: [&str; 3] = [IMAGE, FILES, DRAWING];
 
-#[path = "folders.rs"]
-mod folders;
+#[path = "document_tree.rs"]
+mod document_tree;
+use document_tree::subtree;
 
 /// What belongs to this computer, not to the library (which may be synced):
 /// kept per library in the local application data folder.
@@ -603,6 +599,8 @@ impl Store {
             let existing = [NOTES, IMAGE, FILES, DRAWING].iter().any(|p| root.join(p).symlink_metadata().is_ok());
             anyhow::ensure!(!existing && !Self::has_legacy_metadata(root), "缺少文档库清单 quiet.json");
             save_json(&manifest, &Manifest::default())?;
+        } else {
+            Self::upgrade_manifest(root, &manifest).with_context(|| format!("无法载入文档库清单 {}", manifest.display()))?;
         }
         Ok(lock)
     }
@@ -688,15 +686,7 @@ impl Store {
 
     /// The file a document is kept in.
     pub fn file_path(&self, id: &str) -> Option<PathBuf> {
-        self.index.get(id).filter(|m| m.folder.is_none()).map(|_| self.path(id))
-    }
-
-    /// The library root or the shared body directory for a virtual folder.
-    pub fn folder_dir(&self, id: Option<&str>) -> Option<PathBuf> {
-        match id {
-            None => Some(self.root.clone()),
-            Some(id) => self.index.get(id).filter(|m| m.folder.is_some()).map(|_| self.root.join(NOTES)),
-        }
+        self.index.get(id).map(|_| self.path(id))
     }
 
     pub fn is_markdown(&self, id: &str) -> bool { self.index.get(id).or_else(|| self.trash.get(id).map(|t| &t.meta)).is_some_and(|m| m.markdown) }
@@ -733,7 +723,8 @@ impl Store {
         layout::each_inline(doc, &mut |i| {
             let Some(l) = i.doc_link().cloned() else { return };
             let Some(href) = docxml::doc_link_href(&i.xml) else { return };
-            let by_rel = by_rel.get_or_insert_with(|| self.index.iter().filter(|(_, m)| !m.local() && m.folder.is_none()).map(|(k, m)| (m.rel.as_str(), k.as_str())).collect());
+            let by_rel = by_rel.get_or_insert_with(|| self.index.iter().filter(|(_, m)| !m.local()).map(|(k, m)| (m.rel.as_str(), k.as_str()))
+                .chain(self.trash.iter().map(|(k, t)| (t.meta.rel.as_str(), k.as_str()))).collect());
             if let Some(id) = layout::resolve(dir, &href).and_then(|rel| by_rel.get(rel.as_str()).copied()) {
                 *i = docxml::to_inline(crate::model::InlineKind::DocLink(crate::model::InlineDocLink { id: id.to_string(), title: l.title }));
             }
@@ -746,7 +737,7 @@ impl Store {
         layout::each_inline(doc, &mut |i| {
             let Some(l) = i.doc_link().cloned() else { return };
             if docxml::doc_link_href(&i.xml).is_some() { return; }
-            let target = self.index.get(&l.id).or_else(|| self.trash.get(&l.id).map(|t| &t.meta)).filter(|m| !m.local() && m.folder.is_none() && !m.rel.is_empty());
+            let target = self.index.get(&l.id).or_else(|| self.trash.get(&l.id).map(|t| &t.meta)).filter(|m| !m.local() && !m.rel.is_empty());
             if let Some(m) = target { i.xml = docxml::doc_link_href_xml(&layout::relative(dir, &m.rel), &l.title); }
         });
     }
@@ -848,17 +839,17 @@ impl Store {
         self.batch.depth -= 1;
         if self.batch.depth > 0 { return Ok(()); }
         let lock = self.batch.lock.take();
-        // The documents' folders reach the disk before the index naming them.
-        let mut r: Result<()> = Ok(());
-        #[cfg(unix)]
-        for dir in self.batch.dirs.take() {
-            if let Err(e) = std::fs::File::open(&dir).and_then(|f| f.sync_all()) { r = Err(e.into()); }
-        }
-        #[cfg(not(unix))]
-        self.batch.dirs.take();
-        if self.batch.index.take() && r.is_ok() { r = self.save_index(); }
+        let result = self.sync_batch_dirs().and_then(|()| if self.batch.index.take() { self.save_index() } else { Ok(()) });
         drop(lock);
-        r
+        result
+    }
+
+    /// Persist directory entries before publishing metadata that names them.
+    fn sync_batch_dirs(&self) -> Result<()> {
+        #[cfg(unix)]
+        for dir in self.batch.dirs.borrow().iter() { std::fs::File::open(dir)?.sync_all()?; }
+        self.batch.dirs.borrow_mut().clear();
+        Ok(())
     }
 
     /// Write a document's file; in a batch its folder is synced at the end.
@@ -885,10 +876,6 @@ impl Store {
     /// Update a library title or rename a local Markdown file beside itself.
     fn follow_title(&mut self, id: &str, title: &str) -> Result<()> {
         let Some(m) = self.index.get_mut(id) else { return Ok(()) };
-        if let Some(name) = &mut m.folder {
-            *name = title.to_string();
-            return Ok(());
-        }
         if let Some(old) = m.path.clone().map(PathBuf::from) {
             let name = title.replace(['/', '\\', ':'], "_");
             let name = name.trim().trim_start_matches('.');
@@ -927,7 +914,7 @@ impl Store {
             }
         }
         self.parsed_disk.generation = Some(c.generation);
-        let ids: Vec<String> = self.index.iter().filter(|(_, m)| m.folder.is_none()).map(|(k, _)| k.clone()).collect();
+        let ids: Vec<String> = self.index.keys().cloned().collect();
         for id in ids {
             let Some(d) = docs.remove(&self.path(&id)) else { continue };
             let reminders = d.reminders.into_iter().map(|(expire, notify, should_notify, whole_day)| crate::model::InlineReminder { expire, notify, should_notify, whole_day }).collect();
@@ -1035,14 +1022,15 @@ impl Store {
     /// DocxXML file in Notes/, named by its UUID.
     fn save_now(&mut self, id: &str, doc: &Document) -> Result<Meta> { self.save_in(id, doc, None) }
 
-    /// `save_now`, a new id going into folder `parent`.
+    /// `save_now`, a new document under `parent`.
     fn save_in(&mut self, id: &str, doc: &Document, parent: Option<&str>) -> Result<Meta> {
         anyhow::ensure!(!self.trash.contains_key(id), "回收站文档恢复后才能编辑");
         let new = !self.index.contains_key(id);
         if new {
             let t = now();
             let rel = self.uuid_rel(NOTES, id, "xml")?;
-            self.index.insert(id.to_string(), Meta { created: t, modified: t, rel, name: Some(doc.title.text.clone()), parent: parent.map(str::to_string), ..Default::default() });
+            let order = self.new_child_order(parent)?;
+            self.index.insert(id.to_string(), Meta { created: t, modified: t, rel, order, name: Some(doc.title.text.clone()), parent: parent.map(str::to_string), ..Default::default() });
         }
         let r = self.write_doc(id, doc);
         if r.is_err() && new { self.index.remove(id); }
@@ -1118,17 +1106,14 @@ impl Store {
     /// Save `doc` as a new document (创建副本, import).
     pub fn create_from(&mut self, doc: &Document) -> Result<String> { self.create_from_in(doc, None) }
 
-    /// `create_from` into folder `parent` (`None`: the top), as its last
+    /// `create_from` under `parent` (`None`: the top), as its last
     /// child. Its body lives in Notes/.
     pub fn create_from_in(&mut self, doc: &Document, parent: Option<&str>) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
-        let lock = self.begin_write()?;
-        self.validate_folder(None, parent)?;
+        let _lock = self.begin_write()?;
+        self.validate_parent(None, parent)?;
         self.save_in(&id, doc, parent)?;
         self.record_file_change(&id, None);
-        // `move_in_tree` takes the lock itself: outside a batch, holding it here would wait on ourselves.
-        drop(lock);
-        self.place_new(&id, parent)?;
         Ok(id)
     }
 
@@ -1136,26 +1121,25 @@ impl Store {
     /// matter, then `doc`; a UUID file name and a separate display title.
     pub fn create_markdown(&mut self, doc: &Document, front: &str) -> Result<String> { self.create_markdown_in(doc, front, None) }
 
-    /// `create_markdown` into folder `parent`, like `create_from_in`.
+    /// `create_markdown` under `parent`, like `create_from_in`.
     pub fn create_markdown_in(&mut self, doc: &Document, front: &str, parent: Option<&str>) -> Result<String> {
         let id = uuid::Uuid::new_v4().to_string();
-        let lock = self.begin_write()?;
-        self.validate_folder(None, parent)?;
+        let _lock = self.begin_write()?;
+        self.validate_parent(None, parent)?;
         let t = now();
         let rel = self.uuid_rel(NOTES, &id, "md")?;
-        self.index.insert(id.clone(), Meta { created: t, modified: t, rel, name: Some(doc.title.text.clone()), parent: parent.map(str::to_string), markdown: true, ..Default::default() });
+        let order = self.new_child_order(parent)?;
+        self.index.insert(id.clone(), Meta { created: t, modified: t, rel, order, name: Some(doc.title.text.clone()), parent: parent.map(str::to_string), markdown: true, ..Default::default() });
         let text = format!("{front}{}", self.serialize_doc(&id, doc, None));
         if let Err(e) = self.write_file(&self.path(&id), text.as_bytes()).and_then(|_| self.save_index()) { self.index.remove(&id); return Err(e); }
         self.record_file_change(&id, None);
-        drop(lock);
-        self.place_new(&id, parent)?;
         Ok(id)
     }
 
-    /// Place a new document at the end of its virtual folder.
-    fn place_new(&mut self, id: &str, parent: Option<&str>) -> Result<()> {
-        if parent.is_some() { self.move_in_tree(id, parent, None)?; }
-        Ok(())
+    fn new_child_order(&self, parent: Option<&str>) -> Result<u64> {
+        if parent.is_none() { return Ok(0); }
+        self.index.values().filter(|m| m.parent.as_deref() == parent)
+            .map(|m| m.order).max().unwrap_or(0).checked_add(1).context("同级文档的排序已达上限")
     }
 
     /// A Markdown document's front matter, as on disk.
@@ -1210,44 +1194,27 @@ impl Store {
         n
     }
 
-    /// Move a document or folder to the 回收站; `root` is the page whose
-    /// deletion takes it along (`None`: deleted itself). A folder takes what
-    /// is in it along (deleting those afterwards does nothing more).
-    pub fn delete(&mut self, id: &str, root: Option<&str>) -> Result<()> {
+    /// Move a document and its descendants to the 回收站 under one deletion.
+    pub fn delete(&mut self, id: &str) -> Result<Vec<String>> {
         let _lock = self.begin_write()?;
         // 本机文件: only taken off the list; the file is the user's.
         if self.index.get(id).is_some_and(Meta::local) {
             self.index.remove(id);
-            self.loaded.borrow_mut().remove(id);
-            return self.save_index();
+            self.forget_loaded(id);
+            self.save_index()?;
+            return Ok(vec![id.to_string()]);
         }
-        if !self.index.contains_key(id) && self.trash.contains_key(id) { return Ok(()); }
-        anyhow::ensure!(self.index.contains_key(id), "文档或文件夹不存在");
-        let ride = root.unwrap_or(id).to_string();
-        let mut items = vec![];
-        if self.index[id].folder.is_some() {
-            for key in self.index.keys().filter(|k| *k != id) {
-                let mut parent = self.index[key].parent.as_deref();
-                while let Some(p) = parent {
-                    if p == id { items.push((key.clone(), Some(ride.clone()))); break; }
-                    parent = self.index.get(p).and_then(|m| m.parent.as_deref());
-                }
-            }
-        }
-        items.push((id.to_string(), root.map(str::to_string)));
-        self.trash_virtual(&items, true)
+        if self.trash.contains_key(id) { return Ok(vec![]); }
+        anyhow::ensure!(self.index.contains_key(id), "文档不存在");
+        let ids = subtree(id, self.index.iter().filter(|(_, m)| !m.local()).map(|(id, m)| (id, m.parent.as_ref())));
+        let items: Vec<_> = ids.iter().map(|key| (key.clone(), (key != id).then(|| id.to_string()))).collect();
+        self.trash_virtual(&items)?;
+        Ok(ids)
     }
 
     fn trash_path(&self, id: &str) -> PathBuf {
         let meta = self.trash.get(id).map(|t| &t.meta).or_else(|| self.index.get(id));
         self.abs(&format!("{NOTES}/{id}.{}", if meta.is_some_and(|m| m.markdown) { "md" } else { "xml" }))
-    }
-
-    /// `id` and the pages deleted along with it.
-    fn trash_group(&self, id: &str) -> Vec<String> {
-        let mut out = vec![id.to_string()];
-        out.extend(self.trash.iter().filter(|(k, t)| t.root.as_deref() == Some(id) && k.as_str() != id).map(|(k, _)| k.clone()));
-        out
     }
 
     /// The 回收站, newest first: one row per root deletion.
@@ -1259,14 +1226,13 @@ impl Store {
 
     /// Read without restoring the document or establishing an editable baseline.
     pub fn load_trash(&self, id: &str) -> Result<Document> {
-        let meta = self.trash.get(id).context("回收站中没有这篇文档")?;
-        anyhow::ensure!(meta.meta.folder.is_none(), "文件夹不能作为文档打开");
+        anyhow::ensure!(self.trash.contains_key(id), "回收站中没有这篇文档");
         let mut doc = self.parse_doc(id, &std::fs::read_to_string(self.trash_path(id))?)?;
         self.manifest_title(id, &mut doc);
         Ok(doc)
     }
 
-    /// Root deletions, or the immediate children of a deleted folder.
+    /// Root deletions, or the immediate children of a deleted document.
     pub fn list_trash_in(&mut self, parent: Option<&str>) -> Vec<TrashEntry> {
         let _lock = match self.begin_write() {
             Ok(lock) => Some(lock),
@@ -1280,18 +1246,19 @@ impl Store {
                 None => t.root.as_ref().is_none_or(|r| !self.trash.contains_key(r)),
             })
             .map(|(id, t)| {
-                let doc = if t.meta.markdown || t.meta.folder.is_some() { Document::default() } else { std::fs::read_to_string(self.trash_path(id)).ok().and_then(|x| docxml::parse(&x).ok()).unwrap_or_default() };
+                let doc = if t.meta.markdown { Document::default() } else { std::fs::read_to_string(self.trash_path(id)).ok().and_then(|x| docxml::parse(&x).ok()).unwrap_or_default() };
                 TrashEntry {
                     id: id.clone(),
                     meta: t.meta.clone(),
-                    title: t.meta.folder.clone().or_else(|| t.meta.name.clone()).unwrap_or_else(|| doc.title.text.clone()),
+                    title: t.meta.name.clone().unwrap_or_else(|| doc.title.text.clone()),
                     icon: doc.icon.clone(),
                     deleted: t.deleted,
                     parent: t.meta.parent.clone(),
                 }
             })
             .collect();
-        out.sort_by(|a, b| b.deleted.cmp(&a.deleted).then_with(|| a.id.cmp(&b.id)));
+        if parent.is_some() { out.sort_by(|a, b| (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id))); }
+        else { out.sort_by(|a, b| b.deleted.cmp(&a.deleted).then_with(|| a.id.cmp(&b.id))); }
         out
     }
 
@@ -1299,29 +1266,39 @@ impl Store {
     /// when its parent page is gone, so it landed at the top of 我的文档库.
     pub fn restore(&mut self, id: &str) -> Result<bool> {
         let _lock = self.begin_write()?;
-        anyhow::ensure!(self.trash.contains_key(id), "回收站中没有这篇文档");
-        let mut group = self.trash_group(id);
-        // Folders before what is in them.
-        let depth = |k: &String| { let mut seen = HashSet::new(); let mut p = self.trash.get(k).and_then(|t| t.meta.parent.clone()); while let Some(q) = p { if !seen.insert(q.clone()) { break } p = self.trash.get(&q).and_then(|t| t.meta.parent.clone()); } seen.len() };
-        group.sort_by_key(|k| (depth(k), k.clone()));
-        let parent = self.trash.get(id).and_then(|t| t.meta.parent.clone());
-        let moved = parent.as_ref().is_some_and(|p| !self.index_has(p));
-        for k in &group {
-            let Some(t) = self.trash.get(k) else { continue };
-            let parent = if k == id && moved { None } else { t.meta.parent.clone().filter(|p| self.index.get(p).is_some_and(|m| m.folder.is_some())) };
-            self.untrash_virtual(k, parent, None).with_context(|| format!("恢复文档 {k} 失败，已恢复的文档保留在文档库"))?;
+        self.restore_under_lock(id)
+    }
+
+    fn restore_under_lock(&mut self, id: &str) -> Result<bool> {
+        let saved = self.trash.get(id).context("回收站中没有这篇文档")?;
+        let root = saved.root.as_deref().unwrap_or(id);
+        let group = subtree(id, self.trash.iter().filter(|(key, t)| t.root.as_deref().unwrap_or(key) == root)
+            .map(|(key, t)| (key, t.meta.parent.as_ref())));
+        let moved = saved.meta.parent.as_ref().is_some_and(|p| !self.index_has(p));
+        let mut index = self.index.clone();
+        let mut trash = self.trash.clone();
+        for key in &group {
+            let mut saved = trash.remove(key).unwrap();
+            if key == id && moved { saved.meta.parent = None; }
+            self.check_body(&saved.meta)?;
+            index.insert(key.clone(), saved.meta);
+        }
+        self.commit_virtual_metadata(index, trash)?;
+        for key in group {
+            crate::versions::restore_from_trash(&self.history_base(), &key);
+            self.record_file_change(&key, None);
         }
         Ok(moved)
     }
 
     fn index_has(&self, id: &str) -> bool {
-        self.index.get(id).is_some_and(|m| m.folder.is_some() || self.path(id).exists())
+        self.index.contains_key(id) && self.path(id).is_file()
     }
 
     /// Copy a DocxXML file into the library under a fresh id.
     pub fn import(&mut self, path: &std::path::Path) -> Result<String> { self.import_into(path, None) }
 
-    /// `import` into folder `parent`.
+    /// `import` under `parent`.
     pub fn import_into(&mut self, path: &std::path::Path, parent: Option<&str>) -> Result<String> {
         let xml = std::fs::read_to_string(path)?;
         self.create_from_in(&docxml::parse(&xml)?, parent)
@@ -1339,9 +1316,9 @@ impl Store {
         let _lock = self.begin_write()?;
         if let Some(m) = self.index.get_mut(id) {
             // Where it is follows from the file, not from here.
-            let (rel, folder, parent, markdown, name, path) = (m.rel.clone(), m.folder.clone(), m.parent.clone(), m.markdown, m.name.clone(), m.path.clone());
+            let (rel, parent, markdown, name, path) = (m.rel.clone(), m.parent.clone(), m.markdown, m.name.clone(), m.path.clone());
             f(m);
-            (m.rel, m.folder, m.parent, m.markdown, m.name, m.path) = (rel, folder, parent, markdown, name, path);
+            (m.rel, m.parent, m.markdown, m.name, m.path) = (rel, parent, markdown, name, path);
         }
         self.save_index()
     }
@@ -1463,7 +1440,7 @@ impl Store {
     pub fn rename(&mut self, id: &str, title: &str) -> Result<Meta> {
         let _lock = self.begin_write()?;
         let before = self.file_state(id);
-        if self.index.get(id).is_some_and(|m| m.folder.is_some() || m.markdown || !m.local()) {
+        if self.index.get(id).is_some_and(|m| m.markdown || !m.local()) {
             // A Markdown file is left as it is: only its name changes.
             self.follow_title(id, title)?;
             let m = self.index.get_mut(id).unwrap();
@@ -1493,7 +1470,7 @@ impl Store {
         Some(m)
     }
 
-    /// 移动到: put `id` in folder `parent` (`None` = top level of 我的文档库), as its last child.
+    /// 移动到: put `id` under `parent` (`None` = top level of 我的文档库), as its last child.
     pub fn set_parent(&mut self, id: &str, parent: Option<&str>) -> Result<Meta> {
         self.move_in_tree(id, parent, None)?;
         Ok(self.index[id].clone())
@@ -1622,12 +1599,12 @@ mod tests {
         assert_eq!(restored.title.text, "first");
         s.save(&id, &restored).unwrap();
         assert!(s.versions(&id).len() >= 2);
-        s.delete(&id, None).unwrap();
+        s.delete(&id).unwrap();
         assert!(!s.versions(&id).is_empty());
         assert!(lib.0.join(".quiet").join("history-trash").join(&id).is_dir());
         s.restore(&id).unwrap();
         assert!(!s.versions(&id).is_empty());
-        s.delete(&id, None).unwrap();
+        s.delete(&id).unwrap();
         assert_eq!(s.list_trash()[0].id, id);
         s.restore(&id).unwrap();
         assert!(!s.versions(&id).is_empty());
@@ -1640,7 +1617,7 @@ mod tests {
         let mut other = lib.open();
         let journal = local.track_file_changes();
         let external = other.create_from(&doc("external")).unwrap();
-        let own = local.create_folder("own", None).unwrap();
+        let own = local.create_from_in(&doc("own"), None).unwrap();
         local.list();
         let changes = journal.take();
         assert_eq!(changes.len(), 1);
@@ -1656,8 +1633,8 @@ mod tests {
     fn tree_history_uses_fresh_disk_positions() {
         let lib = Lib::new("tree-journal");
         let mut local = lib.open();
-        let a = local.create_folder("a", None).unwrap();
-        let b = local.create_folder("b", None).unwrap();
+        let a = local.create_from_in(&doc("a"), None).unwrap();
+        let b = local.create_from_in(&doc("b"), None).unwrap();
         let page = local.create_from(&doc("page")).unwrap();
         let mut other = lib.open();
         other.set_parent(&page, Some(&a)).unwrap();
@@ -1688,7 +1665,7 @@ mod tests {
         assert_eq!(s.file_path(&xml).unwrap(), xml_path);
         let other = s.create_from(&doc("标题再次改变")).unwrap();
         assert_ne!(s.file_path(&other).unwrap().file_name(), xml_path.file_name());
-        let folder = s.create_folder("Folder", None).unwrap();
+        let folder = s.create_from_in(&doc("Folder"), None).unwrap();
         let md = s.create_markdown_in(&doc("Markdown 标题"), "---\nkeep: true\n---\n", Some(&folder)).unwrap();
         let md_path = s.file_path(&md).unwrap();
         assert_eq!(md_path.file_name().unwrap().to_str(), Some(format!("{md}.md").as_str()));
@@ -1697,7 +1674,7 @@ mod tests {
         let manifest = Manifest::parse(&std::fs::read(lib.0.join(FILE)).unwrap()).unwrap();
         let note = manifest.notes.iter().find(|n| n.id == md).unwrap();
         assert_eq!(note.title, "另一个显示标题");
-        assert_eq!(note.folder.as_deref(), Some(folder.as_str()));
+        assert_eq!(note.parent.as_deref(), Some(folder.as_str()));
         assert!(!lib.0.join(".git").exists());
         drop(s);
         let mut s = lib.open();
@@ -1708,7 +1685,7 @@ mod tests {
         assert_eq!(s.list().iter().find(|e| e.id == md).unwrap().title, "另一个显示标题");
         s.set_parent(&md, None).unwrap();
         assert_eq!(s.file_path(&md).unwrap().file_name(), md_path.file_name());
-        s.delete(&md, None).unwrap(); s.restore(&md).unwrap();
+        s.delete(&md).unwrap(); s.restore(&md).unwrap();
         assert_eq!(s.file_path(&md).unwrap().file_name(), md_path.file_name());
         assert_eq!(s.load(&md).unwrap().title.text, "另一个显示标题");
         assert!(!s.git_enabled());
@@ -1738,7 +1715,7 @@ mod tests {
         assert_eq!(s.file_path(&id).unwrap(), file);
         assert!(!std::fs::read_to_string(&file).unwrap().contains("Renamed"));
         // Through the 回收站 and back as Markdown.
-        s.delete(&id, None).unwrap();
+        s.delete(&id).unwrap();
         assert!(file.is_file());
         assert_eq!(s.list_trash()[0].title, "Renamed");
         s.restore(&id).unwrap();
@@ -1752,7 +1729,7 @@ mod tests {
     fn creating_into_a_folder_outside_a_batch() {
         let lib = Lib::new("create-into");
         let mut s = lib.open();
-        let folder = s.create_folder("Notes", None).unwrap();
+        let folder = s.create_from_in(&doc("Notes"), None).unwrap();
         let (_, doc) = s.create().unwrap();
         let md = s.create_markdown_in(&doc, "", Some(&folder)).unwrap();
         let xml = s.create_from_in(&doc, Some(&folder)).unwrap();
@@ -1805,7 +1782,7 @@ mod tests {
         let renamed = dir.canonicalize().unwrap().join("done.md");
         assert!(renamed.is_file() && !file.exists());
         // Removing it from the list keeps the file.
-        s.delete(&id, None).unwrap();
+        s.delete(&id).unwrap();
         assert!(renamed.is_file());
         assert!(s.list().iter().all(|e| e.id != id));
         assert!(s.list_trash().is_empty());
@@ -1855,7 +1832,7 @@ mod tests {
     fn markdown_moves_undo() {
         let lib = Lib::new("md-undo");
         let mut s = lib.open();
-        let folder = s.create_folder("f", None).unwrap();
+        let folder = s.create_from_in(&doc("f"), None).unwrap();
         let id = s.create_markdown(&crate::markdown::parse_file("x\n", "Note", None), "").unwrap();
         // A page whose parent is gone (in memory only: on disk, where a file
         // is decides its folder).
@@ -1891,7 +1868,7 @@ mod tests {
         assert!(s.save(&id, &doc("lost")).is_err());
         assert_eq!(s.load(&id).unwrap().title.text, "original");
         assert!(s.create_from(&doc("new")).is_err());
-        assert!(s.delete(&id, None).is_err());
+        assert!(s.delete(&id).is_err());
         assert_eq!(s.list().len(), 1);
     }
 
@@ -2042,7 +2019,7 @@ mod tests {
         let mut reopened = lib.open();
         assert_eq!(reopened.list().len(), 65);
         for (i, id) in ids.iter().enumerate() { assert_eq!(reopened.parsed[id].2.title, format!("Changed {i}")); }
-        s.delete(&ids[0], None).unwrap();
+        s.delete(&ids[0]).unwrap();
         assert_eq!(s.list().len(), 64);
         assert!(!lib.open().parsed.contains_key(&ids[0]));
     }
@@ -2066,7 +2043,7 @@ mod tests {
         // Saving through the store, or deleting the file, is seen too.
         s.save(&a, &doc_with("一", "一改")).unwrap();
         assert_eq!(bodies(&mut s), ["一改", "二改"]);
-        s.delete(&b, None).unwrap();
+        s.delete(&b).unwrap();
         assert_eq!(bodies(&mut s), ["一改"]);
         assert_eq!(s.parsed.len(), 1);
     }
@@ -2092,7 +2069,8 @@ mod tests {
     fn newer_manifest_version_is_refused() {
         let lib = Lib::new("format");
         drop(lib.open());
-        let manifest = Manifest { version: crate::manifest::VERSION + 1, ..Default::default() };
+        let mut manifest = Manifest::default();
+        manifest.version += 1;
         std::fs::write(lib.0.join(FILE), serde_json::to_vec(&manifest).unwrap()).unwrap();
         let err = Store::open_at(lib.0.clone()).err().expect("a newer library must not open");
         assert!(format!("{err:#}").contains("不支持的文档库清单版本"));
@@ -2102,12 +2080,10 @@ mod tests {
     fn trash_round_trip() {
         let lib = Lib::new("trash");
         let mut s = lib.open();
-        // Only folders hold pages: a folder goes to the trash with what is in it.
-        let a = s.create_folder("父", None).unwrap();
+        let a = s.create_from_in(&doc("父"), None).unwrap();
         let b = s.create_from(&doc("子")).unwrap();
         s.set_parent(&b, Some(&a)).unwrap();
-        s.delete(&b, Some(&a)).unwrap();
-        s.delete(&a, None).unwrap();
+        s.delete(&a).unwrap();
         assert!(s.list().is_empty());
         let t = s.list_trash();
         assert_eq!(t.len(), 1, "the page rides along with its folder");
@@ -2145,7 +2121,7 @@ mod tests {
         let mut b = lib.open();
         let id = a.create_from(&doc("一")).unwrap();
         let two = a.create_from(&doc("二")).unwrap();
-        a.delete(&id, None).unwrap();
+        a.delete(&id).unwrap();
         // `b` still has `id` in memory and changes it: it must not come back.
         b.set_pinned(&id, true).unwrap();
         let mut c = lib.open();
@@ -2201,7 +2177,7 @@ mod tests {
         assert!(a_body.contains(&format!("href=\"{b}.xml\"")));
         assert!(b_body.contains(&format!("href=\"{a}.xml\"")));
         s.load_for_edit(&a, false).unwrap();
-        let f = s.create_folder("夹", None).unwrap();
+        let f = s.create_from_in(&doc("夹"), None).unwrap();
         let journal = s.track_file_changes();
         s.set_parent(&b, Some(&f)).unwrap();
         let changes = journal.take();
@@ -2224,8 +2200,8 @@ mod tests {
         let index = lib.0.join(FILE);
         let journal = s.track_file_changes();
         let (f, ids) = s.batch(|s| {
-            let f = s.create_folder("导入", None).unwrap();
-            let g = s.create_folder("子", Some(&f)).unwrap();
+            let f = s.create_from_in(&doc("导入"), None).unwrap();
+            let g = s.create_from_in(&doc("子"), Some(&f)).unwrap();
             let mut ids = vec![];
             for i in 0..5 { ids.push(s.create_markdown_in(&doc(&format!("笔记 {i}")), "", Some(&f)).unwrap()); }
             ids.push(s.create_from_in(&doc("深处"), Some(&g)).unwrap());
@@ -2242,9 +2218,9 @@ mod tests {
         let mut again = lib.open();
         let list = again.list();
         assert_eq!(list.len(), 9);
-        let kids: Vec<&Entry> = { let mut k: Vec<&Entry> = list.iter().filter(|e| e.meta.parent.as_deref() == Some(f.as_str()) && e.meta.folder.is_none()).collect(); k.sort_by_key(|e| e.meta.order); k };
+        let kids: Vec<&Entry> = { let mut k: Vec<&Entry> = list.iter().filter(|e| e.meta.parent.as_deref() == Some(f.as_str())).collect(); k.sort_by_key(|e| e.meta.order); k };
         let titles: Vec<&str> = kids.iter().map(|e| e.title.as_str()).collect();
-        assert_eq!(titles, ["笔记 0", "笔记 1", "笔记 2", "笔记 3", "笔记 4", "嵌套"]);
+        assert_eq!(titles, ["子", "笔记 0", "笔记 1", "笔记 2", "笔记 3", "笔记 4", "嵌套"]);
         assert_eq!(folders_of(&list, &ids[5]), ["导入", "子"]);
     }
 
@@ -2255,19 +2231,19 @@ mod tests {
         let lib = Lib::new("batch-cut");
         let mut s = lib.open();
         let kept = s.create_from(&doc("原有")).unwrap();
-        let f = s.create_folder("夹", None).unwrap();
+        let f = s.create_from_in(&doc("夹"), None).unwrap();
         s.begin_batch().unwrap();
         for i in 0..3 { s.create_from_in(&doc(&format!("新 {i}")), Some(&f)).unwrap(); }
-        s.delete(&kept, None).unwrap();
+        s.delete(&kept).unwrap();
         drop(s);
         let mut again = lib.open();
         let list = again.list();
         for e in &list {
-            if e.meta.folder.is_none() { assert!(again.path(&e.id).is_file(), "{} has no file", e.title); }
+            assert!(again.path(&e.id).is_file(), "{} has no file", e.title);
         }
-        let mut titles: Vec<&str> = list.iter().filter(|e| e.meta.folder.is_none()).map(|e| e.title.as_str()).collect();
+        let mut titles: Vec<&str> = list.iter().map(|e| e.title.as_str()).collect();
         titles.sort();
-        assert_eq!(titles, ["新 0", "新 1", "新 2"]);
+        assert_eq!(titles, ["夹", "新 0", "新 1", "新 2"]);
         assert_eq!(again.list_trash().len(), 1);
     }
 
@@ -2277,14 +2253,10 @@ mod tests {
     fn a_folder_deleted_in_a_batch_comes_back_whole() {
         let lib = Lib::new("batch-trash");
         let mut s = lib.open();
-        let f = s.create_folder("夹", None).unwrap();
+        let f = s.create_from_in(&doc("夹"), None).unwrap();
         let ids = s.batch(|s| (0..20).map(|i| s.create_from_in(&doc(&format!("文 {i}")), Some(&f)).unwrap()).collect::<Vec<_>>()).unwrap();
         let journal = s.track_file_changes();
-        // As the window does it: the folder, then each page under it.
-        s.batch(|s| {
-            s.delete(&f, None).unwrap();
-            for id in &ids { s.delete(id, Some(&f)).unwrap(); }
-        }).unwrap();
+        s.batch(|s| s.delete(&f)).unwrap().unwrap();
         assert_eq!(journal.take().len(), 21);
         let mut again = lib.open();
         assert!(again.list().is_empty());
@@ -2313,12 +2285,12 @@ mod tests {
         };
         let lib = Lib::new("import-speed");
         let mut s = lib.open();
-        let a = s.create_folder("逐篇", None).unwrap();
-        let b = s.create_folder("批量", None).unwrap();
+        let a = s.create_from_in(&doc("逐篇"), None).unwrap();
+        let b = s.create_from_in(&doc("批量"), None).unwrap();
         let slow = notes(&mut s, &a, false);
         let fast = notes(&mut s, &b, true);
         let t = std::time::Instant::now();
-        s.batch(|s| s.delete(&b, None)).unwrap().unwrap();
+        s.batch(|s| s.delete(&b)).unwrap().unwrap();
         eprintln!("one by one {slow:?}, batch {fast:?}, delete {:?}", t.elapsed());
         // What 导入文件夹 does, from Markdown files on disk to the list shown.
         let src = Lib::new("import-src");
@@ -2331,8 +2303,8 @@ mod tests {
         let mut s = lib.open();
         let t = std::time::Instant::now();
         s.batch(|s| {
-            let top = s.create_folder("导入", None).unwrap();
-            let sub = s.create_folder("子", Some(&top)).unwrap();
+            let top = s.create_from_in(&doc("导入"), None).unwrap();
+            let sub = s.create_from_in(&doc("子"), Some(&top)).unwrap();
             for (dir, parent) in [(src.0.clone(), &top), (src.0.join("子"), &sub)] {
                 for e in std::fs::read_dir(dir).unwrap().flatten().filter(|e| e.path().is_file()) {
                     let p = e.path();

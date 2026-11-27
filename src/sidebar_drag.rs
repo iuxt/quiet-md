@@ -6,7 +6,7 @@ use gpui::{prelude::FluentBuilder, *};
 use std::{cell::{Cell, RefCell}, collections::{HashMap, HashSet, VecDeque}, hash::{Hash, Hasher}, rc::Rc, time::Instant};
 
 const PITCH: f32 = 31.;
-/// Whether clicking a folder open or shut animates (the drawer below): 外观 ›
+/// Whether expanding or collapsing a document animates (the drawer below): 外观 ›
 /// 动画 › 丰富. Otherwise rows appear and go in the same frame. Lifting and
 /// dropping an open folder keep their drawers either way.
 fn animate_folding() -> bool { crate::settings::motion_high() }
@@ -195,10 +195,9 @@ impl SidebarDrag {
 }
 
 /// A row's face without its controls: the drag ghost and rows on their way out.
-fn row_face(e: &Entry, open: bool) -> Div {
-    div().h(px(crate::sidebar::ROW_H)).w_full().pl(px(6.)).flex().items_center()
+fn row_face(e: &Entry) -> Div {
+    div().h(px(crate::sidebar::ROW_H)).w_full().pl(px(22.)).flex().items_center()
         .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().map(|d| match &e.icon {
-            _ if e.meta.folder.is_some() => d.child(icon(if open { "folder-open" } else { "folder" }, crate::sidebar::ROW_ICON, Theme::icon())),
             _ if e.meta.markdown => d.child(icon("doc-md", crate::sidebar::ROW_ICON, Theme::icon())),
             Some(em) => d.text_size(px(13.)).line_height(px(20.)).child(em.clone()),
             None => d.child(icon("doc", crate::sidebar::ROW_ICON, Theme::icon())),
@@ -216,7 +215,7 @@ impl Workspace {
         let mut stamp = rustc_hash::FxHasher::default();
         // Tree order and the row fields used by sidebar drawing and drag hit testing.
         for e in &self.entries {
-            (&e.id, &e.meta.parent, e.meta.place(), e.meta.folder.is_some(), e.meta.local(), &e.title, &e.icon, e.meta.markdown).hash(&mut stamp);
+            (&e.id, &e.meta.parent, e.meta.place(), e.meta.local(), &e.title, &e.icon, e.meta.markdown).hash(&mut stamp);
         }
         let stamp = stamp.finish();
         let mut cache = self.folder_drag.rows.borrow_mut();
@@ -270,20 +269,20 @@ impl Workspace {
         let Some(d) = self.folder_drag.active.as_mut().filter(|d| d.started) else { return };
         let y = f32::from(d.at.y - d.offset.y - bounds.top()) + 15.;
         let desired = (d.initial_depth as i32 + (f32::from(d.at.x - d.start.x) / INDENT).round() as i32).max(0) as usize;
-        // Hit the visible folder row with the pointer, including collapsed folders.
+        // Hit the document row under the pointer, including collapsed parents.
         // Accept immediately; the dwell timer only controls automatic expansion.
         let pointer_y = f32::from(d.at.y - bounds.top());
         let folder = rows.iter().enumerate().find(|(i, r)| {
             let top = self.folder_drag.springs.get(&r.entry.id).map_or(
                 (*i + usize::from(*i >= d.index)) as f32 * PITCH, |s| s.p[1]);
-            r.entry.meta.folder.is_some() && pointer_y > top + 5. && pointer_y < top + 26.
+            pointer_y > top + 5. && pointer_y < top + 26.
                 && f32::from(d.at.x - bounds.left()) >= r.depth as f32 * INDENT
         });
         if let Some((i, r)) = folder {
             if d.hover.as_ref().is_none_or(|(id, _)| *id != r.entry.id) {
                 d.hover = Some((r.entry.id.clone(), Instant::now()));
                 d.initial_depth = r.depth + 1; d.start.x = d.at.x;
-                // The folder notices the row: a small bounce as its lid opens.
+                // The receiving row bounces when the pointer settles on it.
                 if let Some(f) = self.folder_drag.fx.get_mut(&r.entry.id) { f.pop.v += 3.2; }
             }
             d.index = i + 1;
@@ -300,10 +299,10 @@ impl Workspace {
             rows.iter().enumerate().filter(|(i, _)| y > (*i + usize::from(*i >= d.index)) as f32 * PITCH + 15.).count()
         };
         let prev = index.checked_sub(1).and_then(|i| rows.get(i));
-        let max = prev.map_or(0, |r| r.depth + usize::from(r.entry.meta.folder.is_some()));
+        let max = prev.map_or(0, |r| r.depth + 1);
         let min = rows.get(index).map_or(0, |r| r.depth);
         let depth = desired.clamp(min.min(max), max);
-        let parent = if depth == 0 { None } else { rows[..index].iter().rev().find(|r| r.depth + 1 == depth && r.entry.meta.folder.is_some()).map(|r| r.entry.id.clone()) };
+        let parent = if depth == 0 { None } else { rows[..index].iter().rev().find(|r| r.depth + 1 == depth).map(|r| r.entry.id.clone()) };
         d.index = index; d.depth = depth; d.parent = parent;
     }
 
@@ -322,7 +321,7 @@ impl Workspace {
         // Rows where they stand with the open slot, as for a row being moved: the hit stays put while they make room.
         let cur = self.sidebar_drop.as_ref().and_then(|t| t.slot).map(|s| s.0);
         let top_of = |i: usize| (i + usize::from(cur.is_some_and(|c| i >= c))) as f32 * PITCH;
-        if let Some((_, r)) = rows.iter().enumerate().find(|(i, r)| r.entry.meta.folder.is_some() && y > top_of(*i) + 5. && y < top_of(*i) + 26.) {
+        if let Some((_, r)) = rows.iter().enumerate().find(|(i, _)| y > top_of(*i) + 5. && y < top_of(*i) + 26.) {
             return Some(SidebarDropAt { parent: Some(r.entry.id.clone()), slot: None, before: None });
         }
         let index = rows.iter().enumerate().filter(|(i, _)| y > top_of(*i) + 15.).count();
@@ -382,9 +381,13 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Put `id` last in `folder` (a drop on a folder row), saved like a sidebar drop.
-    pub(crate) fn move_into_folder(&mut self, id: &str, folder: &str, cx: &mut Context<Self>) {
-        let mut movement = PendingMove { id: id.to_string(), parent: Some(folder.to_string()), before: None, history: 0 };
+    /// Append `id` under `parent`, using the same write queue as sidebar drops.
+    pub(crate) fn move_into_document(&mut self, id: &str, parent: &str, cx: &mut Context<Self>) {
+        let tree = crate::tree::Tree::new(&self.entries);
+        if tree.subtree(id).iter().any(|key| key == parent) { return; }
+        self.expanded.insert(parent.to_string());
+        self.reveal_in_tree(parent);
+        let mut movement = PendingMove { id: id.to_string(), parent: Some(parent.to_string()), before: None, history: 0 };
         let file_before = self.entries.clone();
         self.apply_tree_move(&movement);
         movement.history = self.remember_tree_move(file_before, crate::settings::tr("拖拽移动", "Drag move"));
@@ -456,11 +459,10 @@ impl Workspace {
         }).detach();
     }
 
-    /// The row the selection pill sits on: the open doc, or the open folder.
+    /// The selection pill follows the open document.
     fn sidebar_pick(&self) -> Option<String> {
         match self.view {
             crate::app::View::Doc => self.current.clone(),
-            crate::app::View::Folder => self.folder_current.clone(),
             _ => None,
         }
     }
@@ -759,13 +761,13 @@ impl Workspace {
             for l in fd.leaving.values() {
                 let [x, y, w] = l.pos.p;
                 container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).opacity(l.alpha.unit())
-                    .text_color(Theme::sidebar_text()).child(row_face(&l.row.entry, false)));
+                    .text_color(Theme::sidebar_text()).child(row_face(&l.row.entry)));
             }
             for (r, [x, y, w], band, a) in &closing {
                 if band.1 - band.0 < 0.5 { continue; }
                 if !on_screen(*y) { continue; }
                 let el = div().id(SharedString::from(format!("fclose-{}", r.entry.id))).h(row_h).opacity(*a).text_color(Theme::sidebar_text())
-                    .child(row_face(&r.entry, ws.expanded.contains(&r.entry.id)));
+                    .child(row_face(&r.entry));
                 container = container.child(clipped(el, *x, *y - 4. * (1. - a), *w, Some(*band)));
             }
             if let Some((s, a)) = &fd.zone {
@@ -821,7 +823,7 @@ impl Workspace {
                         .bg(theme::raised(Theme::bg_body()).opacity(lift)).shadow(faded(theme::shadow_panel(), lift))))
                     .when(fx.glow.unit() > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_landed().opacity(fx.glow.unit()))))
                     .when(hover > 0.005, |d| d.child(div().absolute().inset_0().rounded(radius).bg(Theme::sidebar_hover().opacity(hover))))
-                    .child(ws.doc_row(&r.entry, "doc", 0, r.entry.meta.folder.is_some(), cx));
+                    .child(ws.doc_row(&r.entry, "doc", 0, cx));
                 // Revealed rows settle the last few pixels as they fade in.
                 container = container.child(clipped(el, x, y - 4. * (1. - a), w, band));
             }
@@ -840,25 +842,22 @@ impl Workspace {
         layer.into_any_element()
     }
 
-    /// A click on a row. A folder opens its page and unfolds, like a page does;
-    /// its chevron (or clicking the folder already shown) only folds and unfolds
-    /// it, and ⌥ on the chevron does the same to every folder inside.
+    /// The title opens the document. Its chevron toggles children, recursively with ⌥.
     fn sidebar_click(&mut self, id: &str, modifiers: Modifiers, window: &mut Window, cx: &mut Context<Self>) {
         let on_icon = std::mem::take(&mut self.folder_drag.icon_press) && self.folder_drag.has_children(id);
         let all = std::mem::take(&mut self.folder_drag.icon_alt);
-        if self.entries.iter().any(|e| e.id == id && e.meta.folder.is_some()) {
-            let shown = self.view == crate::app::View::Folder && self.folder_current.as_deref() == Some(id);
-            if on_icon || shown {
-                let opening = !self.expanded.contains(id);
-                let folders: Vec<String> = if on_icon && all {
-                    crate::tree::Tree::new(&self.entries).subtree(id).into_iter()
-                        .filter(|k| self.entries.iter().any(|e| &e.id == k && e.meta.folder.is_some())).collect()
-                } else { vec![id.to_string()] };
-                for f in folders { if opening { self.expanded.insert(f); } else { self.expanded.remove(&f); } }
-            } else if !self.open_folder(id, window, cx) { return; }
-            self.folder_drag.kick(id, 3.5);
-            cx.notify();
-        } else { self.open_from_click(id, modifiers, window, cx); }
+        if !on_icon {
+            self.open_from_click(id, modifiers, window, cx);
+            if self.current.as_deref() == Some(id) && self.folder_drag.has_children(id) { self.expanded.insert(id.to_string()); cx.notify(); }
+            return;
+        }
+        let opening = !self.expanded.contains(id);
+        let docs = if all { crate::tree::Tree::new(&self.entries).subtree(id) } else { vec![id.to_string()] };
+        for doc in docs {
+            if opening { self.expanded.insert(doc); } else { self.expanded.remove(&doc); }
+        }
+        self.folder_drag.kick(id, 3.5);
+        cx.notify();
     }
 
     pub(crate) fn track_sidebar_press(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
@@ -891,7 +890,7 @@ impl Workspace {
             let inside = d.excluded.len().saturating_sub(1);
             layer = layer.child(div().absolute().left(px(x - 3. * l)).top(px(y - l)).w(px(width + 6. * l)).h(px(crate::sidebar::ROW_H)).pr(px(6.)).rounded(px(crate::sidebar::ROW_R))
                 .bg(theme::raised(Theme::bg_body())).shadow(faded(theme::shadow_panel(), l.min(1.))).flex().items_center().text_color(Theme::text())
-                .child(row_face(e, self.expanded.contains(&e.id)).flex_1().min_w_0().pl(px(6. + 3. * l)))
+                .child(row_face(e).flex_1().min_w_0().pl(px(22. + 3. * l)))
                 .when(inside > 0, |g| g.child(div().flex_none().h(px(18.)).min_w(px(18.)).px(px(5.)).rounded(px(9.)).flex().items_center().justify_center()
                     .bg(Theme::sidebar_drop_slot()).text_size(px(11.)).text_color(Theme::sidebar_text()).font_weight(FontWeight::MEDIUM)
                     .opacity(d.lift.unit()).child(inside.to_string()))));

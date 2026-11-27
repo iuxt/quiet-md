@@ -75,7 +75,7 @@ impl Workspace {
     fn import_local(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.row_menu = None;
         let Some(doc) = self.doc_of(id, cx) else { return };
-        match self.write_note_copy(id, doc) {
+        match self.write_note_copy(id, doc, None) {
             Ok(new) => {
                 self.entries = self.store.list();
                 self.sort();
