@@ -3,7 +3,7 @@ use super::*;
 impl Store {
     /// Independent handle for background tree writes; begin_write reloads under the library lock.
     pub fn tree_writer(&self) -> Self {
-        Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), manifest: self.manifest.clone(),
+        Self { file_changes: vec![], root: self.root.clone(), index: self.index.clone(), trash: self.trash.clone(), manifest: self.manifest.clone(), manifest_cache: Default::default(),
             loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: self.parsed_disk.clone(), warnings: vec![], batch: Default::default() }
     }
 
@@ -12,6 +12,7 @@ impl Store {
     pub fn receive_tree(&mut self, writer: Self) {
         assert_eq!(self.root, writer.root);
         self.index = writer.index; self.trash = writer.trash; self.manifest = writer.manifest;
+        self.manifest_cache = writer.manifest_cache;
         self.parsed = writer.parsed;
         self.parsed_disk = writer.parsed_disk;
         self.warnings.extend(writer.warnings);

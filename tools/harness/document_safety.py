@@ -34,10 +34,8 @@ script.write_text(f"""resize 1200 900
 wait 1500
 move 1150 850
 check-document-safety preview
-click 1144 24
-wait 250
 pick {xml}
-click 1040 125
+key cmd-shift-i
 wait 1600
 check-document-safety imported
 shot imported
@@ -52,9 +50,9 @@ wait 250
 filedrop 700 300
 wait 1800
 shot home-batch
-filedrag 110 105 {incoming / 'FolderC'}|{incoming / 'FolderD'}|{incoming / 'SidebarLoose.md'}
+filedrag 110 135 {incoming / 'FolderC'}|{incoming / 'FolderD'}|{incoming / 'SidebarLoose.md'}
 wait 250
-filedrop 110 105
+filedrop 110 135
 wait 250
 shot sidebar-confirm
 click 740 485

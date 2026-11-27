@@ -16,9 +16,16 @@ from xml.sax.saxutils import escape
 
 HERE = Path(__file__).resolve().parent
 PRELUDE = "resize 1280 800\nwait 1500\nmove 1230 750\n"
-OPEN_FIRST = "click 120 135\nwait 500\nkey cmd-up\nkey down\nkey end\nwait 2000\n"
-# The mixed fixture starts with a heading; edit its first ordinary paragraph.
-OPEN_MIXED = OPEN_FIRST + "key down\nkey end\n"
+
+
+def open_note(title, settle=500):
+    return f"key cmd-j\ntype {title}\nkey enter\nwait {settle}\n"
+
+
+def edit_note(title, mixed=False):
+    # The mixed fixture starts with a heading; edit its first ordinary paragraph.
+    return (open_note(title) + "key cmd-up\nkey down\n" + ("key down\n" if mixed else "")
+            + "key end\nwait 2000\n")
 
 
 def library(root, docs):
@@ -53,37 +60,38 @@ def main():
     million = re.sub(r"^<title>.*?</title>\s*", "", million)
     small = [("Resource baseline", "<p>Resource stress test baseline.</p>", "xml")]
     cases = {}
-    cases["idle"] = (small, PRELUDE + OPEN_FIRST + "phase idle-before\nidle 60000\nphase sustained-edit\n" +
+    cases["idle"] = (small, PRELUDE + edit_note(small[0][0]) + "phase idle-before\nidle 60000\nphase sustained-edit\n" +
                      ("type x\nwait 100\n" * 120) + "wait 2000\nphase revert-before-save\n" +
                      ("type x\nkey backspace\nwait 800\n" * 8) + "phase save-clean\nbench 50 key cmd-s\nwait 2000\n"
                      "phase idle-after\nidle 60000\n", 210)
     edit = "phase typing\nbench 200 type x\nphase backspace\nbench 200 key backspace\nphase scrolling\nbench 200 wheel 900 500 40\n"
-    cases["million"] = ([("Million", million, "xml")], PRELUDE + OPEN_MIXED + edit +
+    cases["million"] = ([("Million", million, "xml")], PRELUDE + edit_note("Million", mixed=True) + edit +
                         "phase settle\nwait 3000\nphase idle-large\nidle 40000\n", 180)
-    cases["undo"] = ([("Million", million, "xml"), ("Release", "<p>Small release control.</p>", "xml")], PRELUDE + OPEN_MIXED +
-                     "phase checkpoints\nbench 550 key enter\nphase undo\nbench 550 key cmd-z\n"
-                     "phase redo\nbench 550 key cmd-shift-z\nphase leave\nclick 120 166\nwait 3000\n"
+    # Fill the history, then measure the 20 steps guaranteed by the undo budget.
+    cases["undo"] = ([("Million", million, "xml"), ("Release", "<p>Small release control.</p>", "xml")], PRELUDE + edit_note("Million", mixed=True) +
+                     "phase checkpoints\nbench 550 key enter\nphase undo\nbench 20 key cmd-z\n"
+                     "phase redo\nbench 20 key cmd-shift-z\nphase leave\n" + open_note("Release", 3000) +
                      "phase idle-released\nidle 40000\n", 240)
-    cases["five-million"] = ([("Five million", million * 5, "xml")], PRELUDE + OPEN_MIXED + edit +
+    cases["five-million"] = ([("Five million", million * 5, "xml")], PRELUDE + edit_note("Five million", mixed=True) + edit +
                              "phase idle-large\nidle 40000\n", 240)
     md = "\n\n".join(f"Paragraph {i:05d}. " + "Markdown content 中文测试. " * 8 for i in range(6000))
-    cases["markdown"] = ([("Large Markdown", md, "md")], PRELUDE + OPEN_FIRST + edit +
+    cases["markdown"] = ([("Large Markdown", md, "md")], PRELUDE + edit_note("Large Markdown") + edit +
                          "phase idle-large\nidle 15000\n", 180)
     cases["paragraph"] = ([("Long paragraph", "<p>" + "中文 mixed text 0123456789 " * 8000 + "</p>", "xml")],
-                          PRELUDE + OPEN_FIRST + edit + "phase settled\nidle 5000\n", 150)
+                          PRELUDE + edit_note("Long paragraph") + edit + "phase settled\nidle 5000\n", 150)
     code = escape("\n".join(f'let value_{i} = "A long highlighted line with 中文, 0123456789";' for i in range(10000)))
     cases["code"] = ([("Long code", f'<pre lang="rust"><code>{code}</code></pre>', "xml")],
-                     PRELUDE + OPEN_FIRST + "phase code-scroll\nbench 100 wheel 900 500 40\nphase code-edit\nbench 50 type x\nwait 2000\n", 180)
+                     PRELUDE + edit_note("Long code") + "phase code-scroll\nbench 100 wheel 900 500 40\nphase code-edit\nbench 50 type x\nwait 2000\n", 180)
     table = '<table><colgroup>' + '<col width="100"/>' * 8 + '</colgroup><tbody>' + ''.join(
         '<tr>' + ''.join(f'<td><p>R{r} C{c} 中文</p></td>' for c in range(8)) + '</tr>' for r in range(1000)) + '</tbody></table>'
-    cases["table"] = ([("Large table", table, "xml")], PRELUDE + OPEN_FIRST +
+    cases["table"] = ([("Large table", table, "xml")], PRELUDE + edit_note("Large table") +
                       "phase table-scroll\nbench 100 wheel 900 500 40\nphase settled\nidle 5000\n", 180)
     for n in (1000, 10000):
         docs = [(f"Note {i:05d}", f"<p>Record {i:05d}. " + "Search body 中文 ABC def 0123456789. " * 60 + "</p>", "xml") for i in range(n)]
         steps = PRELUDE + "phase library-idle\nidle 15000\nphase home-scroll\nclick 70 65\nwait 500\nbench 100 wheel 900 500 40\n"
         steps += "phase sidebar-scroll\nbench 100 wheel 180 500 40\nphase search\nkey cmd-j\nbench 8 type q\n"
         steps += "key escape\nphase settle\nwait 3000\nphase library-idle-after\nidle 15000\n"
-        steps += "phase edit-open\nkey cmd-j\ntype Note 00000\nkey enter\nwait 500\nkey cmd-up\nkey down\nkey end\n"
+        steps += "phase edit-open\n" + edit_note("Note 00000")
         steps += "phase library-edit\n" + "type x\nwait 100\n" * 30 + "wait 2000\n"
         cases[f"library-{n}"] = (docs, steps, 240)
     many_docs = cases["library-10000"][0]
@@ -97,9 +105,9 @@ def main():
     steps = PRELUDE + "phase photo-home\nclick 70 65\nwait 6000\n"
     for cycle in range(3):
         steps += f"phase photo-cycle-{cycle}\n"
-        for i in range(1, 12):
-            steps += f"click 120 {135 + 31 * i}\nwait 250\n"
-        steps += "click 120 135\nwait 500\n"
+        for i in range(cycle * 8, (cycle + 1) * 8):
+            steps += open_note(f"Photo {i:02d}", 250)
+        steps += open_note("Photo notes")
         steps += f"phase photo-release-{cycle}\nidle 35000\n"
     cases["photos"] = (docs, steps, 240)
     docs = [(f"Switch {i:03d}", "<p>" + "Switching note body 中文. " * 80 + "</p>", "xml") for i in range(160)]
@@ -108,7 +116,7 @@ def main():
         for chunk in range(4):
             steps += f"phase switch-{cycle}-{chunk}\n"
             for i in range(chunk * 40, (chunk + 1) * 40):
-                steps += f"key cmd-j\ntype Switch {i:03d}\nkey enter\nwait 20\n"
+                steps += open_note(f"Switch {i:03d}", 20)
         steps += f"phase switch-idle-{cycle}\nidle 10000\n"
     cases["switching"] = (docs, steps, 300)
     results, failed = [], False

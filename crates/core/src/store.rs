@@ -247,11 +247,14 @@ pub struct Store {
     /// stores the tree while document links remain relative file paths.
     index: HashMap<String, Meta>,
     trash: HashMap<String, Trashed>,
-    manifest: Manifest,
+    manifest: Arc<Manifest>,
+    manifest_cache: std::cell::RefCell<Option<ManifestCache>>,
     /// Problems found during library operations.
     pub warnings: Vec<String>,
     batch: Batch,
 }
+
+struct ManifestCache { bytes: Vec<u8>, manifest: Arc<Manifest> }
 
 /// The parts of an `Entry` that come from the document file.
 #[derive(Clone)]
@@ -612,7 +615,7 @@ impl Store {
 
     pub fn open_at(root: PathBuf) -> Result<Self> {
         let lock = Self::prepare_layout_locked(&root)?;
-        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash: HashMap::new(), manifest: Manifest::default(), warnings: vec![], loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: Default::default(), batch: Default::default() };
+        let mut store = Store { file_changes: vec![], root, index: HashMap::new(), trash: HashMap::new(), manifest: Default::default(), manifest_cache: Default::default(), warnings: vec![], loaded: Default::default(), loaded_titles: Default::default(), copied: Default::default(), parsed: HashMap::new(), parsed_disk: Default::default(), batch: Default::default() };
         store.reload_virtual()?;
         store.load_parsed();
         drop(lock);

@@ -129,7 +129,6 @@ impl Workspace {
     }
 
     pub(crate) fn render_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let entries: Vec<Entry> = self.entries.clone();
         self.more_bounds.borrow_mut().clear();
         self.settle_sidebar_drop(cx);
 
@@ -199,7 +198,7 @@ impl Workspace {
 
         let mut list = div().flex().flex_col().px(px(SB_X)).pb(px(8.));
         // Pinned docs are shortcuts: they stay in 我的文档 too.
-        let pinned: Vec<&Entry> = entries.iter().filter(|e| e.meta.pinned).collect();
+        let pinned: Vec<&Entry> = self.entries.iter().filter(|e| e.meta.pinned).collect();
         if !pinned.is_empty() {
             list = list.child(self.section(0, crate::settings::text("置顶"), cx));
             if !self.folded[0] {

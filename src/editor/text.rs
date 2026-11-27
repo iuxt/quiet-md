@@ -33,7 +33,7 @@ pub struct Row {
 
 pub struct TextLayout {
     pub bounds: Bounds<Pixels>,
-    pub lines: Rc<Vec<(usize, WrappedLine)>>,
+    pub lines: Rc<Vec<(usize, Rc<WrappedLine>)>>,
     pub rows: Vec<Row>,
     pub line_height: Pixels,
     /// Laid out as code (monospace).
@@ -271,7 +271,7 @@ pub struct RichTextElement {
     pub marked: Option<Range<usize>>,
     pub cache: LayoutCache,
     pub show_caret: bool,
-    pub highlight: Option<Box<dyn Fn(&str) -> Vec<crate::highlight::Span>>>,
+    pub code_language: Option<String>,
     /// 查找和替换 hits as (range, is_current), tinted over the glyphs.
     pub found: Vec<(Range<usize>, bool)>,
     /// Equation numbers shown before this block (`katexEqnNo`).
@@ -289,8 +289,8 @@ pub struct RichTextElement {
 }
 
 pub struct Prepared {
-    lines: Rc<Vec<(usize, WrappedLine)>>,
-    shaped: ShapedTextCache,
+    lines: Rc<Vec<(usize, Rc<WrappedLine>)>>,
+    shaped: Rc<ShapedTextCache>,
     wrap_width: Option<Pixels>,
     line_height: Pixels,
     /// (height, base_dy) of every row, in order.
@@ -303,18 +303,61 @@ pub struct Prepared {
 
 #[derive(Default)]
 pub struct ShapeCache { clock: u64, entries: HashMap<BlockId, CachedShape> }
-struct CachedShape { used: u64, text: SharedString, runs: Vec<TextRun>, font_size: Pixels, value: Rc<Prepared> }
+#[derive(Clone, PartialEq)]
+struct CodeRuns { language: String, theme: u64, color: Hsla, marked: Option<Range<usize>> }
+struct CachedShape {
+    used: u64,
+    text: SharedString,
+    runs: Rc<[TextRun]>,
+    code: Option<CodeRuns>,
+    highlight: Option<Rc<crate::highlight::CodeHighlight>>,
+    font_size: Pixels,
+    value: Rc<Prepared>,
+}
 impl ShapeCache {
-    fn get(&mut self, id: BlockId, text: &SharedString, runs: &[TextRun], font_size: Pixels, height: Pixels, wrap: Option<Pixels>) -> Option<Rc<Prepared>> {
+    fn code_style(&self, id: BlockId, key: &CodeRuns) -> Option<&CachedShape> {
+        let entry = self.entries.get(&id)?;
+        entry.code.as_ref().filter(|old| old.language == key.language && old.theme == key.theme).map(|_| entry)
+    }
+
+    fn get(&mut self, id: BlockId, text: &SharedString, runs: &Rc<[TextRun]>, font_size: Pixels, height: Pixels, wrap: Option<Pixels>) -> Option<Rc<Prepared>> {
         let entry = self.entries.get_mut(&id)?;
-        if entry.text != *text || entry.runs != runs || entry.font_size != font_size || entry.value.line_height != height || entry.value.wrap_width != wrap { return None }
+        if entry.text != *text || (!Rc::ptr_eq(&entry.runs, runs) && entry.runs != *runs)
+            || entry.font_size != font_size || entry.value.line_height != height || entry.value.wrap_width != wrap { return None }
         self.clock += 1; entry.used = self.clock;
         Some(entry.value.clone())
     }
-    fn insert(&mut self, id: BlockId, text: SharedString, runs: Vec<TextRun>, font_size: Pixels, value: Rc<Prepared>) {
+
+    fn reshape_code_line(&self, id: BlockId, key: &CodeRuns, text: &str, runs: &[TextRun], font: Pixels, height: Pixels, width: Option<Pixels>, window: &Window)
+        -> Option<(Vec<Rc<WrappedLine>>, Rc<ShapedTextCache>)>
+    {
+        let old = self.entries.get(&id)?;
+        let old_key = old.code.as_ref()?;
+        let layout = &old.value;
+        if old_key.language != key.language || old_key.theme != key.theme || old.font_size != font || layout.line_height != height || layout.wrap_width != width { return None }
+        let prefix = old.text.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
+        let line = layout.lines.partition_point(|(start, _)| *start <= prefix).checked_sub(1)?;
+        let (start, previous) = &layout.lines[line];
+        let old_end = start + previous.len();
+        let new_end = text.len().checked_sub(old.text.len() - old_end)?;
+        let edited = text.get(*start..new_end)?;
+        // Reuse the rest only after checking both text and styling. A quote or
+        // comment on this line can change the runs for all following lines.
+        if prefix < *start || edited.contains('\n') || old.text[old_end..] != text[new_end..]
+            || !same_runs(&old.runs, 0..*start, runs, 0..*start)
+            || !same_runs(&old.runs, old_end..old.text.len(), runs, new_end..text.len()) { return None }
+        let line_runs: Vec<_> = runs_in(runs, *start..new_end).map(|(run, len)| TextRun { len, ..run.clone() }).collect();
+        let reshaped = window.text_system().shape_text(SharedString::from(edited.to_string()), font, &line_runs, width, None).ok()?.into_iter().next()?;
+        let mut lines: Vec<_> = layout.lines.iter().map(|(_, line)| line.clone()).collect();
+        lines[line] = Rc::new(reshaped);
+        Some((lines, layout.shaped.clone()))
+    }
+    fn insert(&mut self, id: BlockId, mut entry: CachedShape) {
         self.clock += 1;
-        self.entries.insert(id, CachedShape { used: self.clock, text, runs, font_size, value });
-        let bytes = |e: &CachedShape| e.text.len() + e.runs.len() * std::mem::size_of::<TextRun>() + e.value.lines.len() * std::mem::size_of::<(usize, WrappedLine)>()
+        entry.used = self.clock;
+        self.entries.insert(id, entry);
+        let bytes = |e: &CachedShape| e.text.len() + e.runs.len() * std::mem::size_of::<TextRun>() + e.value.lines.len() * std::mem::size_of::<(usize, Rc<WrappedLine>, WrappedLine)>()
+            + e.highlight.as_ref().map_or(0, |h| h.bytes())
             + e.value.lines.iter().flat_map(|(_, line)| &line.unwrapped_layout.runs).map(|run| run.glyphs.len() * std::mem::size_of::<ShapedGlyph>()).sum::<usize>();
         let mut total: usize = self.entries.values().map(bytes).sum();
         while total > 64 << 20 {
@@ -322,6 +365,28 @@ impl ShapeCache {
             total -= bytes(&self.entries.remove(&old).unwrap());
         }
     }
+}
+
+fn runs_in(runs: &[TextRun], range: Range<usize>) -> impl Iterator<Item = (&TextRun, usize)> {
+    runs.iter().scan(0, |offset, run| {
+        let start = *offset;
+        *offset += run.len;
+        Some((run, start, *offset))
+    }).take_while(move |(_, start, _)| *start < range.end)
+        .filter_map(move |(run, start, end)| {
+            let len = end.min(range.end).saturating_sub(start.max(range.start));
+            (len > 0).then_some((run, len))
+        })
+}
+
+fn same_runs(old: &[TextRun], old_range: Range<usize>, new: &[TextRun], new_range: Range<usize>) -> bool {
+    let mut new = runs_in(new, new_range);
+    for (a, len) in runs_in(old, old_range) {
+        let Some((b, new_len)) = new.next() else { return false };
+        if len != new_len || a.font != b.font || a.color != b.color || a.background_color != b.background_color
+            || a.underline != b.underline || a.strikethrough != b.strikethrough { return false }
+    }
+    new.next().is_none()
 }
 
 /// The equation box is `vertical-align: middle`: its centre sits this
@@ -693,11 +758,30 @@ fn is_quote(ch: char) -> bool {
     matches!(ch, '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')
 }
 
+fn build_code_runs(len: usize, spec: &TextSpec, highlights: &[crate::highlight::Span]) -> Vec<TextRun> {
+    let normal = TextRun {
+        len: 0, font: font_for(spec, &Marks::default()), color: spec.color,
+        background_color: None, underline: None, strikethrough: None,
+    };
+    let mut italic = normal.clone();
+    italic.font.style = FontStyle::Italic;
+    let mut runs = Vec::with_capacity(highlights.len() * 2 + 1);
+    let mut at = 0;
+    for (range, color, comment) in highlights {
+        if range.start > at { runs.push(TextRun { len: range.start - at, ..normal.clone() }); }
+        let style = if *comment { &italic } else { &normal };
+        runs.push(TextRun { len: range.len(), color: *color, ..style.clone() });
+        at = range.end;
+    }
+    if at < len { runs.push(TextRun { len: len - at, ..normal }); }
+    runs
+}
+
 pub fn build_runs(
     text: &RichText,
     spec: &TextSpec,
     marked: Option<&Range<usize>>,
-    highlight: Option<&Vec<crate::highlight::Span>>,
+    highlight: Option<&[crate::highlight::Span]>,
 ) -> Vec<TextRun> {
     let mut runs = vec![];
     for (range, m) in text.spans() {
@@ -707,12 +791,10 @@ pub fn build_runs(
             cuts.push(mr.start.clamp(range.start, range.end));
             cuts.push(mr.end.clamp(range.start, range.end));
         }
-        if let Some(h) = highlight {
-            let first = h.partition_point(|(r, _, _)| r.end <= range.start);
-            for (r, _, _) in h[first..].iter().take_while(|(r, _, _)| r.start < range.end) {
-                cuts.push(r.start.clamp(range.start, range.end));
-                cuts.push(r.end.clamp(range.start, range.end));
-            }
+        let highlights = highlight.map_or(&[][..], |h| &h[h.partition_point(|(r, _, _)| r.end <= range.start)..]);
+        for (r, _, _) in highlights.iter().take_while(|(r, _, _)| r.start < range.end) {
+            cuts.push(r.start.clamp(range.start, range.end));
+            cuts.push(r.end.clamp(range.start, range.end));
         }
         // Curly quotes render in a Latin-width face (QUOTE_FONT) rather
         // than the body face's full-width ones.
@@ -724,17 +806,24 @@ pub fn build_runs(
                 }
             }
         }
-        cuts.sort();
+        cuts.sort_unstable();
         cuts.dedup();
+        let mut highlights = highlights.iter().peekable();
+        let base_color = span_color(spec, m);
+        let mut base_font = font_for(spec, m);
+        if m.code && !spec.mono {
+            base_font.weight = if m.bold { bold_weight() } else { FontWeight::NORMAL };
+        }
+        let background_color = m.bg_color.as_ref().and_then(|c| theme::bg_color(&c.0)).map(|c| if spec.dim_marks { c.opacity(0.7) } else { c });
         for w in cuts.windows(2) {
             let (a, b) = (w[0], w[1]);
             if a >= b {
                 continue;
             }
-            let mut color = span_color(spec, m);
+            let mut color = base_color;
             let mut hl_italic = false;
-            if let Some(h) = highlight
-                && let Some((r, hc, it)) = h.get(h.partition_point(|(r, _, _)| r.end <= a))
+            while highlights.peek().is_some_and(|(r, _, _)| r.end <= a) { highlights.next(); }
+            if let Some((r, hc, it)) = highlights.peek()
                 && r.start <= a && b <= r.end
             {
                 color = *hc;
@@ -751,7 +840,7 @@ pub fn build_runs(
             } else {
                 None
             };
-            let mut font = font_for(spec, m);
+            let mut font = base_font.clone();
             if spec.han_font.is_none() && !spec.mono && !m.code {
                 if text.text[a..b].chars().all(is_quote) {
                     font.family = QUOTE_FONT.into();
@@ -762,10 +851,6 @@ pub fn build_runs(
             if hl_italic {
                 font.style = FontStyle::Italic;
             }
-            if m.code && !spec.mono {
-                font.weight = if m.bold { bold_weight() } else { FontWeight::NORMAL };
-            }
-            let background_color = m.bg_color.as_ref().and_then(|c| theme::bg_color(&c.0)).map(|c| if spec.dim_marks { c.opacity(0.7) } else { c });
             let run = TextRun {
                 len: b - a,
                 font,
@@ -825,20 +910,40 @@ impl Element for RichTextElement {
             Some((ts.ascent(id, font_size), px(f32::from(ts.descent(id, font_size)).abs())))
         } else { None };
         let mut eq_src: Vec<(usize, ObjSrc)> = vec![];
-        let (text, runs) = if self.text.is_empty() {
+        let code = self.code_language.as_ref().filter(|_| self.text.text.len() >= 4096 && self.text.runs.len() == 1 && self.text.runs[0].marks == Marks::default()).map(|lang| CodeRuns {
+            language: lang.clone(), theme: crate::themes::generation(), color: self.spec.color, marked: self.marked.clone(),
+        });
+        let cache = self.shapes.as_ref().map(|cache| cache.borrow());
+        let previous = code.as_ref().and_then(|key| cache.as_ref()?.code_style(self.id, key));
+        let cached = previous.filter(|e| e.code == code && e.text.as_ref() == self.text.text);
+        let mut highlight = cached.and_then(|e| e.highlight.clone());
+        let (text, runs): (_, Rc<[TextRun]>) = if let Some(hit) = cached {
+            (hit.text.clone(), hit.runs.clone())
+        } else if self.text.is_empty() {
             match &self.placeholder {
                 Some(ph) => {
                     let mut spec = self.spec.clone();
                     spec.color = self.placeholder_color.unwrap_or(Theme::block_placeholder());
                     let rt = RichText::plain(ph.to_string());
                     let runs = build_runs(&rt, &spec, None, None);
-                    (ph.clone(), runs)
+                    (ph.clone(), runs.into())
                 }
-                None => (SharedString::default(), vec![]),
+                None => (SharedString::default(), Rc::default()),
             }
         } else {
-            let hl = self.highlight.as_ref().map(|f| f(&self.text.text));
-            let mut runs = build_runs(&self.text, &self.spec, self.marked.as_ref(), hl.as_ref());
+            if let Some(key) = &code {
+                let old = previous.and_then(|e| Some((e.text.as_ref(), e.highlight.as_deref()?)));
+                highlight = crate::highlight::incremental(&key.language, &self.text.text, old).map(Rc::new);
+            }
+            let hl = self.code_language.as_deref().filter(|&lang| highlight.is_none() && lang != "Plain Text").map(|lang| crate::highlight::spans(lang, &self.text.text));
+            let spans = highlight.as_ref().map(|h| h.spans.as_slice()).or(hl.as_deref());
+            // Plain code uses a uniform font. GPUI merges identical runs, so
+            // there is no need to split around punctuation as for body text.
+            let mut runs = if code.is_some() && self.marked.is_none() {
+                build_code_runs(self.text.len(), &self.spec, spans.unwrap_or_default())
+            } else {
+                build_runs(&self.text, &self.spec, self.marked.as_ref(), spans)
+            };
             let mut text = self.text.text.clone();
             for (r, m) in self.text.spans() {
                 let Some(obj) = m.inline.as_ref() else { continue };
@@ -884,8 +989,9 @@ impl Element for RichTextElement {
                     off += run.len;
                 }
             }
-            (SharedString::from(text), runs)
+            (SharedString::from(text), runs.into())
         };
+        drop(cache);
         let wrap = self.spec.wrap;
         let spacing = px(self.spec.letter_spacing);
         let fs = self.spec.size;
@@ -919,10 +1025,15 @@ impl Element for RichTextElement {
                 return measured;
             }
             let custom = spacing != px(0.) || !eq_src.is_empty();
-            let (mut lines, shaped) = if shapes.is_some() {
-                window.text_system().shape_text_with_cache(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None).unwrap_or_default()
+            let reshaped = code.as_ref().and_then(|key| shapes.as_ref()?.borrow().reshape_code_line(id, key, &text, &runs, font_size, line_height, wrap_width, window));
+            let (lines, shaped) = if let Some((lines, shaped)) = reshaped {
+                (lines, shaped)
+            } else if shapes.is_some() {
+                let (lines, shaped) = window.text_system().shape_text_with_cache(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None).unwrap_or_default();
+                (lines.into_iter().map(Rc::new).collect(), Rc::new(shaped))
             } else {
-                (window.text_system().shape_text(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None).unwrap_or_default(), ShapedTextCache::default())
+                let lines = window.text_system().shape_text(text.clone(), font_size, &runs, if custom { None } else { wrap_width }, None).unwrap_or_default();
+                (lines.into_iter().map(Rc::new).collect(), Rc::default())
             };
             let row_w = wrap_width.or(known.width).map_or(f32::INFINITY, f32::from);
             let mut eqno = eq_counter;
@@ -945,30 +1056,28 @@ impl Element for RichTextElement {
             let mut rows = vec![];
             let mut h = px(0.);
             let mut w = px(0.);
-            for mut l in lines.drain(..) {
+            for mut l in lines {
                 let len = l.len();
                 let line_eqs: Vec<&EqGeom> = eqs.iter().map(|e| &**e).filter(|e| e.ix >= start && e.ix < start + len).collect();
                 if custom {
-                    adjust_line(&mut l, spacing, &line_eqs, start, wrap_width);
+                    adjust_line(Rc::make_mut(&mut l), spacing, &line_eqs, start, wrap_width);
                 }
                 if let Some((ascent, descent)) = title_metrics {
                     let src = &l.unwrapped_layout;
                     let layout = LineLayout { font_size: src.font_size, width: src.width, ascent, descent, runs: src.runs.clone(), len: src.len };
                     let wrapped = WrappedLineLayout { unwrapped_layout: std::sync::Arc::new(layout), wrap_boundaries: l.wrap_boundaries().into(), wrap_width: l.wrap_width };
-                    let target: &mut std::sync::Arc<WrappedLineLayout> = &mut l;
+                    let line = Rc::make_mut(&mut l);
+                    let target: &mut std::sync::Arc<WrappedLineLayout> = line;
                     *target = std::sync::Arc::new(wrapped);
                 }
                 // Row heights: the line box grows to contain equation boxes.
                 let layout = &l.unwrapped_layout;
                 let base = (line_height - layout.ascent - layout.descent) / 2. + layout.ascent;
-                let mut cuts: Vec<usize> = vec![0];
-                for b in l.wrap_boundaries() {
-                    cuts.push(layout.runs[b.run_ix].glyphs[b.glyph_ix].index);
-                }
-                cuts.push(len + 1);
-                for c in cuts.windows(2) {
+                let cuts = std::iter::once(0).chain(l.wrap_boundaries().iter().map(|b| layout.runs[b.run_ix].glyphs[b.glyph_ix].index));
+                let ends = cuts.clone().skip(1).chain(std::iter::once(len + 1));
+                for (a, b) in cuts.zip(ends) {
                     let (mut top, mut bottom) = (px(0.), line_height);
-                    for e in line_eqs.iter().filter(|e| e.ix - start >= c[0] && e.ix - start < c[1]) {
+                    for e in line_eqs.iter().filter(|e| e.ix - start >= a && e.ix - start < b) {
                         if let Some([t, b]) = e.ext {
                             top = top.min(px(t));
                             bottom = bottom.max(px(b));
@@ -989,7 +1098,10 @@ impl Element for RichTextElement {
                 h = line_height;
             }
             let prepared = Rc::new(Prepared { lines: Rc::new(out), shaped, wrap_width, line_height, rows, height: h, width: w, eqs });
-            if let Some(cache) = &shapes { cache.borrow_mut().insert(id, text.clone(), runs.clone(), font_size, prepared.clone()); }
+            if let Some(cache) = &shapes {
+                cache.borrow_mut().insert(id, CachedShape { used: 0, text: text.clone(), runs: runs.clone(),
+                    code: code.clone(), highlight: highlight.clone(), font_size, value: prepared.clone() });
+            }
             *st.borrow_mut() = Some(prepared);
             size(known.width.unwrap_or(w), h)
         });
@@ -1031,15 +1143,12 @@ impl Element for RichTextElement {
         let mut heights = p.rows.iter();
         for (hi, (start, line)) in p.lines.iter().enumerate() {
             let layout = &line.unwrapped_layout;
-            let mut bounds_ix: Vec<(usize, Pixels)> = vec![(0, px(0.))];
-            for b in line.wrap_boundaries() {
+            let starts = std::iter::once((0, px(0.))).chain(line.wrap_boundaries().iter().map(|b| {
                 let g = &layout.runs[b.run_ix].glyphs[b.glyph_ix];
-                bounds_ix.push((g.index, g.position.x));
-            }
-            bounds_ix.push((line.len(), layout.width));
-            for w in bounds_ix.windows(2) {
-                let (a, xa) = w[0];
-                let (b, xb) = w[1];
+                (g.index, g.position.x)
+            }));
+            let ends = starts.clone().skip(1).chain(std::iter::once((line.len(), layout.width)));
+            for ((a, xa), (b, xb)) in starts.zip(ends) {
                 let width = xb - xa;
                 let align_dx = match self.align {
                     Align::Left => px(0.),

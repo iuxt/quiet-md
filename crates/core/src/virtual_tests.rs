@@ -133,6 +133,21 @@ fn invalid_manifests_are_rejected_and_unknown_fields_survive_writes() {
 }
 
 #[test]
+fn save_rechecks_manifest_after_same_size_external_change() {
+    let lib = Library::new(); let mut store = lib.open();
+    let id = store.create_from(&doc("Note")).unwrap();
+    let file = lib.0.join(FILE);
+    let body = store.path(&id);
+    let original = std::fs::read(&body).unwrap();
+    let json = std::fs::read_to_string(&file).unwrap();
+    let invalid = json.replacen("\"version\": 2", "\"version\": 3", 1);
+    assert_ne!(json, invalid);
+    std::fs::write(&file, invalid).unwrap();
+    assert!(store.save(&id, &doc("Changed")).is_err());
+    assert_eq!(std::fs::read(&body).unwrap(), original);
+}
+
+#[test]
 fn virtual_markdown_assets_stay_relative_and_git_moves_only_change_manifest() {
     use crate::{model::{Block, BlockKind, RichText}, git::{LibraryRepo, Config}};
     let lib = Library::new(); let mut s = lib.open();

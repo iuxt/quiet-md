@@ -10,6 +10,17 @@ use std::ops::Range;
 /// A coloured range; `true` = italic (comments).
 pub type Span = (Range<usize>, Hsla, bool);
 
+pub(crate) struct CodeHighlight {
+    pub spans: Vec<Span>,
+    restarts: Vec<usize>,
+}
+
+impl CodeHighlight {
+    pub fn bytes(&self) -> usize {
+        self.spans.capacity() * std::mem::size_of::<Span>() + self.restarts.capacity() * std::mem::size_of::<usize>()
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Tok {
     Comment,
@@ -264,10 +275,48 @@ pub fn spans(lang: &str, text: &str) -> Vec<Span> {
         "Diff" => diff(text),
         "Markdown" => markdown(text),
         _ => match syntax(lang) {
-            Some(s) => code(&s, text),
+            Some(s) => code(&s, text, 0, |_| false),
             None => vec![],
         },
     }
+}
+
+pub(crate) fn incremental(lang: &str, text: &str, previous: Option<(&str, &CodeHighlight)>) -> Option<CodeHighlight> {
+    let s = syntax(lang)?;
+    let mut restarts = vec![];
+    let Some((old_text, old)) = previous else {
+        let spans = code(&s, text, 0, |at| { restarts.push(at); false });
+        return Some(CodeHighlight { spans, restarts });
+    };
+    let prefix = old_text.bytes().zip(text.bytes()).take_while(|(a, b)| a == b).count();
+    let suffix = old_text.as_bytes()[prefix..].iter().rev().zip(text.as_bytes()[prefix..].iter().rev()).take_while(|(a, b)| a == b).count();
+    let (old_suffix, new_suffix) = (old_text.len() - suffix, text.len() - suffix);
+    // Start before the affected line: a token just before its newline can
+    // look ahead into the line (e.g. the Rust lifetime check).
+    let changed_line = old_text.as_bytes()[..prefix].iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+    let begin = old.restarts.partition_point(|&at| at < changed_line);
+    let start = begin.checked_sub(1).map_or(0, |i| old.restarts[i]);
+    restarts.extend_from_slice(&old.restarts[..begin]);
+    let mut reused = None;
+    let changed = code(&s, text, start, |at| {
+        restarts.push(at);
+        if at >= new_suffix {
+            let old_at = old_suffix + (at - new_suffix);
+            if old.restarts.binary_search(&old_at).is_ok() {
+                reused = Some((old_at, at));
+                return true;
+            }
+        }
+        false
+    });
+    let mut spans = old.spans[..old.spans.partition_point(|(r, _, _)| r.end <= start)].to_vec();
+    spans.extend(changed);
+    if let Some((old_at, at)) = reused {
+        let shift = |offset| at + (offset - old_at);
+        spans.extend(old.spans[old.spans.partition_point(|(r, _, _)| r.start < old_at)..].iter().map(|(r, c, it)| (shift(r.start)..shift(r.end), *c, *it)));
+        restarts.extend(old.restarts[old.restarts.partition_point(|&i| i <= old_at)..].iter().map(|&i| shift(i)));
+    }
+    Some(CodeHighlight { spans, restarts })
 }
 
 fn push(out: &mut Vec<Span>, r: Range<usize>, t: Tok) {
@@ -304,9 +353,9 @@ fn number_end(text: &str, i: usize) -> usize {
     j
 }
 
-fn code(s: &Syntax, text: &str) -> Vec<Span> {
+fn code(s: &Syntax, text: &str, start: usize, mut restart: impl FnMut(usize) -> bool) -> Vec<Span> {
     let mut out = vec![];
-    let mut i = 0;
+    let mut i = start;
     let mut prev_word: Option<&str> = None;
     let has = |list: &[&str], w: &str| {
         if s.case_insensitive { list.iter().any(|k| k.eq_ignore_ascii_case(w)) } else { list.contains(&w) }
@@ -419,6 +468,9 @@ fn code(s: &Syntax, text: &str) -> Vec<Span> {
             prev_word = None;
         }
         i += ch.len_utf8();
+        // At a line break between tokens, only a preceding declaration
+        // keyword can affect the lexer state carried into the next line.
+        if ch == '\n' && !prev_word.is_some_and(|p| has(s.defs, p)) && restart(i) { break; }
     }
     out
 }
@@ -629,5 +681,27 @@ mod tests {
     #[test]
     fn plain_is_uncoloured() {
         assert!(spans("Plain Text", "fn main() {}").is_empty());
+    }
+
+    #[test]
+    fn edited_highlighting_matches_full_lexer_across_line_boundaries() {
+        for (lang, text) in [
+            ("Rust", "let 中文 = 1;\nfn\nname() {\n/* a\nb */\nlet x = '\n'a;\n}\nlet done = true;"),
+            ("Python", "def\nf():\n    return \"\"\"a\nb\"\"\"\n# x\nprint(f\"{f()}\")\n"),
+            ("JavaScript", "function\nf() {\n  let x = `a\nb`;\n}\nlet after = 2;"),
+        ] {
+            let original = incremental(lang, text, None).unwrap();
+            for at in text.char_indices().map(|(i, _)| i).chain(std::iter::once(text.len())) {
+                let end = text[at..].chars().next().map_or(at, |c| at + c.len_utf8());
+                for replacement in ["", "/*", "\"\n", "'", "\nfoo"] {
+                    let mut edited = text.to_string();
+                    edited.replace_range(at..end, replacement);
+                    let result = incremental(lang, &edited, Some((text, &original))).unwrap();
+                    assert_eq!(result.spans, spans(lang, &edited), "{lang} at {at}: {edited:?}");
+                    let undo = incremental(lang, text, Some((&edited, &result))).unwrap();
+                    assert_eq!(undo.spans, original.spans, "{lang} undo at {at}: {edited:?}");
+                }
+            }
+        }
     }
 }

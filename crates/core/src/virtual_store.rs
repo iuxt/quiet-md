@@ -16,7 +16,19 @@ impl Store {
     }
 
     pub(super) fn reload_virtual(&mut self) -> Result<()> {
-        let manifest = Self::read_manifest(&self.root)?;
+        let path = crate::git::safe_path(&self.root, FILE)?;
+        let reading = || format!("无法载入文档库清单 {}", path.display());
+        let bytes = std::fs::read(&path).with_context(reading)?;
+        let mut cache = self.manifest_cache.borrow_mut();
+        // Other instances and external editors can change quiet.json. Compare the
+        // current bytes under the write lock before reusing a validated manifest.
+        let manifest = if let Some(cached) = cache.as_ref().filter(|cached| cached.bytes == bytes) {
+            cached.manifest.clone()
+        } else {
+            let manifest = Arc::new(Manifest::parse(&bytes).with_context(reading)?);
+            *cache = Some(ManifestCache { bytes, manifest: manifest.clone() });
+            manifest
+        };
         let local = self.read_local();
         let mut index = manifest.index();
         for (id, m) in &mut index { m.opened = local.opened.get(id).copied().unwrap_or(0); }
@@ -46,10 +58,17 @@ impl Store {
     }
 
     pub(super) fn save_virtual(&self) -> Result<()> {
-        let manifest = self.virtual_manifest_for(&self.index, &self.trash);
+        let manifest = Arc::new(self.virtual_manifest_for(&self.index, &self.trash));
         manifest.validate()?;
-        save_json(&crate::git::safe_path(&self.root, FILE)?, &manifest)?;
+        self.write_virtual_manifest(&crate::git::safe_path(&self.root, FILE)?, manifest)?;
         self.save_local(&self.local_state())
+    }
+
+    fn write_virtual_manifest(&self, path: &Path, manifest: Arc<Manifest>) -> Result<()> {
+        let bytes = serde_json::to_vec_pretty(manifest.as_ref())?;
+        if !std::fs::read(path).is_ok_and(|old| old == bytes) { write_atomic(path, &bytes)?; }
+        self.manifest_cache.replace(Some(ManifestCache { bytes, manifest }));
+        Ok(())
     }
 
     pub(super) fn list_virtual(&mut self, locked: bool) -> Vec<Entry> {
@@ -140,9 +159,9 @@ impl Store {
 
     fn commit_virtual_metadata(&mut self, index: HashMap<String, Meta>, trash: HashMap<String, Trashed>) -> Result<()> {
         if self.batch.index.get() { self.save_virtual()?; self.batch.index.set(false); }
-        let after = self.virtual_manifest_for(&index, &trash); after.validate()?;
-        if let Err(error) = save_json(&crate::git::safe_path(&self.root, FILE)?, &after) {
-            let committed = std::fs::read(self.root.join(FILE)).is_ok_and(|b| Manifest::parse(&b).is_ok_and(|m| m == after));
+        let after = Arc::new(self.virtual_manifest_for(&index, &trash)); after.validate()?;
+        if let Err(error) = self.write_virtual_manifest(&crate::git::safe_path(&self.root, FILE)?, after.clone()) {
+            let committed = std::fs::read(self.root.join(FILE)).is_ok_and(|b| Manifest::parse(&b).is_ok_and(|m| m == *after));
             if !committed { return Err(error) }
         }
         self.index = index; self.trash = trash; self.manifest = after;

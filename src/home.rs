@@ -12,6 +12,7 @@ use crate::ui::{ROW_RADIUS, TipExt, icon, menu_glyph, menu_row, popover, ui_text
 use gpui::{prelude::FluentBuilder, *};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,6 +45,7 @@ impl Col {
 /// 最近访问's columns (no 所有者); 显示设置 toggles them.
 const RECENT_COLS: [Col; 3] = [Col::Modified, Col::Created, Col::Visited];
 const STARRED_COLS: [Col; 4] = [Col::Modified, Col::Created, Col::Visited, Col::Starred];
+const LIST_ROW_H: f32 = 56.;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HomeSort { Manual, Visited, Modified, Created, Title }
@@ -74,11 +76,17 @@ pub struct Home {
     sort: HomeSort,
     folders_first: bool,
     pub sort_menu: bool,
+    rows: Option<HomeRows>,
     /// Last-frame bounds of the controls the popovers hang from.
     anchors: Rc<RefCell<HashMap<&'static str, Bounds<Pixels>>>>,
     pub(crate) file_drop: Option<crate::file_drop::FileDrop>,
     /// Visible folder rows, used for file drops on the page.
     pub(crate) folder_bounds: Rc<RefCell<HashMap<String, Bounds<Pixels>>>>,
+}
+
+struct HomeRows {
+    key: (HomeTab, HomeSort, bool, u64),
+    indices: Rc<Vec<usize>>,
 }
 
 impl Default for Home {
@@ -94,6 +102,7 @@ impl Default for Home {
             sort: HomeSort::Manual,
             folders_first: false,
             sort_menu: false,
+            rows: None,
             anchors: Default::default(),
             file_drop: None,
             folder_bounds: Default::default(),
@@ -186,17 +195,36 @@ impl Workspace {
         Some(checkbox(if on { Check::On } else { Check::Off }, !on && sel.len() >= BATCH_LIMIT, "home-row"))
     }
 
-    pub(crate) fn home_entries(&self) -> Vec<Entry> {
-        match self.home.tab {
-            // 我的文档 is the library's top level.
-            HomeTab::Recent => self.level_entries(None),
-            HomeTab::Starred => self.sorted_entries(self.entries.iter().filter(|e| e.meta.folder.is_none() && e.meta.starred > 0).cloned().collect()),
+    fn home_rows(&mut self) -> Rc<Vec<usize>> {
+        let eligible = |e: &Entry| match self.home.tab {
+            HomeTab::Recent => e.meta.parent.is_none(),
+            HomeTab::Starred => e.meta.folder.is_none() && e.meta.starred > 0,
+        };
+        let mut stamp = rustc_hash::FxHasher::default();
+        for (i, e) in self.entries.iter().enumerate().filter(|(_, e)| eligible(e)) {
+            (i, &e.id, e.meta.folder.is_some()).hash(&mut stamp);
+            match self.home.sort {
+                HomeSort::Manual => e.meta.place().hash(&mut stamp),
+                HomeSort::Visited => visited(e).hash(&mut stamp),
+                HomeSort::Modified => e.meta.modified.hash(&mut stamp),
+                HomeSort::Created => e.meta.created.hash(&mut stamp),
+                HomeSort::Title => e.title.hash(&mut stamp),
+            }
         }
+        let key = (self.home.tab, self.home.sort, self.home.folders_first, stamp.finish());
+        if let Some(rows) = &self.home.rows && rows.key == key { return rows.indices.clone(); }
+        let mut indices: Vec<_> = self.entries.iter().enumerate().filter_map(|(i, e)| eligible(e).then_some(i)).collect();
+        indices.sort_by(|&a, &b| self.compare_home_entries(&self.entries[a], &self.entries[b]));
+        let indices = Rc::new(indices);
+        self.home.rows = Some(HomeRows { key, indices: indices.clone() });
+        indices
     }
 
     /// One level of the tree as 主页 shows it (a folder's page uses it too).
     pub(crate) fn level_entries(&self, parent: Option<&str>) -> Vec<Entry> {
-        self.sorted_entries(self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent).cloned().collect())
+        let mut entries: Vec<_> = self.entries.iter().filter(|e| e.meta.parent.as_deref() == parent).cloned().collect();
+        entries.sort_by(|a, b| self.compare_home_entries(a, b));
+        entries
     }
 
     pub(crate) fn prepare_manual_order(&mut self, cx: &mut Context<Self>) -> bool {
@@ -211,19 +239,16 @@ impl Workspace {
     pub(crate) fn manual_home_sort(&self) -> bool { self.home.sort == HomeSort::Manual && self.home.tab == HomeTab::Recent }
 
     /// Mix folders and documents unless the user explicitly groups folders first.
-    fn sorted_entries(&self, mut v: Vec<Entry>) -> Vec<Entry> {
-        v.sort_by(|a, b| {
-            let order = match self.home.sort {
-                // The sidebar's order: new pages at the top in both.
-                HomeSort::Manual => (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id)),
-                HomeSort::Visited => visited(b).cmp(&visited(a)),
-                HomeSort::Modified => b.meta.modified.cmp(&a.meta.modified),
-                HomeSort::Created => b.meta.created.cmp(&a.meta.created),
-                HomeSort::Title => a.title.cmp(&b.title),
-            };
-            (if self.home.folders_first && self.home.sort != HomeSort::Manual { b.meta.folder.is_some().cmp(&a.meta.folder.is_some()) } else { std::cmp::Ordering::Equal }).then(order).then_with(|| a.id.cmp(&b.id))
-        });
-        v
+    fn compare_home_entries(&self, a: &Entry, b: &Entry) -> std::cmp::Ordering {
+        let order = match self.home.sort {
+            // The sidebar's order: new pages at the top in both.
+            HomeSort::Manual => (a.meta.place(), &a.id).cmp(&(b.meta.place(), &b.id)),
+            HomeSort::Visited => visited(b).cmp(&visited(a)),
+            HomeSort::Modified => b.meta.modified.cmp(&a.meta.modified),
+            HomeSort::Created => b.meta.created.cmp(&a.meta.created),
+            HomeSort::Title => a.title.cmp(&b.title),
+        };
+        (if self.home.folders_first && self.home.sort != HomeSort::Manual { b.meta.folder.is_some().cmp(&a.meta.folder.is_some()) } else { std::cmp::Ordering::Equal }).then(order).then_with(|| a.id.cmp(&b.id))
     }
 
     fn open_row_menu(&mut self, id: &str, key: &str, cx: &mut Context<Self>) {
@@ -321,6 +346,7 @@ impl Workspace {
     }
 
     pub(crate) fn render_home(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let indices = self.home_rows();
         // Too narrow for the search box: a search icon beside +, in the same style.
         let search = self.header_search(window, cx);
         let narrow = search.is_none();
@@ -380,7 +406,7 @@ impl Workspace {
             .flex()
             .items_center();
         let toolbar = if let Some(sel) = &self.batch {
-            let ids: Vec<String> = self.home_entries().into_iter().take(crate::sidebar::BATCH_LIMIT).map(|e| e.id).collect();
+            let ids: Vec<String> = indices.iter().take(crate::sidebar::BATCH_LIMIT).map(|&i| self.entries[i].id.clone()).collect();
             let n = sel.len();
             let all = n > 0 && ids.iter().all(|id| sel.contains(id));
             use crate::sidebar::{Check, checkbox};
@@ -416,11 +442,10 @@ impl Workspace {
                     .on_click(cx.listener(|w, _, _, cx| { w.home.sort_menu = !w.home.sort_menu; cx.notify(); })),
             ) };
 
-        let entries = self.home_entries();
-        let body = if entries.is_empty() && self.home.tab == HomeTab::Recent {
+        let body = if indices.is_empty() && self.home.tab == HomeTab::Recent {
             empty_state("illus/empty-list.svg", crate::settings::text("当前列表暂无内容")).into_any_element()
         } else {
-            self.render_home_list(&entries, window, cx)
+            self.render_home_list(indices, window, cx)
         };
         div()
             .flex_1()
@@ -435,14 +460,14 @@ impl Workspace {
             .into_any_element()
     }
 
-    fn render_home_list(&self, entries: &[Entry], window: &Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_home_list(&self, indices: Rc<Vec<usize>>, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let list_scroll = &self.home.list_scroll;
         let cols = self.home.cols();
         let sort = self.home.sort_col();
         let pane_width = f32::from(window.viewport_size().width) - if self.sidebar_open { self.sidebar_w(window) } else { 0. };
         let compact = pane_width < 700.;
         let date_inset = px(if compact { 8. } else { 24. });
-        let title_cell = || div().flex_shrink().flex_basis(relative(0.)).min_w_0().map(|mut d| {
+        let title_cell = move || div().flex_shrink().flex_basis(relative(0.)).min_w_0().map(|mut d| {
             d.style().flex_grow = Some(if compact { 2. } else { 3. });
             d
         });
@@ -494,34 +519,44 @@ impl Workspace {
         }
         header = header.child(div().w(px(60.)).flex_none());
         let mut rows = div().id("home-rows").flex_1().min_h_0().overflow_y_scroll().track_scroll(list_scroll).px(px(24.)).pb(px(24.));
-        if entries.is_empty() {
+        if indices.is_empty() {
             rows = rows.child(div().pt(px(72.)).child(empty_state("illus/empty-list.svg", crate::settings::text("当前列表暂无内容"))));
-        }
-        for (i, e) in entries.iter().enumerate() {
-            let menu_on = self.row_menu.as_ref().is_some_and(|m| m.id == e.id);
-            let check = self.home_check(e);
-            let mut row = self.home_row(e, "home-row", cx)
-                .h(px(56.))
-                .when(i > 0, |d| d.border_t_1().border_color(list_line()))
-                .hover(row_hover)
-                .when(menu_on, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
-                .when(self.file_drop_over(&e.id), |d| d.bg(Theme::fill_hover_strong()).rounded(px(ROW_RADIUS)))
-                .child(
-                    title_cell()
-                        .pl(px(24.))
-                        .pr(px(16.))
-                        .flex()
-                        .items_center()
-                        .when_some(check, |d, c| d.child(c.mr(px(12.))))
-                        .child(entry_icon(e))
-                        .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
-                        .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., Theme::pinned()).ml(px(6.)))),
-                );
-            for c in &cols {
-                row = row.child(col_cell().pl(date_inset).text_size(px(13.)).text_color(Theme::text_caption()).whitespace_nowrap().overflow_hidden().text_ellipsis().child(ui_text(cell_text(e, *c))));
-            }
-            row = row.child(div().w(px(60.)).flex_none().flex().justify_end().pr(px(12.)).child(self.home_row_actions(e, cx)));
-            rows = rows.child(row);
+        } else {
+            let height = px(indices.len() as f32 * LIST_ROW_H);
+            let workspace = cx.entity();
+            rows = rows.child(canvas(move |bounds, window, cx| workspace.update(cx, |w, cx| {
+                // Use the clamped scroll position from this frame, including thumb jumps and resizes.
+                let viewport = window.content_mask().bounds;
+                let first = (f32::from(viewport.top() - bounds.top()) / LIST_ROW_H).floor() as usize;
+                let end = ((f32::from(viewport.bottom() - bounds.top()) / LIST_ROW_H).ceil() as usize).min(indices.len());
+                let mut visible = div().size_full();
+                for i in first..end {
+                    let e = &w.entries[indices[i]];
+                    let menu_on = w.row_menu.as_ref().is_some_and(|m| m.id == e.id);
+                    let check = w.home_check(e);
+                    let mut row = w.home_row(e, "home-row", cx)
+                        .absolute().left_0().right_0().top(px(i as f32 * LIST_ROW_H)).h(px(LIST_ROW_H))
+                        .when(i > 0, |d| d.border_t_1().border_color(list_line()))
+                        .hover(row_hover)
+                        .when(menu_on, |d| d.bg(Theme::fill_hover()).border_color(transparent_black()).rounded(px(ROW_RADIUS)))
+                        .when(w.file_drop_over(&e.id), |d| d.bg(Theme::fill_hover_strong()).rounded(px(ROW_RADIUS)))
+                        .child(
+                            title_cell().pl(px(24.)).pr(px(16.)).flex().items_center()
+                                .when_some(check, |d, c| d.child(c.mr(px(12.))))
+                                .child(entry_icon(e))
+                                .child(div().min_w_0().text_size(px(15.)).line_height(px(22.)).overflow_hidden().whitespace_nowrap().text_ellipsis().child(ui_text(display_title(&e.title))))
+                                .when(e.meta.pinned, |d| d.child(icon("pin-filled", 14., Theme::pinned()).ml(px(6.)))),
+                        );
+                    for c in &cols {
+                        row = row.child(col_cell().pl(date_inset).text_size(px(13.)).text_color(Theme::text_caption()).whitespace_nowrap().overflow_hidden().text_ellipsis().child(ui_text(cell_text(e, *c))));
+                    }
+                    row = row.child(div().w(px(60.)).flex_none().flex().justify_end().pr(px(12.)).child(w.home_row_actions(e, cx)));
+                    visible = visible.child(row);
+                }
+                let mut element = visible.into_any_element();
+                element.prepaint_as_root(bounds.origin, bounds.size.map(AvailableSpace::Definite), window, cx);
+                element
+            }), |_, mut element, window, cx| element.paint(window, cx)).flex_none().w_full().h(height));
         }
         div().flex_1().min_h_0().flex().flex_col().child(header.mx(px(24.)))
             .child(div().relative().flex_1().min_h_0().flex().flex_col().child(rows).child(self.home.list_scrollbar.render(list_scroll))).into_any_element()

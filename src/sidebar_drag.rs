@@ -3,7 +3,7 @@ use crate::store::Entry;
 use crate::theme::{self, Theme};
 use crate::ui::{icon, ui_text};
 use gpui::{prelude::FluentBuilder, *};
-use std::{cell::Cell, collections::{HashMap, HashSet, VecDeque}, rc::Rc, time::Instant};
+use std::{cell::{Cell, RefCell}, collections::{HashMap, HashSet, VecDeque}, hash::{Hash, Hasher}, rc::Rc, time::Instant};
 
 const PITCH: f32 = 31.;
 /// Whether clicking a folder open or shut animates (the drawer below): 外观 ›
@@ -14,6 +14,8 @@ const INDENT: f32 = 18.;
 
 #[derive(Clone)]
 struct Row { entry: Entry, depth: usize }
+
+struct SidebarRows { stamp: u64, expanded: HashSet<String>, rows: Rc<Vec<Row>> }
 
 /// Seconds a dragged row must rest on a collapsed folder before it opens.
 const DWELL: f32 = 0.45;
@@ -152,7 +154,8 @@ pub(crate) struct SidebarDrag {
     pending: VecDeque<PendingMove>,
     saving: bool,
     fx: HashMap<String, RowFx>,
-    shown: Vec<Row>,
+    shown: Rc<Vec<Row>>,
+    rows: RefCell<Option<SidebarRows>>,
     leaving: HashMap<String, Leaving>,
     hovered: Option<String>,
     primed: bool,
@@ -186,7 +189,7 @@ impl SidebarDrag {
     pub(crate) fn kick(&mut self, id: &str, v: f32) { if let Some(f) = self.fx.get_mut(id) { f.pop.v += v; } }
     /// Forget every row so the next frame opens the whole list as one drawer (unfolding 我的文档).
     pub(crate) fn reset(&mut self) {
-        self.springs.clear(); self.fx.clear(); self.shown.clear(); self.leaving.clear(); self.pill = None; self.drawers.clear();
+        self.springs.clear(); self.fx.clear(); self.shown = Default::default(); self.leaving.clear(); self.pill = None; self.drawers.clear();
         self.unfold = true;
     }
 }
@@ -209,10 +212,25 @@ fn faded(shadows: Vec<BoxShadow>, a: f32) -> Vec<BoxShadow> {
 }
 
 impl Workspace {
-    fn drag_rows(&self) -> Vec<Row> {
-        crate::tree::Tree::new(&self.entries).rows(|id| self.expanded.contains(id)).into_iter()
-            .filter(|(e, _)| self.folder_drag.active.as_ref().is_none_or(|d| !d.started || !d.excluded.contains(&e.id)))
-            .map(|(e, depth)| Row { entry: e.clone(), depth }).collect()
+    fn drag_rows(&self) -> Rc<Vec<Row>> {
+        let mut stamp = rustc_hash::FxHasher::default();
+        // Tree order and the row fields used by sidebar drawing and drag hit testing.
+        for e in &self.entries {
+            (&e.id, &e.meta.parent, e.meta.place(), e.meta.folder.is_some(), e.meta.local(), &e.title, &e.icon, e.meta.markdown).hash(&mut stamp);
+        }
+        let stamp = stamp.finish();
+        let mut cache = self.folder_drag.rows.borrow_mut();
+        if !cache.as_ref().is_some_and(|c| c.stamp == stamp && c.expanded == self.expanded) {
+            let rows = crate::tree::Tree::new(&self.entries).rows(|id| self.expanded.contains(id)).into_iter()
+                .map(|(e, depth)| Row { entry: e.clone(), depth }).collect();
+            *cache = Some(SidebarRows { stamp, expanded: self.expanded.clone(), rows: Rc::new(rows) });
+        }
+        let rows = &cache.as_ref().unwrap().rows;
+        if let Some(d) = self.folder_drag.active.as_ref().filter(|d| d.started) {
+            Rc::new(rows.iter().filter(|r| !d.excluded.contains(&r.entry.id)).cloned().collect())
+        } else {
+            rows.clone()
+        }
     }
 
     pub(crate) fn arm_folder_drag(&mut self, id: &str, at: Point<Pixels>, cx: &mut Context<Self>) {
@@ -247,6 +265,7 @@ impl Workspace {
 
     fn project_folder_drop(&mut self) {
         let Some(bounds) = self.folder_drag.bounds.get() else { return };
+        if !self.folder_drag.active.as_ref().is_some_and(|d| d.started) { return }
         let rows = self.drag_rows();
         let Some(d) = self.folder_drag.active.as_mut().filter(|d| d.started) else { return };
         let y = f32::from(d.at.y - d.offset.y - bounds.top()) + 15.;
@@ -542,17 +561,18 @@ impl Workspace {
             started = true;
         }
         // Rows that vanished without their folder closing fade out where they were.
-        let present: HashSet<&str> = rows.iter().map(|r| r.entry.id.as_str()).collect();
-        for r in std::mem::take(&mut fd.shown) {
-            if present.contains(r.entry.id.as_str()) || dragged.as_ref() == Some(&r.entry.id) { continue; }
-            let Some(pos) = fd.springs.remove(&r.entry.id) else { continue };
-            let a = fd.fx.remove(&r.entry.id).map_or(1., |f| f.show.unit());
-            fd.leaving.insert(r.entry.id.clone(), Leaving { row: r, pos, alpha: VANISH.from(a, 0.) });
+        if !Rc::ptr_eq(&rows, &fd.shown) {
+            for r in fd.shown.iter() {
+                if index.contains_key(r.entry.id.as_str()) || dragged.as_ref() == Some(&r.entry.id) { continue; }
+                let Some(pos) = fd.springs.remove(&r.entry.id) else { continue };
+                let a = fd.fx.remove(&r.entry.id).map_or(1., |f| f.show.unit());
+                fd.leaving.insert(r.entry.id.clone(), Leaving { row: r.clone(), pos, alpha: VANISH.from(a, 0.) });
+            }
         }
         // Opening drawers hold the rows under their folder, refreshed as those change.
         for d in &mut fd.drawers {
             if !d.opening { continue; }
-            d.rows = match &d.folder { None => rows.clone(), Some(f) => index.get(f.as_str()).map_or(vec![], |&i| under(&rows, i)) };
+            d.rows = match &d.folder { None => rows.as_ref().clone(), Some(f) => index.get(f.as_str()).map_or(vec![], |&i| under(&rows, i)) };
         }
         let in_drawer: HashSet<String> = fd.drawers.iter().filter(|d| d.opening).flat_map(|d| d.rows.iter().map(|r| r.entry.id.clone())).collect();
         for (i, r) in rows.iter().enumerate() {
@@ -577,7 +597,7 @@ impl Workspace {
             // leave a trail, so a row the pointer moved on from clears at once (丰富:
             // in a few frames); only leaving the list lets the last wash linger.
             let hot = dragged.is_none() && fd.hovered.as_ref() == Some(id);
-            let elsewhere = dragged.is_none() && fd.hovered.as_ref().is_some_and(|h| h != id && present.contains(h.as_str()));
+            let elsewhere = dragged.is_none() && fd.hovered.as_ref().is_some_and(|h| h != id && index.contains_key(h.as_str()));
             fx.hover.to = if hot { 1. } else { 0. };
             (fx.hover.k, fx.hover.c) = if hot { HOVER_IN } else if elsewhere { HOVER_SWITCH } else { HOVER_OUT };
             if !high && fx.hover.p != fx.hover.to { fx.hover.p = fx.hover.to; fx.hover.v = 0.; }
@@ -586,7 +606,7 @@ impl Workspace {
             // A drawer starting moves the rows below it itself: their places
             // jump to the new layout and the drawer's edge carries them there.
             if started && fx.lift.p < 0.005 { spring.p[1] = target[1]; spring.v[1] = 0.; }
-            moving |= spring.step(dt);
+            if spring.p != target || spring.v != [0.; 3] { moving |= spring.step(dt); }
             moving |= fx.step(dt);
         }
         fd.shown = rows.clone();
@@ -707,6 +727,8 @@ impl Workspace {
             (None, _) => fd.pill = None,
         }
         if let Some(pill) = &mut fd.pill && pill.travel { pill.travel = pill.pos.step(dt); moving |= pill.travel; }
+        let pill_index = fd.pill.as_ref().and_then(|p| index.get(p.id.as_str()).copied());
+        let dwell_paint = dwell.as_ref().and_then(|(id, t)| index.get(id.as_str()).map(|&i| (i, *t)));
         if let Some(d) = fd.active.as_mut().filter(|d| d.started) {
             moving |= d.lift.step(dt);
             // The lifted row follows the pointer exactly; only layout and landing spring.
@@ -723,7 +745,6 @@ impl Workspace {
             fd.bounds.set(Some(bounds));
             let viewport = window.content_mask().bounds;
             let on_screen = |y: f32| bounds.top() + px(y + crate::sidebar::ROW_H) >= viewport.top() && bounds.top() + px(y) <= viewport.bottom();
-            let index: HashMap<&str, usize> = rows.iter().enumerate().map(|(i, r)| (r.entry.id.as_str(), i)).collect();
             let row_h = px(crate::sidebar::ROW_H);
             let radius = px(crate::sidebar::ROW_R);
             // Clip `el` (drawn at x, y, w) to a drawer's band, or draw it as is.
@@ -753,7 +774,7 @@ impl Workspace {
                 container = container.child(div().absolute().left(px(x)).top(px(y)).w(px(w)).h(px(h)).rounded(px(crate::sidebar::ROW_R + 3.))
                     .bg(Theme::sidebar_drop().opacity(a)));
             }
-            if let Some((id, t)) = &dwell && let Some(&i) = index.get(id.as_str()) {
+            if let Some((i, t)) = dwell_paint {
                 // Pressure building on a closed folder: a wash sweeps across it until it opens.
                 let e = 1. - (1. - t) * (1. - t);
                 let [x, y, w] = drawn[i];
@@ -762,7 +783,7 @@ impl Workspace {
             if let Some(pill) = &fd.pill {
                 let [x, y, w] = pill.pos.p;
                 if on_screen(y) {
-                let i = index.get(pill.id.as_str()).copied();
+                let i = pill_index;
                 let show = fd.fx.get(&pill.id).map_or(1., |f| f.show.unit()) * i.map_or(1., |i| reveal[i]);
                 let el = div().id("sidebar-pill").h(row_h).rounded(radius).bg(Theme::sidebar_selected().opacity(show));
                 container = container.child(clipped(el, x, y, w, i.and_then(|i| clip[i]).filter(|_| !pill.travel)));
@@ -774,7 +795,7 @@ impl Workspace {
             }
             let batch = ws.batch.clone();
             // Landing cards last, so a dropped folder sinks over the rows opening under it.
-            let mut order: Vec<usize> = (0..rows.len()).collect();
+            let mut order: Vec<usize> = drawn.iter().enumerate().filter_map(|(i, p)| on_screen(p[1]).then_some(i)).collect();
             order.sort_by_key(|&i| fd.fx[&rows[i].entry.id].lift.p > 0.005);
             for i in order {
                 let r = &rows[i];
@@ -787,7 +808,6 @@ impl Workspace {
                 // A landing card is never clipped: it is still above the list.
                 let band = clip[i].filter(|_| lift < 0.005);
                 if band.is_some_and(|(lo, hi)| hi - lo < 0.5 || y >= hi || y + PITCH <= lo) { continue; }
-                if !on_screen(y) { continue; }
                 let a = reveal[i];
                 let hid = id.clone();
                 let el = div().id(SharedString::from(format!("frow-{id}"))).h(row_h)

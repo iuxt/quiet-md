@@ -256,7 +256,7 @@ impl R<'_> {
             marked: self.ed.marked.as_ref().filter(|(b, _)| *b == id && !self.ghost).map(|(_, r)| r.clone()),
             cache: self.cache.clone(),
             show_caret: caret_here && self.focused && self.ed.caret_visible && !self.ed.read_only,
-            highlight: None,
+            code_language: None,
             found: if self.ghost { vec![] } else { self.ed.find_hits(id) },
             eq_counter: self.eqnos.get(&id).copied().unwrap_or(0),
             button_edit: if self.ghost { None } else { self.ed.button_preview(id) },
@@ -804,10 +804,7 @@ impl R<'_> {
         };
         let text = b.text.text.clone();
         let mut el = self.text_el(id, &b.text, spec, Align::Left, None);
-        if lang != "Plain Text" {
-            let lang = lang.to_string();
-            el.highlight = Some(Box::new(move |t| crate::highlight::spans(&lang, t)));
-        }
+        el.code_language = Some(lang.to_string());
         // Header: fold triangle, caption at x 29, then the toolbar (22 tall,
         // right-aligned), revealed on hover / while editing.
         let editing = self.focused && self.ed.core.sel.head.block == id;
@@ -2151,10 +2148,7 @@ fn code_block_feishu(&self, b: &Block, lang: &str, wrap: bool, cx: &mut Context<
         };
         let text = b.text.text.clone();
         let mut el = self.text_el(id, &b.text, spec, Align::Left, None);
-        if lang != "Plain Text" {
-            let lang = lang.to_string();
-            el.highlight = Some(Box::new(move |t| crate::highlight::spans(&lang, t)));
-        }
+        el.code_language = Some(lang.to_string());
         // Header: fold triangle, caption at x 29, then the toolbar (22 tall,
         // right-aligned), revealed on hover / while editing.
         let editing = self.focused && self.ed.core.sel.head.block == id;

@@ -48,15 +48,15 @@ for pinned in (False, True):
     offset = 0
     for i, delta in enumerate(deltas):
         offset += delta
-        # Stay inside the scroll viewport, excluding icons, hover and fixed nav.
-        box = tuple(round(v * scale) for v in (40, 100, 210, 300))
+        # Stay inside the scroll viewport below Home and Git changes, away from icons and hover.
+        box = tuple(round(v * scale) for v in (40, 128, 210, 300))
         shifted = (box[0], box[1] + round(offset * scale), box[2], box[3] + round(offset * scale))
         with Image.open(run / f"step-{i:02}.png") as image:
             actual = image.convert("RGB").crop(box)
         diff = ImageChops.difference(reference.crop(shifted), actual)
         assert diff.getbbox() is None, f"{case.name}, step {i}, scroll {offset}: visible row pixels disappeared or changed"
     for name in ("bottom", "bottom-again", "top", "top-again", "taller"):
-        box = tuple(round(v * scale) for v in (40, 100, 210, 640))
+        box = tuple(round(v * scale) for v in (40, 128, 210, 640))
         with Image.open(run / f"{name}.png") as image:
             actual = image.convert("RGB").crop(box)
         with Image.open(run / f"{name}-settled.png") as image:

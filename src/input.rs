@@ -564,7 +564,7 @@ impl Render for TextField {
             marked: self.marked.clone(),
             cache: self.cache.clone(),
             show_caret: focused && !self.hide_caret && self.sel.is_empty(),
-            highlight: None,
+            code_language: None,
             found: vec![],
             eq_counter: 0,
             button_edit: None,
