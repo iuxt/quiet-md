@@ -1906,13 +1906,16 @@ fn arrow_binding(doc: &Scene, p: World, snap: Option<ArrowSnap>) -> Option<scene
     let snap = snap?;
     // This is Excalidraw's zoom-dependent simple-arrow binding distance.
     let threshold = (15. / (snap.zoom.min(1.) * 1.5)).clamp(15., 30.);
-    let target = doc.elements.iter().rev().find(|e| {
+    // Prefer nearby outlines, with layer order breaking ties and choosing interior hits.
+    let (target, _) = doc.elements.iter().rev().filter_map(|e| {
         if e.is_deleted() || !e.is_bindable() || e.base().locked || !element_bounds(e).expand(threshold).contains(p)
-            || matches!(e, Element::Text(t) if t.container_id.is_some()) { return false; }
-        if let Some(frame) = e.base().frame_id.as_deref().and_then(|id| doc.get(id)) && !element_bounds(frame).contains(p) { return false; }
-        if scene::collision::hit_test_element(e, p, 0.) { !matches!(e, Element::Frame(_) | Element::MagicFrame(_)) }
-        else { shape_outline_distance(e, p) <= threshold }
-    })?;
+            || matches!(e, Element::Text(t) if t.container_id.is_some()) { return None; }
+        if let Some(frame) = e.base().frame_id.as_deref().and_then(|id| doc.get(id)) && !element_bounds(frame).contains(p) { return None; }
+        let inside = scene::collision::hit_test_element(e, p, 0.);
+        if inside && matches!(e, Element::Frame(_) | Element::MagicFrame(_)) { return None; }
+        let distance = shape_outline_distance(e, p);
+        if distance <= threshold { Some((e, distance)) } else { inside.then_some((e, f64::INFINITY)) }
+    }).min_by(|(_, a), (_, b)| a.total_cmp(b))?;
     let base = target.base();
     let center = element_center(target);
     let local = p.rotate(-base.angle, center);
@@ -2293,6 +2296,27 @@ mod tests {
         assert_eq!(binding.fixed_point[0], 1.);
         assert!(binding.fixed_point[1] > 0.5);
         assert!(arrow_binding(&doc, p, None).is_none());
+    }
+
+    #[test]
+    fn drawing_line_endpoint_prefers_the_inner_outline_over_the_outer_rectangle() {
+        let mut doc = Scene::new(); let options = ElementOptions::default();
+        let inner = factory::new_rectangle(10., 40., 90., 80., &options);
+        let outer = factory::new_rectangle(0., 0., 200., 160., &options);
+        let (inner_id, outer_id) = (inner.id().to_owned(), outer.id().to_owned());
+        let line = factory::new_line(vec![World::new(-50., 80.), World::new(-25., 80.)], &options);
+        doc.elements = vec![inner, outer, line];
+        for _ in 0..2 {
+            for (x, edge) in [(8., 10.), (102., 100.)] {
+                move_endpoint(&mut doc, 2, 1, World::new(x, 80.));
+                let Element::Line(line) = &doc.elements[2] else { unreachable!() };
+                assert_eq!(line.linear.end_binding.as_ref().unwrap().element_id, inner_id);
+                assert_eq!(line.linear.points[1], World::new(edge, 80.));
+            }
+            let outer = arrow_binding(&doc, World::new(150., 80.), Some(ArrowSnap::default())).unwrap();
+            assert_eq!(outer.element_id, outer_id);
+            doc.elements.swap(0, 1);
+        }
     }
 
     #[test]

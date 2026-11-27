@@ -173,10 +173,11 @@ fn without_blank_lines(text: &str) -> (Cow<'_, str>, SkippedPositions) {
     (Cow::Owned(filtered), skipped)
 }
 
-pub(crate) fn git_lines(old: &str, new: &str) -> Result<Vec<DiffChange<String>>> {
+pub(crate) fn git_lines(old: &str, new: &str, keep_blanks: bool) -> Result<Vec<DiffChange<String>>> {
     if old == new { return Ok(vec![]) }
-    let (old, old_skipped) = without_blank_lines(old);
-    let (new, new_skipped) = without_blank_lines(new);
+    let lines = |text| if keep_blanks { (Cow::Borrowed(text), SkippedPositions::default()) } else { without_blank_lines(text) };
+    let (old, old_skipped) = lines(old);
+    let (new, new_skipped) = lines(new);
     let mut rows = Vec::new();
     git_changes(old.as_bytes(), new.as_bytes(), |kind, number, bytes| {
         let line = std::str::from_utf8(bytes)?;
@@ -292,12 +293,12 @@ mod tests {
     fn git_previews_ignore_blank_rows_and_keep_original_numbers() {
         let old = "\n \t\r\nBefore\n\nKeep\n\nOld tail\n";
         let new = "After\n\nKeep\n \n\nNew tail\n";
-        let text = git_lines(old, new).unwrap();
+        let text = git_lines(old, new, false).unwrap();
         let positions = |rows: &[DiffChange<String>]| rows.iter().map(|r| (r.kind, r.number)).collect::<Vec<_>>();
         let expected = [(Kind::Removed, 3), (Kind::Added, 1), (Kind::Same, 3), (Kind::Removed, 7), (Kind::Added, 6)];
         assert_eq!(positions(&text), expected);
-        assert!(git_lines("A\n\n\nB\n", "A\nB\n \t\n").unwrap().is_empty());
-        assert_eq!(git_lines("item\n", "  item\n").unwrap().len(), 2);
+        assert!(git_lines("A\n\n\nB\n", "A\nB\n \t\n", false).unwrap().is_empty());
+        assert_eq!(git_lines("item\n", "  item\n", false).unwrap().len(), 2);
 
         let old = "<p></p><p> </p><p>Before</p><p></p><p>Keep</p><p></p><p>Old tail</p>";
         let new = "<p>After</p><p></p><p>Keep</p><p> </p><p></p><p>New tail</p>";

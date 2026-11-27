@@ -2261,7 +2261,7 @@ pub(super) fn clipboard_image_data(img: &gpui::Image) -> Result<(std::borrow::Co
 
 /// `image_block_from` for a file that has a name of its own, which its copy keeps.
 fn image_block_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Block, &'static str> {
-    let path = store_image_named(bytes, ext, name)?;
+    let path = store_image_named(&Store::root_dir(), bytes, ext, name)?;
     let mut b = Block::new(
         BlockKind::Image { src_kind: "src".into(), src: path.to_string_lossy().to_string(), width: None, height: None, caption: None, crop: None },
         RichText::default(),
@@ -2271,12 +2271,12 @@ fn image_block_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Bloc
 }
 
 /// Checks picked or pasted image bytes and copies them into Images/.
-pub(super) fn store_image(bytes: &[u8], ext: &str) -> Result<PathBuf, &'static str> { store_image_named(bytes, ext, None) }
+pub(super) fn store_image(bytes: &[u8], ext: &str) -> Result<PathBuf, &'static str> { store_image_named(&Store::root_dir(), bytes, ext, None) }
 
 /// `store_image`; an image with a `name` (a picked or dropped file) is kept
 /// as `<8 hex>-<name>.<ext>`, so its name survives in the library and in the
 /// copy beside a Markdown file. A pasted one is just `<uuid>.<ext>`.
-fn store_image_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
+fn store_image_named(root: &Path, bytes: &[u8], ext: &str, name: Option<&str>) -> Result<PathBuf, &'static str> {
     let ext = ext.to_ascii_lowercase();
     if !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2293,7 +2293,6 @@ fn store_image_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Path
     let name: Option<String> = name.map(|n| n.chars().map(|c| if matches!(c, '/' | '\\' | ':') || c.is_control() { '_' } else { c }).take(80).collect::<String>())
         .map(|n| n.trim().trim_start_matches('.').to_string()).filter(|n| !n.is_empty());
     let file = match name { Some(n) => format!("{}-{n}.{ext}", &id[..8]), None => format!("{id}.{ext}") };
-    let root = Store::root_dir();
     let dir = root.join(crate::store::IMAGE);
     std::fs::create_dir_all(&dir).map_err(|_| BAD_DIMS)?;
     let path = dir.join(file);
@@ -2301,7 +2300,7 @@ fn store_image_named(bytes: &[u8], ext: &str, name: Option<&str>) -> Result<Path
     Ok(path)
 }
 
-fn image_block_from_file(p: &Path) -> Result<Block, &'static str> {
+fn read_image_file(p: &Path) -> Result<(Vec<u8>, String), &'static str> {
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or_default().to_ascii_lowercase();
     if !p.is_file() || !FORMATS.contains(&ext.as_str()) {
         return Err(BAD_FORMAT);
@@ -2309,8 +2308,48 @@ fn image_block_from_file(p: &Path) -> Result<Block, &'static str> {
     if std::fs::metadata(p).map(|m| m.len()).unwrap_or(0) > MAX_BYTES {
         return Err(TOO_BIG);
     }
-    let bytes = std::fs::read(p).map_err(|_| BAD_DIMS)?;
+    let bytes = crate::store::read_bounded(p, MAX_BYTES).map_err(|_| BAD_DIMS)?;
+    Ok((bytes, ext))
+}
+
+fn image_block_from_file(p: &Path) -> Result<Block, &'static str> {
+    let (bytes, ext) = read_image_file(p)?;
     image_block_named(&bytes, &ext, p.file_stem().and_then(|s| s.to_str()))
+}
+
+/// Import an opened Markdown document's local pictures without changing its image blocks.
+pub(crate) fn copy_local_markdown_images(root: &Path, blocks: &mut [Block]) -> Result<(), &'static str> {
+    fn visit(root: &Path, blocks: &mut [Block], images: Option<&Path>, copies: &mut std::collections::HashMap<PathBuf, PathBuf>) -> Result<(), &'static str> {
+        for block in blocks {
+            match &mut block.kind {
+                BlockKind::Image { src, .. } if Path::new(src).is_absolute() => {
+                    let path = Path::new(src).canonicalize().map_err(|_| BAD_DIMS)?;
+                    let saved = if let Some(rel) = images.and_then(|dir| path.strip_prefix(dir).ok()) {
+                        root.join(crate::store::IMAGE).join(rel)
+                    } else if let Some(saved) = copies.get(&path) {
+                        saved.clone()
+                    } else {
+                        let (bytes, ext) = read_image_file(&path)?;
+                        let saved = store_image_named(root, &bytes, &ext, path.file_stem().and_then(|s| s.to_str()))?;
+                        copies.insert(path, saved.clone());
+                        saved
+                    };
+                    *src = saved.to_string_lossy().into_owned();
+                }
+                BlockKind::Table(table) => for cell in table.rows.iter_mut().flatten() { visit(root, &mut cell.blocks, images, copies)?; },
+                _ => {}
+            }
+            visit(root, &mut block.children, images, copies)?;
+        }
+        Ok(())
+    }
+    let images = root.join(crate::store::IMAGE).canonicalize().ok();
+    let mut copies = std::collections::HashMap::new();
+    let result = visit(root, blocks, images.as_deref(), &mut copies);
+    if result.is_err() {
+        for file in copies.values() { let _ = std::fs::remove_file(file); }
+    }
+    result
 }
 
 /// File name of a remote image's download in `Images/remote`.
@@ -2348,7 +2387,7 @@ pub(crate) fn localize_pasted_images(blocks: &mut Vec<Block>) {
             let ext = head.split(';').next().unwrap_or_default().replace("jpeg", "jpg");
             let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(payload.trim()) else { return false };
             image_block_from(&bytes, &ext)
-        } else if src.starts_with('/') {
+        } else if Path::new(src).is_absolute() {
             image_block_from_file(Path::new(src.as_str()))
         } else {
             return true;

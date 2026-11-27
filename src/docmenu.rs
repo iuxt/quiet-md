@@ -101,11 +101,7 @@ impl Workspace {
         let title = crate::localized_format!("{} 副本", "{} copy", display_title(&doc.title.text));
         doc.title = crate::model::RichText::plain(title);
         let width = self.entries.iter().find(|e| e.id == id).map(|e| e.meta.width).unwrap_or_default();
-        // A Markdown file copies as Markdown, into the library even from a 本机文件.
-        let made = if self.store.is_markdown(id) { let front = self.store.front_matter_of(id); self.store.create_markdown(&doc, &front) } else {
-            crate::store::Store::copy_drawings(&crate::store::Store::root_dir(), &mut doc.blocks).and_then(|()| self.store.create_from(&doc))
-        };
-        match made {
+        match self.write_note_copy(id, doc) {
             Ok(new) => {
                 let _ = self.store.set_width(&new, width);
                 let parent = self.entries.iter().find(|e| e.id == id).filter(|e| !e.meta.local()).and_then(|e| e.meta.parent.clone());
@@ -116,6 +112,21 @@ impl Workspace {
                 self.status = crate::app::SaveStatus::Failed(crate::localized_format!("创建副本失败：{}", "Could not duplicate document: {}", crate::settings::diagnostic(&e.to_string())));
                 None
             }
+        }
+    }
+
+    pub(crate) fn write_note_copy(&mut self, id: &str, mut doc: crate::model::Document) -> anyhow::Result<String> {
+        let root = crate::store::Store::root_dir();
+        if self.store.is_markdown(id) {
+            if let Some(path) = self.store.local_path(id) {
+                if let Some(dir) = path.parent() { crate::markdown::wiki_images(&mut doc.blocks, dir, None); }
+                crate::editor::image::copy_local_markdown_images(&root, &mut doc.blocks).map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            let front = self.store.front_matter_of(id);
+            self.store.create_markdown(&doc, &front)
+        } else {
+            crate::store::Store::copy_drawings(&root, &mut doc.blocks)?;
+            self.store.create_from(&doc)
         }
     }
 

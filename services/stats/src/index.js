@@ -20,6 +20,7 @@
 const HOST = 'download.quiet.md', SITE = 'quiet.md';
 const CRAWLER = /bot|crawl|spider|slurp|curl|wget|python|go-http|java\/|headless|preview|monitor|scan/i;
 const PLATFORMS = { 'macos-arm64.zip': 'macos-arm64', 'windows-x64-setup.exe': 'windows-x64', 'macos-x86_64.zip': 'macos-x86_64', 'x86_64.AppImage': 'linux-x86_64' };
+const GITHUB_PLATFORMS = { ...PLATFORMS, 'macos-arm64-unsigned.zip': 'macos-arm64', 'macos-x86_64-unsigned.zip': 'macos-x86_64' };
 const PAGE = 5000; // Bound each analytics response; split full windows below.
 
 export default {
@@ -150,30 +151,38 @@ async function github(env, day) {
   const r0 = await repo.json();
   const rows = [['github.stars', '{}', r0.stargazers_count], ['github.forks', '{}', r0.forks_count],
     ['github.watchers', '{}', r0.subscribers_count], ['github.open_issues', '{}', r0.open_issues_count]];
+  const availableSince = new Map();
   for (let page = 1; page < 10; page++) {
     const res = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/releases?per_page=100&page=${page}`, { headers });
     if (!res.ok) throw new Error(`github ${res.status}: ${(await res.text()).slice(0, 300)}`);
     const releases = await res.json();
     for (const r of releases) {
+      const published = Date.parse(r.published_at) || 0;
       for (const a of r.assets) {
-        const p = Object.keys(PLATFORMS).find((s) => a.name.endsWith(s));
-        if (p) rows.push(['github.downloads_total', key({ platform: PLATFORMS[p], version: r.tag_name.replace(/^v/, ''), asset: a.name }), a.download_count]);
+        const p = Object.keys(GITHUB_PLATFORMS).find((s) => a.name.endsWith(s));
+        if (p) {
+          const dims = key({ platform: GITHUB_PLATFORMS[p], version: r.tag_name.replace(/^v/, ''), asset: a.name });
+          rows.push(['github.downloads_total', dims, a.download_count]);
+          availableSince.set(dims, Math.max(published, Date.parse(a.created_at) || 0));
+        }
       }
     }
     if (releases.length < 100) break;
   }
   // The day's increase, against the latest earlier snapshot of the same asset.
-  const prev = await env.DB.prepare(`SELECT dims, value FROM metrics m WHERE metric = 'github.downloads_total'
+  const prev = await env.DB.prepare(`SELECT dims, value, collected_at FROM metrics m WHERE metric = 'github.downloads_total'
     AND day = (SELECT max(day) FROM metrics WHERE metric = 'github.downloads_total' AND day < ?)`).bind(day).all();
   const previousDay = await env.DB.prepare("SELECT max(day) AS d FROM metrics WHERE metric = 'github.downloads_total' AND day < ?").bind(day).first('d');
   const consecutive = previousDay && next(previousDay) === day;
   const before = new Map(prev.results.map((r) => [r.dims, r.value]));
+  const previousAt = prev.results.reduce((at, r) => Math.max(at, Date.parse(r.collected_at)), -Infinity);
   const delta = new Map();
   for (const [metric, k, total] of rows) {
     if (metric !== 'github.downloads_total') continue;
     const d = JSON.parse(k);
-    // A first snapshot has nothing to compare with; an asset new since then starts at 0.
+    // Older assets newly recognized by the collector first establish a baseline.
     if (!consecutive || before.size === 0) continue;
+    if (!before.has(k) && !(availableSince.get(k) >= previousAt)) continue;
     const k2 = key({ platform: d.platform, version: d.version });
     delta.set(k2, (delta.get(k2) || 0) + total - (before.get(k) || 0));
   }

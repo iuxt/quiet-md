@@ -37,6 +37,26 @@ fn default_library_uses_virtual_folders_and_fixed_body_files_without_git() {
 }
 
 #[test]
+fn an_oversized_manifest_update_leaves_the_library_readable() {
+    let lib = Library::new(); let mut store = lib.open();
+    let id = store.create_from(&doc("Original")).unwrap();
+    let mut manifest = lib.manifest();
+    let free = crate::manifest::MAX_BYTES - serde_json::to_vec_pretty(&manifest).unwrap().len() - 128;
+    manifest.extra.insert("padding".into(), serde_json::Value::String("x".repeat(free)));
+    let original = serde_json::to_vec_pretty(&manifest).unwrap();
+    let path = lib.0.join(FILE);
+    std::fs::write(&path, &original).unwrap();
+
+    let error = store.rename(&id, &"a".repeat(1024)).unwrap_err();
+    assert!(error.to_string().contains("清单超过大小限制"));
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(store.load(&id).unwrap().title.text, "Original");
+    assert_eq!(lib.open().load(&id).unwrap().title.text, "Original");
+    store.rename(&id, "Retry").unwrap();
+    assert_eq!(lib.open().load(&id).unwrap().title.text, "Retry");
+}
+
+#[test]
 fn virtual_tree_delete_restore_and_undo_preserve_structure_and_bytes() {
     let lib = Library::new(); let mut s = lib.open();
     let root = s.create_folder("Root", None).unwrap(); let child = s.create_folder("Child", Some(&root)).unwrap();

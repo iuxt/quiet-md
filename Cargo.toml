@@ -1,6 +1,6 @@
 [package]
 name = "quiet_md"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2024"
 description = "A fast, local-first rich text notes app for macOS and Windows, drawn with GPUI and compatible with Feishu DocxXML"
 license = "MIT"
@@ -47,6 +47,7 @@ sys-locale = "0.3.2"
 jpeg-decoder = { version = "0.3", default-features = false }
 png = "0.18"
 flate2 = "1"
+tempfile = "3.27"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.24"

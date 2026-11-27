@@ -160,7 +160,7 @@ impl LibraryRepo {
     }
 
     fn files(&self) -> Result<BTreeSet<String>> {
-        let bytes = crate::store::read_bounded(&safe_path(&self.root, MANIFEST)?, 16 << 20)?;
+        let bytes = crate::store::read_bounded(&safe_path(&self.root, MANIFEST)?, crate::manifest::MAX_BYTES as u64)?;
         let entries = manifest(&bytes)?;
         let mut files: BTreeSet<_> = [MANIFEST, ".gitattributes", ".gitignore"].into_iter().map(str::to_string).collect();
         files.extend(entries.into_keys());
@@ -203,7 +203,7 @@ impl LibraryRepo {
         for (staged, from, to) in [(true, before, index), (false, Some(index), after)] {
             for delta in self.repo.diff_tree_to_tree(from, Some(to), None)?.deltas() {
                 let path = delta.new_file().path().or_else(|| delta.old_file().path()).context("Git 变更缺少路径")?.to_string_lossy().into_owned();
-                let blank_only = !is_asset_path(&path) && self.blank_line_delta(&delta)?;
+                let blank_only = !is_asset_path(&path) && !is_xml_note(&path) && self.blank_line_delta(&path, &delta)?;
                 let change = changes.entry(path.clone()).or_insert(Change { path, kind: 'M', staged: false, unstaged: false, auto_restore: true });
                 change.auto_restore &= blank_only;
                 change.kind = match delta.status() { git2::Delta::Added => 'A', git2::Delta::Deleted => 'D', _ => 'M' };
@@ -228,13 +228,26 @@ impl LibraryRepo {
         Ok(original.id() == id || crate::diff::same_xml_document(original.content(), self.repo.find_blob(id)?.content()))
     }
 
-    fn blank_line_delta(&self, delta: &git2::DiffDelta<'_>) -> Result<bool> {
+    fn blank_line_delta(&self, path: &str, delta: &git2::DiffDelta<'_>) -> Result<bool> {
         let (old, new) = (delta.old_file(), delta.new_file());
         if delta.status() != git2::Delta::Modified
             || !matches!((old.mode(), new.mode()), (git2::FileMode::Blob, git2::FileMode::Blob)) { return Ok(false) }
         let old = self.repo.find_blob(old.id())?; let new = self.repo.find_blob(new.id())?;
         let (Ok(old), Ok(new)) = (std::str::from_utf8(old.content()), std::str::from_utf8(new.content())) else { return Ok(false) };
         if old.contains('\0') || new.contains('\0') { return Ok(false) }
+        if path.ends_with(".md") {
+            // Interior blank lines can change Markdown structure or literal code.
+            fn skip_leading_blank_lines(text: &str) -> &str {
+                let prefix: usize = text.split_inclusive('\n')
+                    .take_while(|line| line.trim_end_matches(['\r', '\n']).bytes().all(|b| matches!(b, b' ' | b'\t')))
+                    .map(str::len).sum();
+                &text[prefix..]
+            }
+            let has_bom = |s: &str| s.starts_with('\u{feff}');
+            return Ok(skip_leading_blank_lines(old) == skip_leading_blank_lines(new)
+                && has_bom(old) == has_bom(new)
+                && crate::markdown::front_matter(old).0 == crate::markdown::front_matter(new).0);
+        }
         // Keep the exact bytes of nonblank lines, including their line endings.
         fn nonblank(text: &str) -> impl Iterator<Item = &str> {
             text.split_inclusive('\n').filter(|line| !crate::diff::is_blank_line(line))
@@ -570,7 +583,6 @@ struct Metadata { id: String, extra: BTreeMap<String, serde_json::Value> }
 struct DocumentKey { body: Oid, path: String, metadata: String, drawings: BTreeMap<String, Option<Oid>> }
 
 fn manifest(bytes: &[u8]) -> Result<BTreeMap<String, Metadata>> {
-    ensure!(bytes.len() <= 16 << 20, "文档库元数据过大");
     let shared = Manifest::parse(bytes)?;
     let mut entries = BTreeMap::new();
     for note in shared.notes {

@@ -320,7 +320,8 @@ impl Workspace {
             let Some(mut path) = path.await else { return };
             // The save panel lets the name lose its `.pdf`; add it back, but never
             // replace a file the panel didn't ask about.
-            if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf")) {
+            let replace = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("pdf"));
+            if !replace {
                 let mut p = path.into_os_string();
                 p.push(".pdf");
                 path = PathBuf::from(p);
@@ -334,9 +335,14 @@ impl Workspace {
             let html = cx.background_executor().spawn(async move {
                 crate::html::to_html(&doc, &crate::html::Options { sub_pages: &subs, library_root: &root })
             }).await;
-            let _ = std::fs::remove_file(&path);
-            let res = printing::run(html, name, Job::Pdf(path.clone()), view, cx).await;
-            let ok = matches!(res, Ok(true)) && path.is_file();
+            let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+            let ok = if let Ok(dir) = tempfile::Builder::new().prefix(".quiet-pdf-").tempdir_in(parent) {
+                let pending = dir.path().join("document.pdf");
+                let res = printing::run(html, name, Job::Pdf(pending.clone()), view, cx).await;
+                matches!(res, Ok(true)) && pending.metadata().is_ok_and(|m| m.is_file() && m.len() > 0)
+                    && if replace { std::fs::rename(&pending, &path).is_ok() }
+                    else { tempfile::TempPath::try_from_path(pending).is_ok_and(|p| p.persist_noclobber(&path).is_ok()) }
+            } else { false };
             let _ = this.update(cx, |w, cx| {
                 if ok {
                     w.toast = None;
@@ -799,5 +805,32 @@ mod tests {
         assert!(matches!(doc.blocks[4].kind, BlockKind::Heading { level: 2, .. }));
         assert_eq!(percent_decode("a%20b%E5%9B%BE.png"), "a b图.png");
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn an_opened_markdown_copy_owns_its_local_pictures() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("library");
+        let external = tmp.path().join("external");
+        std::fs::create_dir(&external).unwrap();
+        let picture = external.join("diagram with spaces.png");
+        image::RgbImage::new(2, 2).save(&picture).unwrap();
+        let path = external.join("Report.md");
+        let front = "---\ntags: [important]\n---\n\n";
+        std::fs::write(&path, format!("{front}![Chart](diagram%20with%20spaces.png)\n\n![Again](diagram%20with%20spaces.png)\n")).unwrap();
+        let mut store = crate::store::Store::open_at(root.clone()).unwrap();
+        let id = store.open_local(&path).unwrap();
+        let mut doc = store.load(&id).unwrap();
+        crate::editor::image::copy_local_markdown_images(&root, &mut doc.blocks).unwrap();
+        let copy = store.create_markdown(&doc, &store.front_matter_of(&id)).unwrap();
+        let written = std::fs::read_to_string(store.file_path(&copy).unwrap()).unwrap();
+        assert!(written.starts_with(front));
+        assert_eq!(written.matches("../Images/").count(), 2);
+        let images: Vec<_> = std::fs::read_dir(root.join("Images")).unwrap().collect();
+        assert_eq!(images.len(), 1);
+        assert_eq!(std::fs::read(images[0].as_ref().unwrap().path()).unwrap(), std::fs::read(&picture).unwrap());
+        std::fs::rename(external, tmp.path().join("moved")).unwrap();
+        let imported = store.load(&copy).unwrap();
+        assert!(imported.asset_sources().iter().all(|src| std::path::Path::new(src).is_file()));
     }
 }

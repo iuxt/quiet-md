@@ -133,6 +133,44 @@ fn blank_line_changes_are_hidden_and_restored_without_creating_a_commit() {
 }
 
 #[test]
+fn code_blank_lines_stay_visible_and_are_committed_in_both_note_formats() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let note = crate::docxml::parse("<title>Code</title><pre lang=\"text\"><code>alpha\nbeta</code></pre>").unwrap();
+    let ids = [store.create_from(&note).unwrap(), store.create_markdown(&note, "").unwrap()];
+    let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
+    for (staged, code) in [(false, "alpha\n\nbeta"), (true, "alpha\n\n\nbeta")] {
+        for (id, ext) in ids.iter().zip(["xml", "md"]) {
+            let mut edited = store.load_for_edit(id, false).unwrap();
+            edited.blocks[0].text.text = code.into();
+            store.save(id, &edited).unwrap();
+            let path = format!("Notes/{id}.{ext}");
+            if staged { store.git_stage(&path, true).unwrap(); }
+            let preview = repo.change_preview(&path).unwrap();
+            assert!(preview.source.as_ref().unwrap_or(&preview.lines).iter().any(|line| line.kind == crate::diff::Kind::Added && line.content.is_empty()));
+        }
+        assert_eq!(repo.status().unwrap().visible_changes().filter(|c| c.path.starts_with("Notes/")).count(), 2);
+        let commit = store.git_commit("keep empty code lines").unwrap().unwrap();
+        for id in &ids {
+            assert!(repo.revision(&commit, id).unwrap().contains(code));
+            assert_eq!(store.load(id).unwrap().blocks[0].text.text, code);
+        }
+    }
+}
+
+#[test]
+fn a_leading_markdown_blank_line_that_hides_front_matter_is_visible() {
+    let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
+    let id = store.create_markdown(&doc("Markdown"), "---\ntags: [keep]\n---\n\n").unwrap();
+    let repo = lib.git(); configure(&repo, &Library::new().0); repo.commit("initial").unwrap();
+    let path = store.file_path(&id).unwrap();
+    let updated = format!("\n{}", std::fs::read_to_string(&path).unwrap());
+    std::fs::write(path, &updated).unwrap();
+    assert_eq!(repo.status().unwrap().visible_changes().count(), 1);
+    let commit = store.git_commit("keep leading blank line").unwrap().unwrap();
+    assert_eq!(repo.revision(&commit, &id).unwrap(), updated);
+}
+
+#[test]
 fn xml_source_only_changes_are_hidden_and_restored_on_commit() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let mut note = doc("First"); note.blocks = vec![crate::model::Block::text("Before")];

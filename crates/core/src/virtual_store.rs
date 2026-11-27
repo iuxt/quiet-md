@@ -66,6 +66,7 @@ impl Store {
 
     fn write_virtual_manifest(&self, path: &Path, manifest: Arc<Manifest>) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(manifest.as_ref())?;
+        Manifest::check_size(bytes.len())?;
         if !std::fs::read(path).is_ok_and(|old| old == bytes) { write_atomic(path, &bytes)?; }
         self.manifest_cache.replace(Some(ManifestCache { bytes, manifest }));
         Ok(())

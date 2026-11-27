@@ -8,6 +8,7 @@ use crate::store::{InfoRow, Meta, PageWidth};
 pub const VERSION: u32 = 2;
 pub const FILE: &str = "quiet.json";
 pub const NOTES: &str = "Notes";
+pub(crate) const MAX_BYTES: usize = 16 << 20;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub version: u32,
@@ -91,9 +92,14 @@ impl Deleted {
 
 impl Manifest {
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        ensure!(bytes.len() <= 16 << 20, "文档库清单超过大小限制");
+        Self::check_size(bytes.len())?;
         let manifest: Self = serde_json::from_slice(bytes).context("quiet.json 清单无效")?;
         manifest.validate()?; Ok(manifest)
+    }
+
+    pub(crate) fn check_size(len: usize) -> Result<()> {
+        ensure!(len <= MAX_BYTES, "文档库清单超过大小限制");
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {

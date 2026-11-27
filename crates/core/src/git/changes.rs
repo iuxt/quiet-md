@@ -39,10 +39,14 @@ impl LibraryRepo {
         let (lines, source, formatted) = if xml {
             let formatted = diff::formatted(old, new)?;
             let lines = if formatted.is_some() { vec![] } else {
-                diff::git_lines(&diff::readable(old, false), &diff::readable(new, false))?
+                diff::git_lines(&diff::readable(old, false), &diff::readable(new, false), true)?
             };
-            (lines, Some(diff::git_lines(old, new)?), formatted)
-        } else { (diff::git_lines(old, new)?, None, None) };
+            let mut source = diff::git_lines(old, new, false)?;
+            if old != new && source.is_empty() && !diff::same_xml_document(old.as_bytes(), new.as_bytes()) {
+                source = diff::git_lines(old, new, true)?;
+            }
+            (lines, Some(source), formatted)
+        } else { (diff::git_lines(old, new, path.ends_with(".md"))?, None, None) };
         Ok(ChangePreview { title, lines, source, formatted, binary })
     }
 }

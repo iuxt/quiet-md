@@ -52,10 +52,7 @@ impl Workspace {
                 let title = if key == id { crate::localized_format!("{} 副本", "{} copy", entry.title) } else { entry.title };
                 self.store.create_folder(&title, parent.as_deref())
             } else {
-                self.store.load(&key).and_then(|mut doc| {
-                    crate::store::Store::copy_drawings(&crate::store::Store::root_dir(), &mut doc.blocks)?;
-                    self.store.create_from(&doc)
-                }).and_then(|new| {
+                self.store.load(&key).and_then(|doc| self.write_note_copy(&key, doc)).and_then(|new| {
                     self.store.set_parent(&new, parent.as_deref())?;
                     self.store.set_width(&new, entry.meta.width)?;
                     Ok(new)

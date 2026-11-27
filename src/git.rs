@@ -2,7 +2,7 @@
 use crate::{app::{Confirm, Workspace}, editor::core::Core, input::TextField, settings::tr, theme::{self, Theme}, ui};
 use fdl_core::git::{Auth, Config, LibraryRepo, Status};
 use gpui::{prelude::FluentBuilder, *};
-use std::collections::BTreeSet;
+use std::{collections::{BTreeSet, HashMap}, sync::Arc};
 
 pub(crate) struct GitPanel {
     name: Entity<TextField>, email: Entity<TextField>, remote: Entity<TextField>, lfs: Entity<TextField>,
@@ -48,11 +48,14 @@ impl Workspace {
         self.close_history(cx);
         if !self.flush(cx) { return }
         // Save all same-library windows before the worker takes the write lock.
+        let mut open_ids: Vec<_> = self.current.iter().cloned().collect();
         for handle in cx.windows().into_iter().filter(|h| h.window_id() != window.window_handle().window_id()).filter_map(|h| h.downcast::<Workspace>()) {
-            if !handle.update(cx, |w, _, cx| { w.close_history(cx); w.flush(cx) }).unwrap_or(false) {
+            let Ok((true, id)) = handle.update(cx, |w, _, cx| { w.close_history(cx); (w.flush(cx), w.current.clone()) }) else {
                 self.show_toast_kind(ui::ToastKind::Error, tr("其他窗口有未保存的修改", "Another window has unsaved changes"), cx); return;
-            }
+            };
+            open_ids.extend(id);
         }
+        let baselines = open_ids.into_iter().filter_map(|id| self.store.edit_baseline(&id).map(|body| (id, body))).collect::<HashMap<_, _>>();
         self.init_git_panel(cx);
         let panel = self.git.as_mut().unwrap(); panel.settings_error = None; panel.settings_notice = None;
         let settings_feedback = matches!(action, Action::Enable | Action::Configure | Action::Clone(_));
@@ -64,9 +67,10 @@ impl Workspace {
         let message = panel.message.read(cx).text.clone();
         let Some(guard) = self.store.begin_file_task() else { return };
         let mut writer = self.store.tree_writer();
-        let reload = matches!(action, Action::Enable | Action::Pull | Action::Discard(_));
         let task = cx.background_executor().spawn(async move {
             let mut restored = BTreeSet::new();
+            let mut refresh_all = false;
+            let mut adopt_tree = false;
             let result = (|| -> anyhow::Result<_> {
                 if let Action::Clone(path) = &action {
                     LibraryRepo::clone_configured(&config, path, &auth)?;
@@ -83,24 +87,34 @@ impl Workspace {
                         else { tr("内容没有变化，无需新增提交", "No changes; no commit needed").to_string() }
                     },
                     Action::Push => { repo.push(&auth)?; tr("已推送到远端", "Pushed to remote").to_string() },
-                    Action::Pull => { writer.git_pull(&auth)?; tr("已与远端同步", "Up to date with remote").to_string() },
+                    Action::Pull => {
+                        refresh_all = writer.git_pull(&auth)?;
+                        adopt_tree = refresh_all;
+                        tr("已与远端同步", "Up to date with remote").to_string()
+                    },
                     Action::StageAll => { writer.git_stage_all(true)?; String::new() },
                     Action::UnstageAll => { writer.git_stage_all(false)?; String::new() },
                     Action::Stage(path) => { writer.git_stage(&path, true)?; String::new() },
                     Action::Unstage(path) => { writer.git_stage(&path, false)?; String::new() },
-                    Action::Discard(path) => { writer.git_discard(&path)?; tr("已丢弃未暂存的修改", "Unstaged changes discarded").to_string() },
+                    Action::Discard(path) => {
+                        writer.git_discard(&path)?;
+                        adopt_tree = true;
+                        refresh_all = path == fdl_core::git::MANIFEST;
+                        restored.insert(path);
+                        tr("已丢弃未暂存的修改", "Unstaged changes discarded").to_string()
+                    },
                     _ => String::new(),
                 };
                 Ok((Some(repo.status()?), notice, None))
             })().map_err(|e| format!("{e:#}"));
-            (writer, result, restored)
+            (writer, result, restored, adopt_tree, refresh_all)
         });
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let _guard = guard;
-            let (writer, result, restored) = task.await;
+            let (writer, result, restored, adopt_tree, refresh_all) = task.await;
             let _ = this.update_in(cx, |w, window, cx| {
-                if reload { w.store.with(|store| *store = writer); }
+                if adopt_tree { w.store.receive_tree(writer); }
                 match result {
                     Ok((status, notice, clone)) => {
                         if let Some(path) = clone { w.confirm = Some(Confirm::SwitchLibrary(path)); }
@@ -122,11 +136,11 @@ impl Workspace {
                         }
                     },
                 }
-                if reload || !restored.is_empty() {
-                    let paths = (!reload).then_some(&restored);
-                    w.refresh_after_git(paths, window, cx);
+                if refresh_all || !restored.is_empty() {
+                    let paths = (!refresh_all).then_some(&restored);
+                    w.refresh_after_git(paths, &baselines, window, cx);
                     for handle in cx.windows().into_iter().filter(|h| h.window_id() != window.window_handle().window_id()).filter_map(|h| h.downcast::<Workspace>()) {
-                        let _ = handle.update(cx, |other, window, cx| other.refresh_after_git(paths, window, cx));
+                        let _ = handle.update(cx, |other, window, cx| other.refresh_after_git(paths, &baselines, window, cx));
                     }
                 }
                 if w.view == crate::app::View::Git {
@@ -142,15 +156,20 @@ impl Workspace {
         }).detach();
     }
 
-    fn refresh_after_git(&mut self, restored: Option<&BTreeSet<String>>, window: &Window, cx: &mut Context<Self>) {
+    fn refresh_after_git(&mut self, restored: Option<&BTreeSet<String>>, baselines: &HashMap<String, Arc<String>>, window: &Window, cx: &mut Context<Self>) {
         self.entries = self.store.list(); self.sort();
         if let Some(id) = self.current.clone() {
             if let Some(entry) = self.entries.iter().find(|e| e.id == id) {
-                if restored.is_none_or(|paths| paths.contains(&entry.meta.rel))
-                    && let Ok(doc) = self.store.load_for_edit(&id, false) && let Some(editor) = &self.editor {
-                    editor.update(cx, |e, cx| e.receive_document(&Core::new(doc), cx));
+                if !entry.meta.local() && restored.is_none_or(|paths| paths.contains(&entry.meta.rel)) && let Some(editor) = &self.editor {
+                    let title = &editor.read(cx).core.doc.title.text;
+                    if let Ok((doc, title)) = self.store.resume_for_edit(&id, baselines.get(&id), title) {
+                        editor.update(cx, |e, cx| {
+                            if let Some(doc) = doc { e.receive_document(&Core::new(doc), cx); }
+                            else if e.core.doc.title.text != title { e.receive_file_title(&title, cx); }
+                        });
+                    }
                 }
-            } else if restored.is_none() && !self.trash_document {
+            } else if !self.trash_document {
                 self.tabs.remove_document(&id);
                 self.leave_document(window, cx);
                 if self.view != crate::app::View::Git { self.show_view(crate::app::View::Home, cx); }

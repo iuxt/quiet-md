@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const source = await readFile(new URL('./index.js', import.meta.url), 'utf8');
-const { collect } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { collect, key } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 
 test('missing days are retried after later days succeed', async () => {
   const runs = [], calls = [];
@@ -50,6 +50,49 @@ test('missing days are retried after later days succeed', async () => {
     calls.length = 0;
     await collect({ DB, MAX_DAYS: 3 }, now);
     assert.deepEqual(calls, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('unsigned macOS packages count without attributing older downloads to today', async () => {
+  const windows = 'quiet-md-1.2.0-windows-x64-setup.exe';
+  const arm = 'quiet-md-1.2.0-macos-arm64-unsigned.zip';
+  const intel = 'quiet-md-1.2.0-macos-x86_64-unsigned.zip';
+  const windowsDims = key({ platform: 'windows-x64', version: '1.2.0', asset: windows });
+  let previousDay = '2026-11-25';
+  let previous = [{ dims: windowsDims, value: 50, collected_at: '2026-11-26T00:30:00Z' }];
+  let rows = [];
+  const DB = {
+    prepare(sql) {
+      return { bind(...args) { return { sql, args,
+        all: async () => ({ results: sql.includes('SELECT dims, value') ? previous : [] }),
+        first: async () => previousDay,
+        run: async () => {},
+      }; } };
+    },
+    async batch(stmts) { rows.push(...stmts.filter(s => s.sql.startsWith('INSERT INTO metrics')).map(s => s.args)); },
+  };
+  const originalFetch = globalThis.fetch;
+  let downloads = [70, 100, 20];
+  globalThis.fetch = async url => ({
+    ok: true,
+    json: async () => url.includes('/releases?') ? [{ tag_name: 'v1.2.0', assets: [windows, arm, intel, arm + '.sha256'].map((name, i) => ({
+      name, download_count: downloads[i] ?? 200, created_at: i === 2 ? '2026-11-26T12:00:00Z' : '2026-11-20T12:00:00Z',
+    })) }] : { stargazers_count: 1, forks_count: 1, subscribers_count: 1, open_issues_count: 1 },
+  });
+  const metric = name => Object.fromEntries(rows.filter(row => row[1] === name).map(row => [JSON.parse(row[2]).platform, row[3]]));
+  try {
+    const env = { DB, MAX_DAYS: '0' };
+    await collect(env, new Date('2026-11-27T00:30:00Z'));
+    assert.deepEqual(metric('github.downloads_total'), { 'windows-x64': 70, 'macos-arm64': 100, 'macos-x86_64': 20 });
+    assert.deepEqual(metric('github.downloads'), { 'windows-x64': 20, 'macos-x86_64': 20 });
+    previous = rows.filter(row => row[1] === 'github.downloads_total').map(row => ({ dims: row[2], value: row[3], collected_at: row[5] }));
+    previousDay = '2026-11-26';
+    rows = [];
+    downloads = [75, 108, 24];
+    await collect(env, new Date('2026-11-28T00:30:00Z'));
+    assert.deepEqual(metric('github.downloads'), { 'windows-x64': 5, 'macos-arm64': 8, 'macos-x86_64': 4 });
   } finally {
     globalThis.fetch = originalFetch;
   }

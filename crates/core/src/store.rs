@@ -1469,7 +1469,10 @@ impl Store {
             let m = self.index.get_mut(id).unwrap();
             m.modified = now();
             let meta = m.clone();
-            self.save_index()?;
+            if let Err(error) = self.save_index() {
+                if !meta.local() { let _ = self.reload_virtual(); }
+                return Err(error);
+            }
             if !meta.local() { self.record_file_change(id, before); }
             return Ok(meta);
         }
