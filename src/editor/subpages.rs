@@ -104,8 +104,8 @@ fn sub_page_row(key: &str, p: &SubPage, cx: &mut Context<Editor>) -> Stateful<Di
 }
 
 impl Editor {
-    pub(super) fn child_documents(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.sub_pages.is_empty() { return None; }
+    pub(super) fn trashed_children(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !self.trashed || self.sub_pages.is_empty() { return None; }
         Some(div().mt(px(24.)).pt(px(12.)).border_t_1().border_color(Theme::button_border())
             .child(div().px(px(6.)).mb(px(4.)).text_size(px(13.)).text_color(Theme::text_caption())
                 .child(crate::settings::tr("子文档", "Child documents")))

@@ -39,7 +39,9 @@ move 1150 850
 type Project parent body
 wait 750
 shot parent
-click 400 358
+click 28 165
+wait 300
+click 100 227
 wait 550
 shot original-child
 down 120 227

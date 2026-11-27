@@ -1323,7 +1323,7 @@ impl Editor {
             Item::Below => div()
                 .id("below")
                 .w_full()
-                .children(self.child_documents(cx))
+                .children(self.trashed_children(cx))
                 .children(self.refs_list(window, cx))
                 .child(div().h(px(200.)).w_full())
                 .on_mouse_down(MouseButton::Left, cx.listener(Self::on_click_below))
