@@ -4,10 +4,14 @@ use fdl_core::git::{Auth, Config, LibraryRepo, Status};
 use gpui::{prelude::FluentBuilder, *};
 use std::{collections::{BTreeSet, HashMap}, sync::Arc};
 
+mod auto_pull;
+pub(crate) use auto_pull::start_auto_pull;
+
 pub(crate) struct GitPanel {
     name: Entity<TextField>, email: Entity<TextField>, remote: Entity<TextField>, lfs: Entity<TextField>,
     ssh_key: Entity<TextField>, ssh_passphrase: Entity<TextField>, lfs_ca_info: Entity<TextField>,
     username: Entity<TextField>, token: Entity<TextField>, pub(super) message: Entity<TextField>,
+    auto_pull_minutes: Option<u32>,
     pub(super) status: Option<Status>, settings_error: Option<String>, settings_notice: Option<String>,
     pub(super) selected: Option<String>, pub(super) preview: Option<crate::git_panel::GitPreview>, pub(super) loading: bool,
     pub(super) source: bool, pub(super) request: u64,
@@ -38,6 +42,7 @@ impl Workspace {
             ssh_passphrase: field(tr("私钥密码（仅本次会话）", "Key passphrase (this session only)"), &auth.ssh_passphrase, true),
             lfs_ca_info: field(tr("PEM CA 证书路径（可选）", "PEM CA certificate path (optional)"), &config.lfs_ca_info, false),
             message: field(tr("提交说明", "Commit message"), &message, false),
+            auto_pull_minutes: None,
             status: None, settings_error: error, settings_notice: None,
             selected: None, preview: None, loading: false, source: false, request: 0,
         });
@@ -57,13 +62,16 @@ impl Workspace {
         }
         let baselines = open_ids.into_iter().filter_map(|id| self.store.edit_baseline(&id).map(|body| (id, body))).collect::<HashMap<_, _>>();
         self.init_git_panel(cx);
+        let saved_minutes = auto_pull::settings(cx).0;
         let panel = self.git.as_mut().unwrap(); panel.settings_error = None; panel.settings_notice = None;
         let settings_feedback = matches!(action, Action::Enable | Action::Configure | Action::Clone(_));
         panel.request += 1; panel.preview = None; panel.loading = false;
         let config = Config { name: panel.name.read(cx).text.clone(), email: panel.email.read(cx).text.clone(), remote: panel.remote.read(cx).text.trim().to_string(),
             branch: String::new(), lfs_url: panel.lfs.read(cx).text.trim().to_string(),
-            ssh_key: panel.ssh_key.read(cx).text.trim().to_string(), lfs_ca_info: panel.lfs_ca_info.read(cx).text.trim().to_string() };
+            ssh_key: panel.ssh_key.read(cx).text.trim().to_string(), lfs_ca_info: panel.lfs_ca_info.read(cx).text.trim().to_string(),
+            auto_pull_minutes: panel.auto_pull_minutes.unwrap_or(saved_minutes) };
         let auth = Auth { username: panel.username.read(cx).text.clone(), token: panel.token.read(cx).text.clone(), ssh_passphrase: panel.ssh_passphrase.read(cx).text.clone() };
+        let mut saved = None;
         let message = panel.message.read(cx).text.clone();
         let Some(guard) = self.store.begin_file_task() else { return };
         let mut writer = self.store.tree_writer();
@@ -79,8 +87,12 @@ impl Workspace {
                 if matches!(action, Action::Enable) { writer.enable_git()?; }
                 let repo = LibraryRepo::open(writer.library_root())?;
                 let notice = match action {
-                    Action::Enable => { repo.configure(&config)?; tr("已启用 Git", "Git enabled").to_string() },
-                    Action::Configure => { repo.configure(&config)?; tr("Git 配置已保存", "Git configuration saved").to_string() },
+                    Action::Enable | Action::Configure => {
+                        repo.configure(&config)?;
+                        saved = Some((config, auth));
+                        if matches!(action, Action::Enable) { tr("已启用 Git", "Git enabled").to_string() }
+                        else { tr("Git 配置已保存", "Git configuration saved").to_string() }
+                    },
                     Action::Commit => {
                         // Commit under the same library lock as autosaves and tree operations.
                         if writer.git_commit_restoring(&message, &mut restored)?.is_some() { tr("本地版本已保存", "Local version saved").to_string() }
@@ -107,12 +119,16 @@ impl Workspace {
                 };
                 Ok((Some(repo.status()?), notice, None))
             })().map_err(|e| format!("{e:#}"));
-            (writer, result, restored, adopt_tree, refresh_all)
+            (writer, result, restored, adopt_tree, refresh_all, saved)
         });
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let _guard = guard;
-            let (writer, result, restored, adopt_tree, refresh_all) = task.await;
+            let (writer, result, restored, adopt_tree, refresh_all, saved) = task.await;
+            if let Some((config, auth)) = saved {
+                let _ = AsyncApp::update(cx, |cx| auto_pull::configure(&config, auth, cx));
+                let _ = this.update(cx, |w, _| { if let Some(panel) = &mut w.git { panel.auto_pull_minutes = None; } });
+            }
             let _ = this.update_in(cx, |w, window, cx| {
                 if adopt_tree { w.store.receive_tree(writer); }
                 match result {
@@ -158,7 +174,7 @@ impl Workspace {
 
     fn refresh_after_git(&mut self, restored: Option<&BTreeSet<String>>, baselines: &HashMap<String, Arc<String>>, window: &Window, cx: &mut Context<Self>) {
         self.entries = self.store.list(); self.sort();
-        if let Some(id) = self.current.clone() {
+        if !self.unsaved && let Some(id) = self.current.clone() {
             if let Some(entry) = self.entries.iter().find(|e| e.id == id) {
                 if !entry.meta.local() && restored.is_none_or(|paths| paths.contains(&entry.meta.rel)) && let Some(editor) = &self.editor {
                     let title = &editor.read(cx).core.doc.title.text;
@@ -176,6 +192,8 @@ impl Workspace {
             }
         }
         self.prune_tabs();
+        if self.view == crate::app::View::Trash { self.trash = self.store.list_trash(); }
+        self.sync_sub_pages(cx);
         cx.notify();
     }
 
@@ -200,6 +218,11 @@ impl Workspace {
                 tr("启用 Git 备份；旧标题文件名会先备份再转换。不会自动推送。", "Enable Git backup; older title-based files are backed up before conversion. Pushes are manual.")
             }));
         if let Some(panel) = &self.git {
+            let (saved_minutes, auto_error) = auto_pull::settings(cx);
+            let minutes = panel.auto_pull_minutes.unwrap_or(saved_minutes);
+            let labels = vec![tr("已关闭", "Off"), tr("1 分钟", "1 minute"), tr("5 分钟", "5 minutes"),
+                tr("15 分钟", "15 minutes"), tr("30 分钟", "30 minutes"), tr("60 分钟", "60 minutes")];
+            let selected = auto_pull::INTERVALS.iter().position(|&n| n == minutes).unwrap_or_default();
             let field = |label: &'static str, entity: Entity<TextField>| div().w_full().flex().flex_col().gap(px(5.))
                 .child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(label))
                 .child(div().w_full().min_h(px(32.)).px(px(9.)).py(px(5.)).flex().items_center().border_1().border_color(Theme::line_border()).rounded(px(6.)).child(entity));
@@ -217,6 +240,15 @@ impl Workspace {
                     .child(ui::secondary_button("git-clone", tr("克隆到空文件夹…", "Clone to an empty folder…")).on_click(cx.listener(|w, _, window, cx| w.pick_git_clone(window, cx)))));
             if let Some(error) = &panel.settings_error { section = section.child(div().text_size(px(12.)).text_color(Theme::danger()).child(error.clone())); }
             if let Some(notice) = &panel.settings_notice { section = section.child(div().text_size(px(12.)).text_color(Theme::text_caption()).child(notice.clone())); }
+            let control = self.select("git-auto-pull", labels, selected, |w, i, cx| {
+                if let Some(panel) = &mut w.git { panel.auto_pull_minutes = Some(auto_pull::INTERVALS[i]); }
+                cx.notify();
+            }, cx);
+            let auto_pull = crate::settings::row(tr("自动拉取", "Automatic pull"),
+                Some(tr("随 Git 配置保存。应用运行时按间隔拉取远端变更。", "Saved with Git configuration. Pulls remote changes periodically while the app is running.").into()), control);
+            let error = auto_error.map(|error| div().px(px(16.)).pb(px(10.)).text_size(px(12.)).text_color(Theme::danger())
+                .child(crate::localized_format!("自动拉取失败：{}", "Automatic pull failed: {}", crate::settings::diagnostic(&error))));
+            return crate::settings::group(None, vec![section.into_any_element(), div().child(auto_pull).children(error).into_any_element()]).into_any_element();
         } else {
             section = section.child(ui::secondary_button("git-settings", tr("配置 Git", "Configure Git")).on_click(cx.listener(|w, _, _, cx| { w.init_git_panel(cx); cx.notify(); })));
         }

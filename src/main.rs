@@ -140,6 +140,7 @@ pub(crate) fn start(scripted: bool, into: Option<&mut Window>, incoming: local_f
         Ok(s) => cx.set_global(s),
         Err(err) => logging::fatal("无法打开文档库 / Could not open the library", &err),
     }
+    git::start_auto_pull(cx);
     if !scripted { quick_note::install(cx); }
     app::set_menus(cx);
     let took = into.map(|window| window.replace_root(cx, app::Workspace::new));

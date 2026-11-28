@@ -1493,12 +1493,15 @@ impl Core {
         if self.cell_sel.is_some() {
             return self.cell_blocks();
         }
+        self.topmost_in(&self.touched_blocks(), &path_index(&self.doc.blocks))
+    }
+
+    fn touched_blocks(&self) -> Vec<BlockId> {
         let us = self.units();
         let (s, e) = self.ordered_in(&us);
         let si = self.unit_index(&us, s.block).unwrap_or(0);
         let ei = self.unit_index(&us, e.block).unwrap_or(0);
-        let ids: Vec<BlockId> = us[si..=ei].iter().map(|u| u.id).filter(|id| *id != TITLE).collect();
-        self.topmost_in(&ids, &path_index(&self.doc.blocks))
+        us[si..=ei].iter().map(|u| u.id).filter(|id| *id != TITLE).collect()
     }
 
     pub fn indent(&mut self) {
@@ -1622,6 +1625,20 @@ impl Core {
 
     // ---- block kind changes
 
+    pub fn turn_selection(&mut self, kind: BlockKind, toggle: bool) {
+        // Include nested lines explicitly covered by a text selection.
+        let ids = if matches!(kind, BlockKind::Code { .. }) && self.block_sel.is_none() && self.cell_sel.is_none() {
+            self.touched_blocks()
+        } else {
+            self.selected_blocks()
+        };
+        if toggle {
+            self.toggle_turn_into(&ids, kind);
+        } else {
+            self.turn_into(&ids, kind);
+        }
+    }
+
     pub fn turn_into(&mut self, ids: &[BlockId], kind: BlockKind) {
         let ids: Vec<BlockId> = ids.iter().copied().filter(|id| *id != TITLE).collect();
         if ids.is_empty() {
@@ -1631,6 +1648,8 @@ impl Core {
         self.break_coalescing();
         if matches!(kind, BlockKind::Quote | BlockKind::Callout { .. }) {
             self.wrap_blocks(&ids, kind);
+        } else if matches!(kind, BlockKind::Code { .. }) && ids.len() > 1 {
+            self.turn_code_blocks(&ids, &kind);
         } else {
             for id in &ids {
                 self.turn_one(*id, kind.clone());
@@ -1759,23 +1778,77 @@ impl Core {
                 if !b.kind.has_text() {
                     return;
                 }
-                if let BlockKind::Code { .. } = k {
-                    b.text = RichText::plain(b.text.plain_text());
-                }
-                // A folded heading hides its section, any other fold just the children: drop the fold
-                // rather than hide or reveal the blocks below.
-                if matches!(b.kind, BlockKind::Heading { .. }) != matches!(k, BlockKind::Heading { .. }) {
-                    b.folded = false;
-                }
                 // Headings, lists and text can all hold children, so the
                 // subtree stays attached; a code block can't, its children follow it instead.
-                b.kind = k;
+                Self::set_text_block_kind(b, k);
                 if !b.kind.nests() {
                     let kids = std::mem::take(&mut b.children);
                     self.insert_all_after(id, kids);
                 }
             }
         }
+    }
+
+    fn set_text_block_kind(b: &mut Block, kind: BlockKind) {
+        if matches!(kind, BlockKind::Code { .. }) {
+            b.text = RichText::plain(b.text.plain_text());
+        }
+        // A folded heading hides its section; other folds hide just children.
+        if matches!(b.kind, BlockKind::Heading { .. }) != matches!(kind, BlockKind::Heading { .. }) {
+            b.folded = false;
+        }
+        b.kind = kind;
+    }
+
+    /// Join adjacent converted lines, keeping containers and atomic blocks in place.
+    fn turn_code_blocks(&mut self, ids: &[BlockId], kind: &BlockKind) {
+        fn append(list: &mut Vec<Block>, mut b: Block, ids: &HashSet<BlockId>, kind: &BlockKind, sel: &mut Selection, block_sel: &mut Option<BlockSel>) {
+            if ids.contains(&b.id) && b.kind.has_text() {
+                let children = std::mem::take(&mut b.children);
+                let prev = list.last_mut().filter(|p| ids.contains(&p.id) && matches!(p.kind, BlockKind::Code { .. }));
+                let (id, start) = prev.as_ref().map_or((b.id, 0), |p| (p.id, p.text.len() + 1));
+                for pos in [&mut sel.anchor, &mut sel.head] {
+                    if pos.block == b.id {
+                        let offset = b.text.text.floor_char_boundary(pos.offset);
+                        let offset = if b.text.text.contains('\u{fffc}') { b.text.slice(0..offset).plain_text().len() } else { offset };
+                        *pos = Pos::new(id, start + offset);
+                    }
+                }
+                if let Some(bs) = block_sel {
+                    if bs.anchor == b.id { bs.anchor = id; }
+                    if bs.head == b.id { bs.head = id; }
+                }
+                Core::set_text_block_kind(&mut b, kind.clone());
+                if let Some(prev) = prev {
+                    prev.text.push("\n", Marks::default());
+                    prev.text.push(&b.text.text, Marks::default());
+                } else {
+                    list.push(b);
+                }
+                // Code cannot hold children. Selected children can join the
+                // converted line in reading order; the others follow it.
+                for child in children {
+                    append(list, child, ids, kind, sel, block_sel);
+                }
+            } else {
+                walk(&mut b.children, ids, kind, sel, block_sel);
+                if let BlockKind::Table(t) = &mut b.kind {
+                    for cell in t.rows.iter_mut().flatten() {
+                        walk(&mut cell.blocks, ids, kind, sel, block_sel);
+                    }
+                }
+                list.push(b);
+            }
+        }
+        fn walk(list: &mut Vec<Block>, ids: &HashSet<BlockId>, kind: &BlockKind, sel: &mut Selection, block_sel: &mut Option<BlockSel>) {
+            let old = std::mem::take(list);
+            list.reserve(old.len());
+            for b in old {
+                append(list, b, ids, kind, sel, block_sel);
+            }
+        }
+        let ids = ids.iter().copied().collect();
+        walk(&mut self.doc.blocks, &ids, kind, &mut self.sel, &mut self.block_sel);
     }
 
     pub fn set_align(&mut self, ids: &[BlockId], align: Align) {
@@ -3441,6 +3514,61 @@ mod tests {
         let mut c = doc("<title>T</title><hr/><p>a</p>");
         let (hr, a) = (id(&c, 1), id(&c, 2));
         assert!(!c.move_blocks(&[a], hr, DropPlace::FirstChild));
+    }
+
+    #[test]
+    fn turn_selection_into_one_code_block_and_undo() {
+        let mut c = doc("<title>T</title><p>before</p><p><b>甲</b></p><p></p><p>  <latex>x^2+y</latex>乙<br/>尾</p><p>after</p>");
+        let (first, last) = (id(&c, 2), id(&c, 4));
+        let sel = Selection { anchor: Pos::new(last, "  \u{fffc}乙".len()), head: Pos::new(first, 0) };
+        c.sel = sel;
+        let before = xml(&c);
+        c.turn_selection(BlockKind::Code { lang: "rust".into(), caption: None, wrap: false }, true);
+        let after = "<title>T</title>\n<p>before</p>\n<pre lang=\"rust\"><code>甲\n\n  x^2+y乙\n尾</code></pre>\n<p>after</p>\n";
+        assert_eq!(xml(&c), after);
+        let merged = Selection { anchor: Pos::new(first, "甲\n\n  x^2+y乙".len()), head: Pos::new(first, 0) };
+        assert_eq!(c.sel, merged);
+        assert!(c.undo());
+        assert_eq!(xml(&c), before);
+        assert_eq!(c.sel, sel);
+        assert!(c.redo());
+        assert_eq!(xml(&c), after);
+        assert_eq!(c.sel, merged);
+    }
+
+    #[test]
+    fn turn_selection_into_code_includes_selected_nested_lines() {
+        let mut c = doc("<title>T</title><p>a<ul><li>b<ul><li>c</li></ul></li><li>d</li></ul></p><p>e</p>");
+        let (a, cc, d) = (id(&c, 1), id(&c, 3), id(&c, 4));
+        c.sel = Selection { anchor: Pos::new(a, 0), head: Pos::new(cc, 1) };
+        c.turn_selection(BlockKind::Code { lang: "plaintext".into(), caption: None, wrap: false }, false);
+        assert_eq!(c.text_of(a).unwrap().text, "a\nb\nc");
+        assert_eq!(c.sel.head, Pos::new(a, 5));
+        assert_eq!(c.doc.blocks[1].id, d);
+        assert!(matches!(c.doc.blocks[1].kind, BlockKind::Bullet));
+        assert_eq!(c.doc.blocks[2].text.text, "e");
+    }
+
+    #[test]
+    fn turn_blocks_into_code_preserves_boundaries_and_block_selection() {
+        let mut c = doc("<title>T</title><p>a</p><p>b</p><hr/><p>c</p><p>d</p>");
+        let (a, cc, d) = (id(&c, 1), id(&c, 4), id(&c, 5));
+        c.select_range(d, a);
+        let kind = BlockKind::Code { lang: "plaintext".into(), caption: None, wrap: false };
+        c.turn_selection(kind.clone(), false);
+        assert_eq!(c.doc.blocks[0].text.text, "a\nb");
+        assert!(matches!(c.doc.blocks[1].kind, BlockKind::Divider));
+        assert_eq!(c.doc.blocks[2].text.text, "c\nd");
+        assert_eq!(c.block_sel, Some(BlockSel { anchor: cc, head: a }));
+
+        let mut c = doc("<title>T</title><table><tr><td><p>a</p><p>b</p></td><td><p>c</p><p>d</p></td></tr></table>");
+        let ids: Vec<_> = c.units().iter().skip(1).map(|u| u.id).collect();
+        c.turn_into(&ids, kind);
+        let BlockKind::Table(t) = &c.doc.blocks[0].kind else { panic!() };
+        assert_eq!(t.rows[0][0].blocks.len(), 1);
+        assert_eq!(t.rows[0][0].blocks[0].text.text, "a\nb");
+        assert_eq!(t.rows[0][1].blocks.len(), 1);
+        assert_eq!(t.rows[0][1].blocks[0].text.text, "c\nd");
     }
 
     #[test]

@@ -434,6 +434,43 @@ fn local_push_clone_pull_and_divergence_keep_documents_and_resources_safe() {
 }
 
 #[test]
+fn automatic_pull_uses_saved_settings_and_rechecks_the_worktree_before_applying() {
+    let server = Library::new(); Repository::init_bare(&server.0).unwrap();
+    let source = Library::new(); let mut a = source.store(); a.enable_git().unwrap();
+    let id = a.create_from(&doc("Original")).unwrap();
+    let auth = Auth::default();
+    let repo = source.git(); configure(&repo, &server.0); repo.commit("initial").unwrap(); repo.push(&auth).unwrap();
+    let clone = Library::new(); let cloned = LibraryRepo::clone_into(server.0.to_str().unwrap(), &clone.0, &auth).unwrap();
+    let mut b = clone.store();
+    a.rename(&id, "Remote update").unwrap(); repo.commit("remote").unwrap(); repo.push(&auth).unwrap();
+
+    let mut config = cloned.config().unwrap();
+    assert_eq!(config.auto_pull_minutes, 0);
+    assert!(cloned.prepare_auto_pull(&auth).unwrap().is_none());
+    config.auto_pull_minutes = 5;
+    cloned.configure(&config).unwrap();
+    assert_eq!(LibraryRepo::settings_at(&clone.0).unwrap().auto_pull_minutes, 5);
+    let pending = cloned.prepare_auto_pull(&auth).unwrap().unwrap();
+    assert_eq!(b.load(&id).unwrap().title.text, "Original");
+    b.rename(&id, "Local draft").unwrap();
+    assert!(!b.git_apply_auto_pull(pending).unwrap());
+    assert!(cloned.prepare_auto_pull(&auth).unwrap().is_none());
+    assert_eq!(b.load(&id).unwrap().title.text, "Local draft");
+
+    b.git_discard(MANIFEST).unwrap();
+    let pending = cloned.prepare_auto_pull(&auth).unwrap().unwrap();
+    config.auto_pull_minutes = 0;
+    cloned.configure(&config).unwrap();
+    assert!(!b.git_apply_auto_pull(pending).unwrap());
+    config.auto_pull_minutes = 5;
+    cloned.configure(&config).unwrap();
+    let pending = cloned.prepare_auto_pull(&auth).unwrap().unwrap();
+    assert!(b.git_apply_auto_pull(pending).unwrap());
+    assert_eq!(b.load(&id).unwrap().title.text, "Remote update");
+    assert!(cloned.prepare_auto_pull(&auth).unwrap().is_none());
+}
+
+#[test]
 fn lfs_rejects_corruption_and_no_tokens_enter_repo_config() {
     let lib = Library::new(); let mut store = lib.store(); store.enable_git().unwrap();
     let repo = lib.git(); let cache = lfs::Lfs::new(repo.repo.path());

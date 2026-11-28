@@ -11,7 +11,7 @@ Quiet.md 是一个单进程 GPUI 应用（Rust，约 4 万行）。一篇文档�
 
 文档库布局由共享清单的版本定义。`manifest.rs` 定义根目录 `quiet.json`（version 3，`notes` / `trash`），每篇文档都可以通过 `parentId` 组织子文档。`virtual_store.rs` 管理共享元数据并负责将旧文件夹转换为可编辑文档。正文固定在 `Notes/<UUID>.xml|md`。移动、重命名及移入回收站只更新清单。图片、文件附件和画板源文件分别存入库根的 `Images/`、`Files/` 和 `Drawings/`。本机状态单独保存。见 [FORMAT.md](FORMAT.md)。
 
-打开文档库时，`Store::open_library_at` 在存储布局就绪后，用 Store 写锁初始化缺失的本地 Git 仓库。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。打开文档库和同步 Git 时校验 `quiet.json` 的 `version` 字段。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行）。手动 Git 操作在后台执行，无需系统 Git / Git LFS。详见 [GIT.md](GIT.md)。
+打开文档库时，`Store::open_library_at` 在存储布局就绪后，用 Store 写锁初始化缺失的本地 Git 仓库。`git.rs` 通过内嵌 libgit2 完成提交、历史、推送、克隆和快进拉取；`git/lfs.rs` 实现资源的 LFS 指针、对象缓存与 HTTP 传输，`git/transport.rs` 处理 SSH 私钥认证、LFS SSH 认证与按 URL 匹配的 CA 配置；`git_store.rs` 负责 Store 写锁和历史文档读取。打开文档库和同步 Git 时校验 `quiet.json` 的 `version` 字段。配置界面在 `src/git.rs`，变更列表与只读对比在 `src/git_panel.rs`（XML 按块保留格式，文本与源码按行）。Git 操作在后台执行，无需系统 Git / Git LFS。`src/git/auto_pull.rs` 为文档库维护一个定时器。下载期间编辑照常进行，应用远端版本前检查各窗口的编辑状态，并在 Store 写锁内重新核对 Git 配置、HEAD 和工作区。详见 [GIT.md](GIT.md)。
 
 ```
 main.rs ─ 窗口

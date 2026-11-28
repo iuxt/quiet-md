@@ -174,21 +174,21 @@ impl Workspace {
                             .when(change.staged, |d| d.child(div().text_size(px(10.)).text_color(Theme::diff_added())
                                 .child(if change.unstaged { tr("部分已暂存", "Partly staged") } else { tr("已暂存", "Staged") })))))
                     .child(div().flex_none().flex().items_center().gap(px(2.))
-                        .child(tool(("git-open", i), "pen-line", tr("打开文件", "Open file"), can_open)
+                        .child(tool(("git-open", i), Tool::Open, tr("打开文件", "Open file"), can_open)
                             .when(can_open, |d| d.on_click(cx.listener(move |w, _, window, cx| {
                                 cx.stop_propagation();
                                 if let Some(id) = &open_id && w.try_open(id, window, cx)
                                     && let Some(editor) = &w.editor { editor.read(cx).focus(window); }
                             }))))
-                        .when(change.unstaged, |d| d.child(tool(("git-stage", i), "plus", tr("暂存修改", "Stage changes"), !busy)
+                        .when(change.unstaged, |d| d.child(tool(("git-stage", i), Tool::Stage, tr("暂存修改", "Stage changes"), !busy)
                             .when(!busy, |d| d.on_click(cx.listener(move |w, _, window, cx| {
                                 cx.stop_propagation(); w.git_action(Action::Stage(stage_path.clone()), window, cx);
                             })))))
-                        .when(change.staged, |d| d.child(tool(("git-unstage", i), "minus", tr("取消暂存", "Unstage changes"), !busy)
+                        .when(change.staged, |d| d.child(tool(("git-unstage", i), Tool::Unstage, tr("取消暂存", "Unstage changes"), !busy)
                             .when(!busy, |d| d.on_click(cx.listener(move |w, _, window, cx| {
                                 cx.stop_propagation(); w.git_action(Action::Unstage(unstage_path.clone()), window, cx);
                             })))))
-                        .child(tool(("git-discard", i), "undo", tr("丢弃未暂存的修改", "Discard unstaged changes"), !busy && can_discard)
+                        .child(tool(("git-discard", i), Tool::Discard, tr("丢弃未暂存的修改", "Discard unstaged changes"), !busy && can_discard)
                             .when(!busy && can_discard, |d| d.on_click(cx.listener(move |w, _, _, cx| {
                                 cx.stop_propagation(); w.confirm = Some(crate::app::Confirm::GitDiscard(discard_path.clone())); cx.notify();
                             })))))
@@ -203,21 +203,24 @@ impl Workspace {
         }
         let branch = status.map(|s| s.branch.clone()).unwrap_or_else(|| "—".into());
         let left = div().w(px(256.)).max_w(relative(0.45)).flex_none().h_full().flex().flex_col().border_r_1().border_color(Theme::line_border())
-            .child(div().h(px(48.)).flex_none().px(px(14.)).flex().items_center().gap(px(4.))
-                .child(tool("git-panel-commit-tool", "check", if staged > 0 { tr("提交已暂存变更", "Commit staged changes") } else { tr("提交本地变更", "Commit local changes") }, can_commit)
+            .child(div().min_h(px(48.)).flex_none().pl(px(14.)).pr(px(8.)).py(px(6.)).flex().flex_wrap().items_center().content_center().gap_y(px(4.))
+                .child(tool("git-panel-commit-tool", Tool::Commit, if staged > 0 { tr("提交已暂存变更", "Commit staged changes") } else { tr("提交本地变更", "Commit local changes") }, can_commit)
+                    .mr(px(5.))
                     .when(can_commit, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Commit, window, cx)))))
-                .child(tool("git-panel-stage-all", "plus", tr("全部暂存", "Stage all"), unstaged && !busy)
-                    .when(unstaged && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::StageAll, window, cx)))))
-                .child(tool("git-panel-unstage-all", "minus", tr("全部取消暂存", "Unstage all"), staged > 0 && !busy)
-                    .when(staged > 0 && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::UnstageAll, window, cx)))))
-                .child(tool("git-panel-push", "arrow-up", tr("推送", "Push"), !busy)
-                    .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Push, window, cx)))))
-                .child(tool("git-panel-pull", "arrow-down", tr("拉取", "Pull"), !busy)
-                    .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Pull, window, cx)))))
-                .child(tool("git-panel-refresh", "restore", tr("刷新状态", "Refresh status"), !busy)
-                    .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Refresh, window, cx)))))
-                .child(div().flex_1())
-                .child(div().id("git-change-count").text_size(px(11.)).text_color(Theme::text_caption()).child(count.to_string()).tip(tr("变更文件", "Changed files"), None)))
+                .child(tool_group().mr(px(5.))
+                    .child(tool("git-panel-stage-all", Tool::Stage, tr("全部暂存", "Stage all"), unstaged && !busy)
+                        .when(unstaged && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::StageAll, window, cx)))))
+                    .child(tool("git-panel-unstage-all", Tool::Unstage, tr("全部取消暂存", "Unstage all"), staged > 0 && !busy)
+                        .when(staged > 0 && !busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::UnstageAll, window, cx))))))
+                .child(tool_group()
+                    .child(tool("git-panel-push", Tool::Push, tr("推送", "Push"), !busy)
+                        .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Push, window, cx)))))
+                    .child(tool("git-panel-pull", Tool::Pull, tr("拉取", "Pull"), !busy)
+                        .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Pull, window, cx)))))
+                    .child(tool("git-panel-refresh", Tool::Refresh, tr("刷新状态", "Refresh status"), !busy)
+                        .when(!busy, |d| d.on_click(cx.listener(|w, _, window, cx| w.git_action(Action::Refresh, window, cx))))))
+                .child(div().id("git-change-count").flex_none().ml(auto()).pl(px(4.)).whitespace_nowrap().text_size(px(11.)).text_color(Theme::text_caption())
+                    .child(count.to_string()).tip(tr("变更文件", "Changed files"), None)))
             .child(files)
             .child(div().flex_none().p(px(14.)).border_t_1().border_color(Theme::line_border()).flex().flex_col().gap(px(10.))
                 .child(div().text_size(px(11.)).text_color(Theme::text_caption()).child(if staged > 0 { tr("仅提交已暂存的变更", "Commit staged changes only") } else { tr("提交文档库中的全部变更", "Commit all library changes") }))
@@ -269,13 +272,40 @@ fn number(n: usize, width: Pixels) -> Div {
     div().w(width).flex_none().pr(px(10.)).text_right().whitespace_nowrap().text_color(Theme::text_caption()).child(n.to_string())
 }
 
-fn tool(id: impl Into<ElementId>, icon: &'static str, label: &'static str, enabled: bool) -> Stateful<Div> {
-    div().id(id).size(px(26.)).flex_none().flex().items_center().justify_center().rounded(px(5.)).tip(label, None)
-        .child(if icon == "undo" { svg().path("editor-icons/undo.svg").size(px(16.)).flex_none().text_color(Theme::icon()) }
-            else if matches!(icon, "arrow-up" | "arrow-down") { ui::icon("arrow-left", 16., Theme::icon())
-                .with_transformation(Transformation::rotate(radians(if icon == "arrow-up" { std::f32::consts::FRAC_PI_2 } else { -std::f32::consts::FRAC_PI_2 }))) }
-            else { ui::icon(icon, 16., Theme::icon()) })
-        .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(Theme::fill_hover())))
+fn tool_group() -> Div {
+    div().flex_none().flex().items_center().rounded(px(8.)).border_1().border_color(Theme::button_border()).bg(Theme::block_bg_area())
+}
+
+#[derive(Clone, Copy)]
+enum Tool { Commit, Stage, Unstage, Push, Pull, Refresh, Open, Discard }
+
+fn tool(id: impl Into<ElementId>, tool: Tool, label: &'static str, enabled: bool) -> Stateful<Div> {
+    let (fg, bg, hover, pressed) = match tool {
+        Tool::Commit => (white(), Theme::primary(), theme::c(theme::craft::B600), theme::c(theme::craft::B700)),
+        Tool::Stage => {
+            let green = Theme::diff_added();
+            (green, green.opacity(0.10), green.opacity(0.16), green.opacity(0.23))
+        }
+        Tool::Discard => {
+            let red = Theme::danger();
+            (red, red.opacity(0.08), red.opacity(0.15), red.opacity(0.23))
+        }
+        Tool::Open | Tool::Unstage => (Theme::text_code(), Theme::fill_hover(), Theme::fill_pressed(), Theme::text().opacity(0.15)),
+        _ => (Theme::text_code(), transparent_black(), Theme::fill_hover_strong(), Theme::fill_pressed()),
+    };
+    let icon = match tool {
+        Tool::Commit => ui::icon("check", 18., fg),
+        Tool::Stage => ui::icon("plus", 18., fg),
+        Tool::Unstage => ui::icon("minus", 18., fg),
+        Tool::Push => crate::editor_ui::icon("upload", 18., fg),
+        Tool::Pull => crate::editor_ui::icon("download", 18., fg),
+        Tool::Refresh => ui::icon("restore", 18., fg),
+        Tool::Open => ui::icon("pen-line", 18., fg),
+        Tool::Discard => crate::editor_ui::icon("undo", 18., fg),
+    };
+    div().id(id).size(px(if matches!(tool, Tool::Commit) { 28. } else { 26. })).flex_none().flex().items_center().justify_center()
+        .rounded(px(6.)).bg(bg).child(icon).tip(label, None)
+        .when(enabled, |d| d.cursor_pointer().hover(move |s| s.bg(hover)).active(move |s| s.bg(pressed)))
         .when(!enabled, |d| d.opacity(0.35))
         .on_click(|_, _, cx| cx.stop_propagation())
 }

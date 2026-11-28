@@ -87,12 +87,13 @@ impl Auth {
     } }
 }
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub name: String, pub email: String, pub remote: String,
     #[serde(skip)] pub branch: String,
     pub lfs_url: String, pub ssh_key: String, pub lfs_ca_info: String,
+    pub auto_pull_minutes: u32,
 }
 #[derive(Clone, Debug)]
 pub struct Change { pub path: String, pub kind: char, pub staged: bool, pub unstaged: bool, pub auto_restore: bool }
@@ -105,6 +106,10 @@ impl Status {
 pub struct Commit { pub id: String, pub message: String, pub author: String, pub time: i64 }
 
 pub struct LibraryRepo { root: PathBuf, repo: Repository }
+
+pub struct PreparedPull {
+    root: PathBuf, config: Config, previous: Oid, target: Oid, content: BTreeMap<String, Vec<u8>>,
+}
 
 impl LibraryRepo {
     pub fn check_location(root: &Path) -> Result<()> {
@@ -351,15 +356,49 @@ impl LibraryRepo {
     fn pull_from_remote(&self, auth: &Auth, cloning: bool) -> Result<bool> {
         ensure!(self.ready_to_pull()?, "请先提交本地变更，再拉取远端版本");
         let config = self.config()?; validate_remote(&config.remote)?;
-        let mut remote = self.remote(&config)?;
-        let mut options = git2::FetchOptions::new(); options.remote_callbacks(callbacks(auth, &config));
-        remote.fetch(&[&format!("refs/heads/{}:refs/remotes/origin/{}", config.branch, config.branch)], Some(&mut options), None)?;
+        {
+            let mut remote = self.remote(&config)?;
+            let mut options = git2::FetchOptions::new(); options.remote_callbacks(callbacks(auth, &config));
+            remote.fetch(&[&format!("refs/heads/{}:refs/remotes/origin/{}", config.branch, config.branch)], Some(&mut options), None)?;
+        }
         let target = self.repo.find_reference(&format!("refs/remotes/origin/{}", config.branch))?.peel_to_commit()?;
-        let head = self.repo.head().ok().and_then(|h| h.peel_to_commit().ok());
-        if head.as_ref().is_some_and(|h| h.id() == target.id()) { return Ok(false) }
-        if let Some(head) = &head {
-            if self.repo.graph_descendant_of(head.id(), target.id())? { return Ok(false) }
-            ensure!(self.repo.graph_descendant_of(target.id(), head.id())?, "本地与远端历史已分叉，未覆盖任何文章");
+        let Some(pull) = self.prepare_pull(config, target, auth, cloning)? else { return Ok(false) };
+        // Re-check after network I/O; callers also hold the Store write lock.
+        ensure!(self.ready_to_pull()?, "拉取期间本地内容发生变化，未覆盖文章");
+        self.apply_pull(pull)?;
+        Ok(true)
+    }
+
+    /// Download and validate objects without locking or changing the working tree.
+    pub fn prepare_auto_pull(&self, auth: &Auth) -> Result<Option<PreparedPull>> {
+        let config = self.config()?;
+        if config.auto_pull_minutes == 0 || config.remote.is_empty() || !self.ready_to_pull()? { return Ok(None) }
+        validate_remote(&config.remote)?;
+        let branch = format!("refs/heads/{}", config.branch);
+        let target = {
+            let mut remote = self.remote(&config)?;
+            let mut options = git2::FetchOptions::new(); options.remote_callbacks(callbacks(auth, &config));
+            // The scheduled download can run alongside a manual fetch. Read
+            // its own remote advertisement without writing tracking refs.
+            remote.download(&[&branch], Some(&mut options))?;
+            let oid = remote.list()?.iter().find(|head| head.name() == branch).map(|head| head.oid());
+            remote.disconnect()?;
+            oid
+        };
+        let Some(target) = target else { return Ok(None) };
+        self.prepare_pull(config, self.repo.find_commit(target)?, auth, false)
+    }
+
+    fn head_oid(&self) -> Oid {
+        self.repo.head().ok().and_then(|h| h.target()).unwrap_or(Oid::ZERO_SHA1)
+    }
+
+    fn prepare_pull(&self, config: Config, target: git2::Commit<'_>, auth: &Auth, cloning: bool) -> Result<Option<PreparedPull>> {
+        let previous = self.head_oid();
+        if previous == target.id() { return Ok(None) }
+        if previous != Oid::ZERO_SHA1 {
+            if self.repo.graph_descendant_of(previous, target.id())? { return Ok(None) }
+            ensure!(self.repo.graph_descendant_of(target.id(), previous)?, "本地与远端历史已分叉，未覆盖任何文章");
         }
         let tree = target.tree()?;
         let files = tree_files(&self.repo, &tree)?;
@@ -373,10 +412,18 @@ impl LibraryRepo {
             let bytes = if is_asset_path(&path) { lfs.read(&Pointer::parse(blob.content())?.context("图片缺少 LFS 指针")?)? } else { blob.content().to_vec() };
             content.insert(path, bytes);
         }
-        // Re-check after network I/O; callers also hold the Store write lock.
-        ensure!(self.ready_to_pull()?, "拉取期间本地内容发生变化，未覆盖文章");
-        self.apply(&content, &tree, target.id(), &config.branch, head.as_ref().map_or(Oid::ZERO_SHA1, |h| h.id()))?;
+        Ok(Some(PreparedPull { root: self.root.clone(), config, previous, target: target.id(), content }))
+    }
+
+    pub(crate) fn apply_auto_pull(&self, pull: PreparedPull) -> Result<bool> {
+        if self.root != pull.root || self.config()? != pull.config || self.head_oid() != pull.previous || !self.ready_to_pull()? { return Ok(false) }
+        self.apply_pull(pull)?;
         Ok(true)
+    }
+
+    fn apply_pull(&self, pull: PreparedPull) -> Result<()> {
+        let tree = self.repo.find_commit(pull.target)?.tree()?;
+        self.apply(&pull.content, &tree, pull.target, &pull.config.branch, pull.previous)
     }
 
     fn ready_to_pull(&self) -> Result<bool> {

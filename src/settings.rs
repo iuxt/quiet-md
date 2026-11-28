@@ -315,7 +315,7 @@ pub(crate) fn caption(t: &'static str) -> Div {
 }
 
 /// One setting: title and an optional description on the left, the control on the right.
-fn row(title: impl Into<SharedString>, desc: Option<SharedString>, control: impl IntoElement) -> Div {
+pub(crate) fn row(title: impl Into<SharedString>, desc: Option<SharedString>, control: impl IntoElement) -> Div {
     div().w_full().min_h(px(48.)).px(px(16.)).py(px(10.)).flex().items_center().justify_between().gap(px(24.))
         .child(div().flex_1().min_w_0().flex().flex_col().gap(px(2.))
             .child(div().text_size(px(theme::ui_font())).line_height(px(theme::ui_font() + 7.)).text_color(Theme::text()).child(title.into()))
@@ -551,7 +551,7 @@ impl Workspace {
     }
 
     /// A choice as a dropdown button, like 界面语言's: the picked label, a menu of the rest.
-    fn select(&self, id: &'static str, labels: Vec<&'static str>, selected: usize, on: impl Fn(&mut Workspace, usize, &mut Context<Workspace>) + 'static, cx: &mut Context<Self>) -> Stateful<Div> {
+    pub(crate) fn select(&self, id: &'static str, labels: Vec<&'static str>, selected: usize, on: impl Fn(&mut Workspace, usize, &mut Context<Workspace>) + 'static, cx: &mut Context<Self>) -> Stateful<Div> {
         let open = self.pref_menu.as_ref().is_some_and(|m| m.id == id);
         let anchors = self.pref_anchors.clone();
         let on: std::rc::Rc<dyn Fn(&mut Workspace, usize, &mut Context<Workspace>)> = std::rc::Rc::new(on);
@@ -567,7 +567,7 @@ impl Workspace {
 
     pub(crate) fn render_pref_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let m = self.pref_menu.as_ref()?;
-        if self.view != View::Settings || self.settings_page != Page::General { return None }
+        if self.view != View::Settings || !matches!(self.settings_page, Page::General | Page::Git) { return None }
         let b = *self.pref_anchors.borrow().get(m.id)?;
         let rows = m.labels.iter().enumerate().map(|(i, label)| {
             let g = SharedString::from(format!("{}-opt-{i}", m.id));

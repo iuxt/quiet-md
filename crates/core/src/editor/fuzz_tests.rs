@@ -118,7 +118,7 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
     }
     let us = c.units();
     let any = |rng: &mut Rng| rng.pick(&us).id;
-    match rng.below(26) {
+    match rng.below(27) {
         0..=2 => {
             let s = *rng.pick(TEXTS);
             c.insert_text(s);
@@ -238,9 +238,14 @@ fn step(c: &mut Core, rng: &mut Rng) -> String {
             }
             "drawing".into()
         }
-        _ => {
+        25 => {
             c.trailing_line();
             "trailing_line".into()
+        }
+        _ => {
+            let toggle = rng.chance(50);
+            c.turn_selection(BlockKind::Code { lang: "plaintext".into(), caption: None, wrap: false }, toggle);
+            format!("turn_selection: code (toggle {toggle})")
         }
     }
 }

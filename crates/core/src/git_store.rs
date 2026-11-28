@@ -109,8 +109,16 @@ impl Store {
 
     /// Network and worktree writes share the same lock as normal document saves.
     pub fn git_pull(&mut self, auth: &crate::git::Auth) -> Result<bool> {
+        self.finish_git_pull(|repo| repo.pull(auth))
+    }
+
+    pub fn git_apply_auto_pull(&mut self, pull: crate::git::PreparedPull) -> Result<bool> {
+        self.finish_git_pull(|repo| repo.apply_auto_pull(pull))
+    }
+
+    fn finish_git_pull(&mut self, pull: impl FnOnce(crate::git::LibraryRepo) -> Result<bool>) -> Result<bool> {
         let lock = self.begin_write()?;
-        let changed = crate::git::LibraryRepo::open(&self.root)?.pull(auth)?;
+        let changed = pull(crate::git::LibraryRepo::open(&self.root)?)?;
         drop(lock);
         if changed {
             self.parsed.clear();

@@ -1249,17 +1249,12 @@ impl Editor {
     }
 
     pub fn turn(&mut self, kind: BlockKind, toggle: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let ids = self.core.selected_blocks();
         let kind = match kind {
             BlockKind::Code { .. } => menus::code_block(&self.last_lang),
             BlockKind::Callout { .. } => self.new_callout_kind(),
             k => k,
         };
-        if toggle {
-            self.core.toggle_turn_into(&ids, kind);
-        } else {
-            self.core.turn_into(&ids, kind);
-        }
+        self.core.turn_selection(kind, toggle);
         self.changed(window, cx);
     }
 
